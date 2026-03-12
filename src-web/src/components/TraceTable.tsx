@@ -1,0 +1,2348 @@
+import React, { useRef, useEffect, useState, useCallback, useMemo } from "react";
+import { invoke } from "@tauri-apps/api/core";
+import type { TraceLine, CallTreeNodeDto, DefUseChain } from "../types/trace";
+import type { HighlightInfo } from "../hooks/useHighlights";
+import { useResizableColumn } from "../hooks/useResizableColumn";
+import type { useFoldState, ResolvedRow } from "../hooks/useFoldState";
+import CustomScrollbar from "./CustomScrollbar";
+import Minimap, { MINIMAP_WIDTH } from "./Minimap";
+import { SHARED_COLORS, TRACE_TABLE_COLORS } from "../utils/canvasColors";
+import { HIGHLIGHT_COLORS } from "../utils/highlightColors";
+import ContextMenu, { ContextMenuItem, ContextMenuSeparator } from "./ContextMenu";
+
+const ROW_HEIGHT = 22;
+const ARROW_COL_WIDTH = 20;
+
+// 合并共用颜色和 TraceTable 特有颜色，保持组件内 COLORS.xxx 用法不变
+const COLORS = { ...SHARED_COLORS, ...TRACE_TABLE_COLORS };
+
+const FONT = '12px "JetBrains Mono", "Fira Code", "Cascadia Code", "Consolas", monospace';
+const FONT_ITALIC = 'italic 12px "JetBrains Mono", "Fira Code", "Cascadia Code", "Consolas", monospace';
+const TEXT_BASELINE_Y = 15;
+
+// 列位置常量（padding 8px）
+const COL_PAD = 8;
+const COL_ARROW = COL_PAD;          // 8
+const COL_FOLD = COL_ARROW + ARROW_COL_WIDTH; // 28
+const COL_MEMRW = COL_FOLD + 28;    // 56
+const COL_SEQ = COL_MEMRW + 30;     // 86
+const COL_ADDR = COL_SEQ + 90;      // 176
+const COL_DISASM = COL_ADDR + 90;    // 266
+const COL_COMMENT = COL_DISASM + 240; // 506 — 注释对齐列
+
+// 箭头常量
+const DOT_X = 16;
+const CONN_X = 12;
+const VERT_X_DEF = 2;
+const VERT_X_USE = 2;
+const BEND_R = 4;
+const ANCHOR_GAP = 3;
+const EDGE_LABEL_PAD = 20;  // 边缘标签区域高度（标签 + 呼吸空间）
+const RIGHT_GUTTER = MINIMAP_WIDTH + 12; // minimap(70) + scrollbar(12) = 82
+
+// Tokenizer（共用 ARM64 token 正则）
+import { REG_RE, SHIFT_RE, IMM_RE, BRACKET_RE, TOKEN_RE } from "../utils/arm64Tokens";
+
+function canvasTokenColor(token: string, isFirst: boolean): string {
+  if (isFirst) return COLORS.asmMnemonic;
+  if (BRACKET_RE.test(token)) return COLORS.asmMemory;
+  if (IMM_RE.test(token)) return COLORS.asmImmediate;
+  if (REG_RE.test(token)) return COLORS.asmRegister;
+  if (SHIFT_RE.test(token)) return COLORS.asmShift;
+  return COLORS.textPrimary;
+}
+
+function lineToTextColumns(
+  seq: number,
+  line: TraceLine | undefined,
+): { memRW: string; seqText: string; addr: string; disasm: string; changes: string } {
+  return {
+    memRW: line?.mem_rw === "W" || line?.mem_rw === "R" ? line.mem_rw : "",
+    seqText: String(seq + 1),
+    addr: line?.address ?? "",
+    disasm: line?.disasm ?? "",
+    changes: line?.changes ?? "",
+  };
+}
+
+interface Props {
+  totalLines: number;
+  isLoaded: boolean;
+  selectedSeq: number | null;
+  onSelectSeq: (seq: number) => void;
+  getLines: (seqs: number[]) => Promise<TraceLine[]>;
+  savedScrollSeq?: number | null;
+  foldState: ReturnType<typeof useFoldState>;
+  scrollAlignRef?: React.MutableRefObject<"center" | "auto" | "end">;
+  sessionId?: string | null;
+  highlights?: Map<number, HighlightInfo>;
+  onSetHighlight?: (seqs: number[], update: HighlightInfo | null) => void;
+  onToggleStrikethrough?: (seqs: number[]) => void;
+  onResetHighlight?: (seqs: number[]) => void;
+  onToggleHidden?: (seqs: number[]) => void;
+  onUnhideGroup?: (seqs: number[]) => void;
+  showAllHidden?: boolean;
+  showHiddenIndicators?: boolean;
+  onSetComment?: (seq: number, comment: string) => void;
+  onDeleteComment?: (seq: number) => void;
+  // Slice props
+  sliceActive?: boolean;
+  getSliceStatus?: (startSeq: number, count: number) => Promise<boolean[]>;
+  onTaintRequest?: (seq: number, register?: string) => void;
+  sliceFilterMode?: "highlight" | "filter-only";
+  taintedSeqs?: number[];
+  sliceSourceSeq?: number;
+  scrollTrigger?: number;
+}
+
+interface ArrowState {
+  anchorSeq: number;
+  regName: string;
+  defSeq: number | null;
+  useSeqs: number[];
+}
+
+interface TokenHitbox {
+  x: number;
+  width: number;
+  rowIndex: number;
+  token: string;
+  seq: number;
+}
+
+interface ArrowLabelHitbox {
+  x: number;
+  y: number;
+  width: number;
+  height: number;
+  seq: number;
+}
+
+export default function TraceTable({
+  totalLines,
+  isLoaded,
+  selectedSeq,
+  onSelectSeq,
+  getLines,
+  savedScrollSeq,
+  foldState,
+  scrollAlignRef,
+  sessionId,
+  highlights,
+  onSetHighlight,
+  onToggleStrikethrough,
+  onResetHighlight,
+  onToggleHidden,
+  onUnhideGroup,
+  showAllHidden = false,
+  showHiddenIndicators = true,
+  onSetComment,
+  onDeleteComment,
+  sliceActive = false,
+  getSliceStatus,
+  onTaintRequest,
+  sliceFilterMode = "highlight",
+  taintedSeqs,
+  sliceSourceSeq,
+  scrollTrigger = 0,
+}: Props) {
+  const [visibleLines, setVisibleLines] = useState<Map<number, TraceLine>>(
+    new Map()
+  );
+
+  // 渲染期间同步清空 visibleLines（避免 useEffect 延迟导致旧 session 数据残留）
+  const prevVisibleSessionRef = useRef<string | null | undefined>(undefined);
+  if (sessionId !== prevVisibleSessionRef.current) {
+    prevVisibleSessionRef.current = sessionId;
+    setVisibleLines(new Map());
+  }
+
+  const changesCol = useResizableColumn(Math.min(300, Math.round(window.innerWidth * 0.2)));
+
+  const {
+    blLineMap, virtualTotalRows, resolveVirtualIndex,
+    seqToVirtualIndex, toggleFold, isFolded, ensureSeqVisible,
+  } = foldState;
+
+  // === Hidden rows wrapping layer ===
+  interface HiddenVirtualRange {
+    startVI: number;
+    endVI: number;
+    count: number;
+    seqs: number[];
+  }
+
+  const hiddenVirtualRanges = useMemo((): HiddenVirtualRange[] => {
+    if (!highlights || showAllHidden) return [];
+    const entries: { vi: number; seq: number }[] = [];
+    for (const [seq, info] of highlights) {
+      if (!info.hidden) continue;
+      const vi = seqToVirtualIndex(seq);
+      const resolved = resolveVirtualIndex(vi);
+      if (resolved.type === "line" && resolved.seq === seq) {
+        entries.push({ vi, seq });
+      }
+    }
+    if (entries.length === 0) return [];
+    entries.sort((a, b) => a.vi - b.vi);
+    const ranges: HiddenVirtualRange[] = [];
+    let startVI = entries[0].vi, endVI = startVI, seqs = [entries[0].seq];
+    for (let i = 1; i < entries.length; i++) {
+      if (entries[i].vi === endVI + 1) {
+        endVI = entries[i].vi;
+        seqs.push(entries[i].seq);
+      } else {
+        ranges.push({ startVI, endVI, count: endVI - startVI + 1, seqs });
+        startVI = entries[i].vi; endVI = startVI; seqs = [entries[i].seq];
+      }
+    }
+    ranges.push({ startVI, endVI, count: endVI - startVI + 1, seqs });
+    return ranges;
+  }, [highlights, showAllHidden, seqToVirtualIndex, resolveVirtualIndex]);
+
+  const wrappedVirtualTotalRows = useMemo(() => {
+    let reduction = 0;
+    for (const r of hiddenVirtualRanges) {
+      // showHiddenIndicators=true: 每个范围变成 1 行提示条，净减少 count-1
+      // showHiddenIndicators=false: 完全移除，净减少 count
+      reduction += showHiddenIndicators ? r.count - 1 : r.count;
+    }
+    return virtualTotalRows - reduction;
+  }, [virtualTotalRows, hiddenVirtualRanges, showHiddenIndicators]);
+
+  const wrappedResolveVirtualIndex = useCallback(
+    (idx: number): ResolvedRow => {
+      if (hiddenVirtualRanges.length === 0) {
+        return resolveVirtualIndex(idx);
+      }
+      let offset = 0;
+      for (const range of hiddenVirtualRanges) {
+        const summaryPos = range.startVI - offset;
+        if (idx < summaryPos) {
+          return resolveVirtualIndex(idx + offset);
+        }
+        if (showHiddenIndicators) {
+          // 有提示条：summary 占 1 行
+          if (idx === summaryPos) {
+            return { type: "hidden-summary", seqs: range.seqs, count: range.count };
+          }
+          offset += range.count - 1;
+        } else {
+          // 无提示条：完全跳过
+          offset += range.count;
+        }
+      }
+      return resolveVirtualIndex(idx + offset);
+    },
+    [resolveVirtualIndex, hiddenVirtualRanges, showHiddenIndicators],
+  );
+
+  const wrappedSeqToVirtualIndex = useCallback(
+    (seq: number): number => {
+      const foldVI = seqToVirtualIndex(seq);
+      if (hiddenVirtualRanges.length === 0) return foldVI;
+      let offset = 0;
+      for (const range of hiddenVirtualRanges) {
+        if (foldVI < range.startVI) return foldVI - offset;
+        if (foldVI >= range.startVI && foldVI <= range.endVI) {
+          return range.startVI - offset;
+        }
+        offset += showHiddenIndicators ? range.count - 1 : range.count;
+      }
+      return foldVI - offset;
+    },
+    [seqToVirtualIndex, hiddenVirtualRanges, showHiddenIndicators],
+  );
+
+  // === Taint filter wrapping layer ===
+  const taintFilterActive = sliceActive && sliceFilterMode === "filter-only" && !!taintedSeqs && taintedSeqs.length > 0;
+
+  const finalVirtualTotalRows = taintFilterActive
+    ? taintedSeqs!.length
+    : wrappedVirtualTotalRows;
+
+  const finalResolveVirtualIndex = useCallback(
+    (idx: number): ResolvedRow => {
+      if (taintFilterActive) {
+        const seq = taintedSeqs![idx];
+        return seq !== undefined ? { type: "line", seq } : { type: "line", seq: 0 };
+      }
+      return wrappedResolveVirtualIndex(idx);
+    },
+    [taintFilterActive, taintedSeqs, wrappedResolveVirtualIndex],
+  );
+
+  const finalSeqToVirtualIndex = useCallback(
+    (seq: number): number => {
+      if (taintFilterActive) {
+        let lo = 0, hi = taintedSeqs!.length - 1;
+        while (lo <= hi) {
+          const mid = (lo + hi) >>> 1;
+          if (taintedSeqs![mid] < seq) lo = mid + 1;
+          else if (taintedSeqs![mid] > seq) hi = mid - 1;
+          else return mid;
+        }
+        return lo;
+      }
+      return wrappedSeqToVirtualIndex(seq);
+    },
+    [taintFilterActive, taintedSeqs, wrappedSeqToVirtualIndex],
+  );
+
+  // === Canvas 核心状态 ===
+  const canvasRef = useRef<HTMLCanvasElement>(null);
+  const containerRef = useRef<HTMLDivElement>(null);
+  const textOverlayRef = useRef<HTMLDivElement>(null);
+  const [currentRow, setCurrentRow] = useState(0);
+  const [canvasSize, setCanvasSize] = useState({ width: 0, height: 0 });
+  const [fontReady, setFontReady] = useState(false);
+  const hitboxesRef = useRef<TokenHitbox[]>([]);
+  const arrowLabelHitboxesRef = useRef<ArrowLabelHitbox[]>([]);
+  const dirtyRef = useRef(true);
+  const rafIdRef = useRef(0);
+  const mouseDownPosRef = useRef({ x: 0, y: 0 });
+  const hoverRowRef = useRef(-1);
+
+  // === 多行选择 ===
+  const [multiSelect, setMultiSelect] = useState<{ startVi: number; endVi: number } | null>(null);
+  const [ctrlSelect, setCtrlSelect] = useState<Set<number>>(new Set()); // Ctrl+Click 任意多选（存储 vi）
+  const shiftAnchorVi = useRef<number>(-1); // Shift+Click 锚点（上次普通点击的 vi）
+  const isDraggingSelect = useRef(false);
+  const dragPending = useRef(false); // mouseDown 后等待方向判定
+  const dragStartVi = useRef(-1);
+  const [ctxMenu, setCtxMenu] = useState<{ x: number; y: number } | null>(null);
+  const ctxRegRef = useRef<string | undefined>(undefined);
+  const [highlightSubmenuOpen, setHighlightSubmenuOpen] = useState(false);
+
+  // === 切片状态缓存（Canvas 同步渲染用） ===
+  const [sliceStatuses, setSliceStatuses] = useState<Map<number, boolean>>(new Map());
+
+  // === 注释相关状态 ===
+  const [commentTooltip, setCommentTooltip] = useState<{ seq: number; x: number; y: number; text: string } | null>(null);
+  const [commentEditor, setCommentEditor] = useState<{ seq: number; x: number; y: number; text: string } | null>(null);
+  const commentEditorRef = useRef<HTMLDivElement>(null);
+  const textSelectionRef = useRef<string>(""); // 右键菜单打开时保存的文本选区
+  const commentTextareaRef = useRef<HTMLTextAreaElement>(null);
+
+  const visibleRows = Math.floor(canvasSize.height / ROW_HEIGHT);
+
+  // === 折叠/展开 clip 动画 ===
+  const FOLD_ANIM_DURATION = 350; // ms
+  const UNFOLD_ANIM_DURATION = 420; // ms
+  const foldAnimRef = useRef<{
+    startTime: number;
+    direction: "fold" | "unfold";
+    // clip 区域起始 Y（像素，相对于 canvas 顶部）
+    clipTopPx: number;
+    // clip 区域最大高度（像素）
+    clipMaxHeightPx: number;
+    // 折叠时：延迟执行 toggleFold 的 nodeId
+    pendingNodeId: number | null;
+  } | null>(null);
+
+  /** 带动画的 toggleFold 包装 */
+  const animatedToggleFold = useCallback((nodeId: number, clickVi: number) => {
+    const isFolding = !isFolded(nodeId);
+    let hiddenRows = 0;
+    for (const [, node] of blLineMap) {
+      if (node.id === nodeId) {
+        hiddenRows = node.exit_seq - node.entry_seq;
+        break;
+      }
+    }
+
+    if (hiddenRows <= 0) {
+      toggleFold(nodeId);
+      return;
+    }
+
+    // clip 区域最大高度：限制为可视区域剩余高度
+    const clickLocalRow = clickVi - currentRow;
+    const clipTop = (clickLocalRow + 1) * ROW_HEIGHT; // BL/summary 行底部
+    const clipMaxH = Math.min(hiddenRows * ROW_HEIGHT, canvasSize.height - clipTop);
+
+    if (clipMaxH <= 0) {
+      toggleFold(nodeId);
+      return;
+    }
+
+    if (isFolding) {
+      // 折叠：先做动画（clip 从满→0），结束后 toggleFold
+      foldAnimRef.current = {
+        startTime: performance.now(),
+        direction: "fold",
+        clipTopPx: clipTop,
+        clipMaxHeightPx: clipMaxH,
+        pendingNodeId: nodeId,
+      };
+      dirtyRef.current = true;
+      // 不调用 toggleFold，等动画结束
+    } else {
+      // 展开：先 toggleFold（新行可用），然后 clip 从0→满
+      toggleFold(nodeId);
+      foldAnimRef.current = {
+        startTime: performance.now(),
+        direction: "unfold",
+        clipTopPx: clipTop,
+        clipMaxHeightPx: clipMaxH,
+        pendingNodeId: null,
+      };
+      dirtyRef.current = true;
+    }
+  }, [toggleFold, isFolded, blLineMap, currentRow, canvasSize.height]);
+
+  const maxRow = Math.max(0, finalVirtualTotalRows - visibleRows);
+
+  // 渲染期间同步钳位 currentRow（避免 taint filter 切换后 currentRow 超出新范围导致空白）
+  if (currentRow > maxRow && maxRow >= 0) {
+    setCurrentRow(maxRow);
+  }
+
+  // Disasm 列最小保留宽度，防止 changes 列挤压
+  const MIN_DISASM_WIDTH = 200;
+  const maxChangesWidth = Math.max(60, canvasSize.width - COL_DISASM - MIN_DISASM_WIDTH - RIGHT_GUTTER);
+  const effectiveChangesWidth = Math.min(changesCol.width, maxChangesWidth);
+
+  const hasRestoredScroll = useRef(false);
+  const isInternalClick = useRef(false);
+
+  // === 字体加载 ===
+  useEffect(() => {
+    document.fonts.ready.then(() => setFontReady(true));
+  }, []);
+
+  // === ResizeObserver（isLoaded 变化后 containerRef 才有值） ===
+  useEffect(() => {
+    const el = containerRef.current;
+    if (!el) return;
+    const ro = new ResizeObserver((entries) => {
+      const { width, height } = entries[0].contentRect;
+      setCanvasSize({ width, height });
+      dirtyRef.current = true;
+    });
+    ro.observe(el);
+    return () => ro.disconnect();
+  }, [isLoaded]);
+
+  // === HiDPI Canvas 尺寸同步 ===
+  useEffect(() => {
+    const canvas = canvasRef.current;
+    if (!canvas || canvasSize.width === 0) return;
+    const dpr = window.devicePixelRatio || 1;
+    canvas.width = canvasSize.width * dpr;
+    canvas.height = canvasSize.height * dpr;
+    canvas.style.width = canvasSize.width + "px";
+    canvas.style.height = canvasSize.height + "px";
+    dirtyRef.current = true;
+  }, [canvasSize]);
+
+  // === scrollToSeq ===
+  const scrollToSeq = useCallback((seq: number, align: "center" | "auto" | "end") => {
+    ensureSeqVisible(seq);
+    const vi = finalSeqToVirtualIndex(seq);
+    if (align === "center") {
+      setCurrentRow(Math.max(0, Math.min(maxRow, vi - Math.floor(visibleRows / 2))));
+    } else if (align === "end") {
+      // 将目标行置于窗口最后一行
+      setCurrentRow(Math.max(0, Math.min(maxRow, vi - visibleRows + 1)));
+    } else {
+      setCurrentRow(prev => {
+        if (vi >= prev && vi < prev + visibleRows) return prev;
+        return Math.max(0, Math.min(maxRow, vi - Math.floor(visibleRows / 2)));
+      });
+    }
+  }, [ensureSeqVisible, finalSeqToVirtualIndex, maxRow, visibleRows]);
+
+  // === 恢复滚动位置 ===
+  useEffect(() => {
+    if (isLoaded && savedScrollSeq != null && savedScrollSeq > 0 && !hasRestoredScroll.current) {
+      hasRestoredScroll.current = true;
+      requestAnimationFrame(() => scrollToSeq(savedScrollSeq, "center"));
+    }
+  }, [isLoaded, savedScrollSeq, scrollToSeq]);
+
+  useEffect(() => { hasRestoredScroll.current = false; }, [totalLines, sessionId]);
+
+  // === 外部 selectedSeq 变化时滚动 ===
+  const prevSelectedSeqRef = useRef<number | null>(null);
+  const prevScrollTriggerRef = useRef(0);
+  useEffect(() => {
+    if (selectedSeq != null && isLoaded) {
+      if (isInternalClick.current) {
+        isInternalClick.current = false;
+        prevSelectedSeqRef.current = selectedSeq;
+        prevScrollTriggerRef.current = scrollTrigger;
+        return;
+      }
+      // scrollTrigger 变化时强制滚动（Go to Source、视图切换等场景）
+      const triggerChanged = scrollTrigger !== prevScrollTriggerRef.current;
+      // 仅在 selectedSeq 真正变化时滚动，避免 fold/unfold 导致的 scrollToSeq 重建触发跳转
+      if (!triggerChanged && selectedSeq === prevSelectedSeqRef.current) {
+        return;
+      }
+      prevSelectedSeqRef.current = selectedSeq;
+      prevScrollTriggerRef.current = scrollTrigger;
+      const align = scrollAlignRef?.current ?? "center";
+      if (scrollAlignRef) scrollAlignRef.current = "center";
+      scrollToSeq(selectedSeq, align);
+    }
+  }, [selectedSeq, isLoaded, scrollAlignRef, scrollToSeq, scrollTrigger]);
+
+  // === 数据预取（currentRow 驱动） ===
+  useEffect(() => {
+    if (!isLoaded || visibleRows === 0) return;
+    const seqs: number[] = [];
+    for (let i = 0; i < visibleRows + 2; i++) {
+      const vi = currentRow + i;
+      if (vi >= finalVirtualTotalRows) break;
+      const resolved = finalResolveVirtualIndex(vi);
+      if (resolved.type === "line") seqs.push(resolved.seq);
+    }
+    const missing = seqs.filter(s => !visibleLines.has(s));
+    if (missing.length === 0) return;
+    getLines(missing).then(lines => {
+      if (lines.length === 0) return;
+      setVisibleLines(prev => {
+        const next = new Map(prev);
+        for (const line of lines) next.set(line.seq, line);
+        if (next.size > 2000) {
+          const entries = Array.from(next.entries());
+          return new Map(entries.slice(-1000));
+        }
+        return next;
+      });
+    });
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [currentRow, visibleRows, isLoaded, getLines, finalVirtualTotalRows, finalResolveVirtualIndex]);
+
+  // === 切片状态异步获取 ===
+  useEffect(() => {
+    if (!sliceActive || !getSliceStatus) {
+      if (sliceStatuses.size > 0) setSliceStatuses(new Map());
+      return;
+    }
+    // 过滤模式下所有可见行都是污点行，直接标记为 true
+    if (taintFilterActive) {
+      const map = new Map<number, boolean>();
+      for (let i = 0; i < visibleRows + 2; i++) {
+        const vi = currentRow + i;
+        if (vi >= finalVirtualTotalRows) break;
+        const resolved = finalResolveVirtualIndex(vi);
+        if (resolved.type === "line") map.set(resolved.seq, true);
+      }
+      setSliceStatuses(map);
+      dirtyRef.current = true;
+      return;
+    }
+    // 正常模式：按范围获取
+    const seqs: number[] = [];
+    for (let i = 0; i < visibleRows + 2; i++) {
+      const vi = currentRow + i;
+      if (vi >= finalVirtualTotalRows) break;
+      const resolved = finalResolveVirtualIndex(vi);
+      if (resolved.type === "line") seqs.push(resolved.seq);
+    }
+    if (seqs.length === 0) return;
+    const minSeq = Math.min(...seqs);
+    const maxSeq = Math.max(...seqs);
+    const count = maxSeq - minSeq + 1;
+    getSliceStatus(minSeq, count).then(statuses => {
+      const map = new Map<number, boolean>();
+      statuses.forEach((v, i) => map.set(minSeq + i, v));
+      setSliceStatuses(map);
+      dirtyRef.current = true;
+    });
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [currentRow, visibleRows, sliceActive, getSliceStatus, finalVirtualTotalRows, finalResolveVirtualIndex, taintFilterActive]);
+
+  // === DEF/USE 箭头状态 ===
+  const [arrowState, setArrowState] = useState<ArrowState | null>(null);
+
+  const handleRegClick = useCallback(async (seq: number, regName: string) => {
+    if (arrowState && arrowState.anchorSeq === seq && arrowState.regName.toLowerCase() === regName.toLowerCase()) {
+      setArrowState(null);
+      return;
+    }
+    if (!sessionId) return;
+    try {
+      const chain = await invoke<DefUseChain>("get_reg_def_use_chain", {
+        sessionId,
+        seq,
+        regName,
+      });
+      setArrowState({
+        anchorSeq: seq,
+        regName,
+        defSeq: chain.defSeq,
+        useSeqs: chain.useSeqs,
+      });
+    } catch (e) {
+      console.error("get_reg_def_use_chain failed:", e);
+    }
+  }, [sessionId, arrowState]);
+
+  // 切换 session 或文件时清除箭头
+  useEffect(() => { setArrowState(null); }, [sessionId]);
+
+  const handleArrowJump = useCallback((seq: number) => {
+    ensureSeqVisible(seq);
+    isInternalClick.current = true;
+    onSelectSeq(seq);
+    scrollToSeq(seq, "center");
+  }, [ensureSeqVisible, onSelectSeq, scrollToSeq]);
+
+  // === 滚轮事件（使用原生事件监听，避免 passive listener 问题） ===
+  const maxRowRef = useRef(maxRow);
+  maxRowRef.current = maxRow;
+  useEffect(() => {
+    const el = containerRef.current;
+    if (!el) return;
+    const handler = (e: WheelEvent) => {
+      e.preventDefault();
+      const delta = e.deltaY > 0 ? 3 : -3;
+      setCurrentRow(prev => Math.max(0, Math.min(maxRowRef.current, prev + delta)));
+    };
+    el.addEventListener("wheel", handler, { passive: false });
+    return () => el.removeEventListener("wheel", handler);
+  }, [isLoaded]);
+
+  // === Overlay 事件路由 ===
+  const handleOverlayMouseDown = useCallback((e: React.MouseEvent) => {
+    mouseDownPosRef.current = { x: e.clientX, y: e.clientY };
+    // 确保 container 有焦点（键盘快捷键需要）—— focus() 不影响鼠标文本选择
+    containerRef.current?.focus();
+    // 关闭右键菜单
+    setCtxMenu(null);
+    // 左键拖选准备
+    if (e.button === 0) {
+      const container = containerRef.current;
+      if (!container) return;
+      const rect = container.getBoundingClientRect();
+      const x = e.clientX - rect.left;
+      const y = e.clientY - rect.top;
+      const rowIdx = Math.floor(y / ROW_HEIGHT);
+      const vi = currentRow + rowIdx;
+      // 仅在非功能区域启动拖选（跳过箭头列和折叠列）
+      if (x >= COL_MEMRW && vi < finalVirtualTotalRows) {
+        // 检查是否点击了寄存器 hitbox
+        let hitReg = false;
+        const colChanges = canvasSize.width - effectiveChangesWidth - RIGHT_GUTTER;
+        if (x >= COL_DISASM && x < colChanges) {
+          for (const hb of hitboxesRef.current) {
+            if (hb.rowIndex === rowIdx && x >= hb.x && x <= hb.x + hb.width) {
+              hitReg = true;
+              break;
+            }
+          }
+        }
+        if (!hitReg && !e.ctrlKey && !e.metaKey && !e.shiftKey) {
+          if (e.detail >= 2) {
+            // 双击/三击：让浏览器处理文本选择，不启动拖选
+            return;
+          }
+          // 不立即启动行拖选，等 mouseMove 中根据方向判定
+          dragPending.current = true;
+          dragStartVi.current = vi;
+        }
+        // Shift+Click：阻止浏览器默认文本扩选
+        if (!hitReg && e.shiftKey && !e.ctrlKey && !e.metaKey) {
+          window.getSelection()?.removeAllRanges();
+          e.preventDefault();
+          containerRef.current?.focus();
+        }
+      }
+    }
+  }, [currentRow, finalVirtualTotalRows, canvasSize.width, effectiveChangesWidth]);
+
+  // === Canvas 点击 ===
+  const handleCanvasClick = useCallback((e: React.MouseEvent) => {
+    const container = containerRef.current;
+    if (!container) return;
+    const rect = container.getBoundingClientRect();
+    const x = e.clientX - rect.left;
+    const y = e.clientY - rect.top;
+    const rowIdx = Math.floor(y / ROW_HEIGHT);
+    const vi = currentRow + rowIdx;
+    if (vi >= finalVirtualTotalRows) return;
+    const resolved = finalResolveVirtualIndex(vi);
+
+    // 1. 箭头列标签点击 (x < COL_FOLD)
+    if (x < COL_FOLD) {
+      for (const lb of arrowLabelHitboxesRef.current) {
+        if (x >= lb.x && x <= lb.x + lb.width && y >= lb.y && y <= lb.y + lb.height) {
+          handleArrowJump(lb.seq);
+          return;
+        }
+      }
+    }
+
+    // 2. Fold 列点击 (COL_FOLD ~ COL_MEMRW)
+    if (x >= COL_FOLD && x < COL_MEMRW) {
+      if (resolved.type === "summary") {
+        animatedToggleFold(resolved.nodeId, vi);
+        return;
+      }
+      if (resolved.type === "line") {
+        const blNode = blLineMap.get(resolved.seq);
+        if (blNode && blNode.exit_seq > blNode.entry_seq && !isFolded(blNode.id)) {
+          animatedToggleFold(blNode.id, vi);
+          return;
+        }
+      }
+    }
+
+    // 3. 折叠摘要行整行点击 → toggleFold
+    if (resolved.type === "summary") {
+      animatedToggleFold(resolved.nodeId, vi);
+      return;
+    }
+
+    // 3.5 隐藏摘要行：仅点击文本区域才 unhide
+    if (resolved.type === "hidden-summary") {
+      if (onUnhideGroup && x >= COL_MEMRW) {
+        // 测量文本宽度，仅在文本范围内点击时触发
+        const canvas = canvasRef.current;
+        if (canvas) {
+          const ctx2 = canvas.getContext("2d");
+          if (ctx2) {
+            ctx2.font = FONT_ITALIC;
+            const textW = ctx2.measureText(`\u2026 ${resolved.count} hidden lines`).width;
+            if (x <= COL_MEMRW + textW + 8) {
+              onUnhideGroup(resolved.seqs);
+              // 恢复后将这些行设为多选状态，标示刚取消隐藏的行
+              setMultiSelect({ startVi: vi, endVi: vi + resolved.count - 1 });
+              dirtyRef.current = true;
+            }
+          }
+        }
+      }
+      return;
+    }
+
+    // 4. Disasm 列寄存器点击
+    if (x >= COL_DISASM && sessionId) {
+      const colChanges = canvasSize.width - effectiveChangesWidth - 12;
+      if (x < colChanges) {
+        for (const hb of hitboxesRef.current) {
+          if (hb.rowIndex === rowIdx && x >= hb.x && x <= hb.x + hb.width) {
+            isInternalClick.current = true;
+            onSelectSeq(resolved.seq);
+            handleRegClick(resolved.seq, hb.token);
+            return;
+          }
+        }
+      }
+    }
+
+    // 5. Shift+Click：范围批量选中（从锚点到当前行）
+    if (e.shiftKey && resolved.type === "line") {
+      const anchor = shiftAnchorVi.current >= 0 ? shiftAnchorVi.current : (selectedSeq != null ? finalSeqToVirtualIndex(selectedSeq) : vi);
+      const startVi = Math.min(anchor, vi);
+      const endVi = Math.max(anchor, vi);
+      setMultiSelect({ startVi, endVi });
+      setCtrlSelect(prev => prev.size > 0 ? new Set() : prev);
+      dirtyRef.current = true;
+      return;
+    }
+
+    // 6. Ctrl+Click：任意多选
+    if ((e.ctrlKey || e.metaKey) && resolved.type === "line") {
+      setCtrlSelect(prev => {
+        const next = new Set(prev);
+        if (next.has(vi)) {
+          next.delete(vi);
+        } else {
+          next.add(vi);
+        }
+        return next;
+      });
+      setMultiSelect(null);
+      shiftAnchorVi.current = vi;
+      dirtyRef.current = true;
+      return;
+    }
+
+    // 7. 默认：选中行
+    isInternalClick.current = true;
+    onSelectSeq(resolved.seq);
+    setCtrlSelect(prev => prev.size > 0 ? new Set() : prev);
+    shiftAnchorVi.current = vi;
+  }, [currentRow, finalVirtualTotalRows, finalResolveVirtualIndex, finalSeqToVirtualIndex, animatedToggleFold, blLineMap,
+      isFolded, sessionId, canvasSize, effectiveChangesWidth, handleRegClick,
+      handleArrowJump, onSelectSeq, onUnhideGroup, selectedSeq]);
+
+  const handleOverlayMouseUp = useCallback((e: React.MouseEvent) => {
+    const wasDragging = isDraggingSelect.current;
+    const wasPending = dragPending.current;
+    isDraggingSelect.current = false;
+    dragPending.current = false;
+    // 恢复文本选择能力（拖选期间被 CSS 禁用）
+    if (textOverlayRef.current) {
+      textOverlayRef.current.style.userSelect = "text";
+      textOverlayRef.current.style.webkitUserSelect = "text";
+    }
+    // 右键不清除多选（交给 contextmenu 处理）
+    if (e.button === 2) return;
+    // 如果在行拖选，结束拖选（不触发 click）
+    if (wasDragging && !wasPending && multiSelect && multiSelect.startVi !== multiSelect.endVi) {
+      window.getSelection()?.removeAllRanges();
+      return;
+    }
+    // 双击让浏览器处理选词
+    if (e.detail >= 2) return;
+    const dx = e.clientX - mouseDownPosRef.current.x;
+    const dy = e.clientY - mouseDownPosRef.current.y;
+    const dist = Math.sqrt(dx * dx + dy * dy);
+    if (dist < 3) {
+      if (!e.ctrlKey && !e.metaKey && !e.shiftKey) {
+        setMultiSelect(null);
+      }
+      dirtyRef.current = true;
+      handleCanvasClick(e);
+    }
+  }, [handleCanvasClick, multiSelect]);
+
+  // === 关闭注释编辑框并恢复焦点 ===
+  const closeCommentEditor = useCallback(() => {
+    setCommentEditor(null);
+    // 恢复焦点到 container，确保键盘快捷键继续工作
+    setTimeout(() => containerRef.current?.focus(), 0);
+  }, []);
+
+  // === 打开注释编辑框 ===
+  const openCommentEditor = useCallback((seq: number) => {
+    const container = containerRef.current;
+    if (!container) return;
+    const vi = finalSeqToVirtualIndex(seq);
+    const localRow = vi - currentRow;
+    const rect = container.getBoundingClientRect();
+    const existingComment = highlights?.get(seq)?.comment ?? "";
+    setCommentTooltip(null);
+    setCommentEditor({
+      seq,
+      x: rect.left + COL_COMMENT,
+      y: rect.top + localRow * ROW_HEIGHT + ROW_HEIGHT,
+      text: existingComment,
+    });
+  }, [finalSeqToVirtualIndex, currentRow, highlights]);
+
+  // === 双击选词后去除尾随空格并自动复制 ===
+  const handleOverlayDblClick = useCallback(() => {
+    setTimeout(() => {
+      const sel = window.getSelection();
+      if (!sel || sel.isCollapsed) return;
+      const text = sel.toString();
+      const trimLen = text.length - text.trimEnd().length;
+      if (trimLen > 0) {
+        for (let i = 0; i < trimLen; i++) {
+          sel.modify("extend", "backward", "character");
+        }
+      }
+      const finalText = sel.toString().trim();
+      if (finalText) navigator.clipboard.writeText(finalText);
+    }, 0);
+  }, []);
+
+  // === 鼠标悬停效果 ===
+  const handleCanvasMouseMove = useCallback((e: React.MouseEvent) => {
+    const container = containerRef.current;
+    if (!container) return;
+    const rect = container.getBoundingClientRect();
+    const x = e.clientX - rect.left;
+    const y = e.clientY - rect.top;
+    const rowIdx = Math.floor(y / ROW_HEIGHT);
+
+    if (hoverRowRef.current !== rowIdx) {
+      hoverRowRef.current = rowIdx;
+      dirtyRef.current = true;
+    }
+
+    // 检测寄存器 hitbox
+    for (const hb of hitboxesRef.current) {
+      if (hb.rowIndex === rowIdx && x >= hb.x && x <= hb.x + hb.width) {
+        if (textOverlayRef.current) textOverlayRef.current.style.cursor = "pointer";
+        return;
+      }
+    }
+
+    // 检测折叠按钮区域或摘要行
+    if (x >= COL_FOLD && x < COL_MEMRW) {
+      const vi = currentRow + rowIdx;
+      if (vi < finalVirtualTotalRows) {
+        const resolved = finalResolveVirtualIndex(vi);
+        if (resolved.type === "summary") {
+          if (textOverlayRef.current) textOverlayRef.current.style.cursor = "pointer";
+          return;
+        }
+        if (resolved.type === "line") {
+          const blNode = blLineMap.get(resolved.seq);
+          if (blNode && blNode.exit_seq > blNode.entry_seq && !isFolded(blNode.id)) {
+            if (textOverlayRef.current) textOverlayRef.current.style.cursor = "pointer";
+            return;
+          }
+        }
+      }
+    }
+
+    // 检测隐藏摘要行文本区域
+    if (x >= COL_MEMRW) {
+      const vi = currentRow + rowIdx;
+      if (vi < finalVirtualTotalRows) {
+        const resolved = finalResolveVirtualIndex(vi);
+        if (resolved.type === "hidden-summary") {
+          const canvas = canvasRef.current;
+          if (canvas) {
+            const ctx2 = canvas.getContext("2d");
+            if (ctx2) {
+              ctx2.font = FONT_ITALIC;
+              const textW = ctx2.measureText(`\u2026 ${resolved.count} hidden lines`).width;
+              if (x <= COL_MEMRW + textW + 8) {
+                if (textOverlayRef.current) textOverlayRef.current.style.cursor = "pointer";
+                return;
+              }
+            }
+          }
+        }
+      }
+    }
+
+    // 检测内联注释区域（COL_COMMENT ~ colChanges）→ 显示 tooltip
+    if (!commentEditor && x >= COL_COMMENT) {
+      const vi = currentRow + rowIdx;
+      if (vi < finalVirtualTotalRows) {
+        const resolved = finalResolveVirtualIndex(vi);
+        if (resolved.type === "line" && highlights) {
+          const hlInfo = highlights.get(resolved.seq);
+          if (hlInfo?.comment) {
+            const canvas = canvasRef.current;
+            if (canvas) {
+              const ctx2 = canvas.getContext("2d");
+              if (ctx2) {
+                ctx2.font = FONT;
+                const isMultiLine = hlInfo.comment.includes("\n");
+                const firstLine = isMultiLine ? hlInfo.comment.split("\n")[0] + " …" : hlInfo.comment;
+                const commentLabel = "; " + firstLine;
+                const commentW = ctx2.measureText(commentLabel).width;
+                const colChanges = canvasSize.width - effectiveChangesWidth - RIGHT_GUTTER;
+                const clippedW = Math.min(commentW, colChanges - COL_COMMENT);
+                if (x <= COL_COMMENT + clippedW) {
+                  const container = containerRef.current;
+                  if (container) {
+                    const rect = container.getBoundingClientRect();
+                    setCommentTooltip({
+                      seq: resolved.seq,
+                      x: rect.left + COL_COMMENT,
+                      y: rect.top + rowIdx * ROW_HEIGHT,
+                      text: hlInfo.comment,
+                    });
+                  }
+                  if (textOverlayRef.current) textOverlayRef.current.style.cursor = "pointer";
+                  return;
+                }
+              }
+            }
+          }
+        }
+      }
+    }
+    // 不在注释区域时关闭 tooltip
+    if (commentTooltip) setCommentTooltip(null);
+
+    // 检测箭头标签
+    if (x < COL_FOLD) {
+      for (const lb of arrowLabelHitboxesRef.current) {
+        if (x >= lb.x && x <= lb.x + lb.width && y >= lb.y && y <= lb.y + lb.height) {
+          if (textOverlayRef.current) textOverlayRef.current.style.cursor = "pointer";
+          return;
+        }
+      }
+    }
+
+    // 方向判定：超过死区后，纵向→行拖选，横向→文本选择（交给浏览器）
+    if (dragPending.current) {
+      const dx = e.clientX - mouseDownPosRef.current.x;
+      const dy = e.clientY - mouseDownPosRef.current.y;
+      if (dx * dx + dy * dy < 25) return; // 死区 5px
+      if (Math.abs(dy) > Math.abs(dx)) {
+        // 纵向拖动 → 行拖选模式
+        isDraggingSelect.current = true;
+        dragPending.current = false;
+        setMultiSelect(null);
+        setCtrlSelect(prev => prev.size > 0 ? new Set() : prev);
+        dirtyRef.current = true;
+        // CSS 禁用文本选择
+        if (textOverlayRef.current) {
+          textOverlayRef.current.style.userSelect = "none";
+          textOverlayRef.current.style.webkitUserSelect = "none";
+        }
+        window.getSelection()?.removeAllRanges();
+      } else {
+        // 横向拖动 → 文本选择，不干预浏览器
+        dragPending.current = false;
+        return;
+      }
+    }
+
+    // 行拖选中：更新选择范围
+    if (isDraggingSelect.current) {
+      const vi = Math.min(currentRow + rowIdx, finalVirtualTotalRows - 1);
+      const startVi = Math.min(dragStartVi.current, vi);
+      const endVi = Math.max(dragStartVi.current, vi);
+      setMultiSelect({ startVi, endVi });
+      dirtyRef.current = true;
+      if (textOverlayRef.current) textOverlayRef.current.style.cursor = "default";
+      return;
+    }
+
+    if (textOverlayRef.current) textOverlayRef.current.style.cursor = "text";
+  }, [currentRow, finalVirtualTotalRows, finalResolveVirtualIndex, blLineMap, isFolded, highlights, commentTooltip, commentEditor, visibleLines, canvasSize, effectiveChangesWidth]);
+
+  // 获取当前选中的 seq 列表（多选或单选）
+  const getSelectedSeqs = useCallback((): number[] => {
+    const seqs: number[] = [];
+    const seqSet = new Set<number>();
+    // 范围选择
+    if (multiSelect) {
+      for (let vi = multiSelect.startVi; vi <= multiSelect.endVi; vi++) {
+        const r = finalResolveVirtualIndex(vi);
+        if (r.type === "line" && !seqSet.has(r.seq)) {
+          seqs.push(r.seq);
+          seqSet.add(r.seq);
+        }
+      }
+    }
+    // Ctrl 任意选择
+    for (const vi of ctrlSelect) {
+      const r = finalResolveVirtualIndex(vi);
+      if (r.type === "line" && !seqSet.has(r.seq)) {
+        seqs.push(r.seq);
+        seqSet.add(r.seq);
+      }
+    }
+    if (seqs.length > 0) return seqs;
+    if (selectedSeq != null) return [selectedSeq];
+    return [];
+  }, [multiSelect, ctrlSelect, selectedSeq, finalResolveVirtualIndex]);
+
+  // === 复制辅助 ===
+  const getSelectedLines = useCallback(async (): Promise<TraceLine[]> => {
+    const seqs = getSelectedSeqs();
+    if (seqs.length === 0) return [];
+    return getLines(seqs);
+  }, [getSelectedSeqs, getLines]);
+
+  const copyAs = useCallback(async (format: "raw" | "tab" | "disasm") => {
+    const lines = await getSelectedLines();
+    if (lines.length === 0) return;
+    let text: string;
+    if (format === "raw") {
+      text = lines.map(l => l.raw).join("\n");
+    } else if (format === "tab") {
+      text = lines.map(l => `${l.seq + 1}\t${l.address}\t${l.disasm}\t${l.changes}`).join("\n");
+    } else {
+      text = lines.map(l => l.disasm).join("\n");
+    }
+    navigator.clipboard.writeText(text);
+    setCtxMenu(null);
+  }, [getSelectedLines]);
+
+  // === 右键菜单 ===
+  const handleContextMenu = useCallback((e: React.MouseEvent) => {
+    e.preventDefault();
+    // 清除上次右键的文本选区（防止残留值导致菜单始终显示 Copy）
+    textSelectionRef.current = "";
+    // 检测右键位置是否命中某个寄存器 hitbox
+    const container = containerRef.current;
+    ctxRegRef.current = undefined;
+    if (container) {
+      const rect = container.getBoundingClientRect();
+      const cx = e.clientX - rect.left;
+      const rowIdx = Math.floor((e.clientY - rect.top) / ROW_HEIGHT);
+      for (const hb of hitboxesRef.current) {
+        if (hb.rowIndex === rowIdx && cx >= hb.x && cx <= hb.x + hb.width) {
+          ctxRegRef.current = hb.token;
+          break;
+        }
+      }
+    }
+    const textSel = window.getSelection()?.toString();
+    if (textSel) {
+      // 文本选中模式：保存选中文本（点击菜单项时选区可能已被清除）
+      textSelectionRef.current = textSel;
+      setCtxMenu({ x: e.clientX, y: e.clientY });
+    } else if (multiSelect || ctrlSelect.size > 0) {
+      // 多行选中模式：显示格式选择菜单
+      setCtxMenu({ x: e.clientX, y: e.clientY });
+    } else if (selectedSeq != null) {
+      // 单行选中：右键点击在选中行上时显示格式选择菜单
+      if (!container) return;
+      const rect = container.getBoundingClientRect();
+      const y = e.clientY - rect.top;
+      const rowIdx = Math.floor(y / ROW_HEIGHT);
+      const vi = currentRow + rowIdx;
+      if (vi < finalVirtualTotalRows) {
+        const resolved = finalResolveVirtualIndex(vi);
+        if (resolved.type === "line" && resolved.seq === selectedSeq) {
+          // 临时设置单行 multiSelect 以复用 copyAs 逻辑
+          setMultiSelect({ startVi: vi, endVi: vi });
+          setCtxMenu({ x: e.clientX, y: e.clientY });
+        }
+      }
+    }
+  }, [multiSelect, ctrlSelect, selectedSeq, currentRow, finalVirtualTotalRows, finalResolveVirtualIndex]);
+
+  // 点击外部自动保存并关闭注释编辑框
+  useEffect(() => {
+    if (!commentEditor) return;
+    const handler = (e: MouseEvent) => {
+      if (commentEditorRef.current && !commentEditorRef.current.contains(e.target as Node)) {
+        const val = commentTextareaRef.current?.value ?? "";
+        if (onSetComment) {
+          if (val.trim()) {
+            onSetComment(commentEditor.seq, val);
+          } else if (onDeleteComment) {
+            onDeleteComment(commentEditor.seq);
+          }
+          dirtyRef.current = true;
+        }
+        closeCommentEditor();
+      }
+    };
+    document.addEventListener("mousedown", handler);
+    return () => document.removeEventListener("mousedown", handler);
+  }, [commentEditor, onSetComment, onDeleteComment, closeCommentEditor]);
+
+  // === 键盘事件 ===
+  const handleKeyDown = useCallback((e: React.KeyboardEvent) => {
+    // Alt+1~5：高亮颜色
+    if (e.altKey && e.key >= "1" && e.key <= "5") {
+      e.preventDefault();
+      const idx = parseInt(e.key) - 1;
+      const seqs = getSelectedSeqs();
+      if (seqs.length > 0 && onSetHighlight) {
+        onSetHighlight(seqs, { color: HIGHLIGHT_COLORS[idx].key });
+        dirtyRef.current = true;
+      }
+      return;
+    }
+    // Alt+-：划线
+    if (e.altKey && e.key === "-") {
+      e.preventDefault();
+      const seqs = getSelectedSeqs();
+      if (seqs.length > 0 && onToggleStrikethrough) {
+        onToggleStrikethrough(seqs);
+        dirtyRef.current = true;
+      }
+      return;
+    }
+    // Alt+0：重置高亮
+    if (e.altKey && e.key === "0") {
+      e.preventDefault();
+      const seqs = getSelectedSeqs();
+      if (seqs.length > 0 && onResetHighlight) {
+        onResetHighlight(seqs);
+        dirtyRef.current = true;
+      }
+      return;
+    }
+    // Ctrl+/：隐藏选中行
+    // e.key 在某些键盘布局/系统中可能是 "/" 或通过 e.code 识别为 "Slash"
+    if ((e.ctrlKey || e.metaKey) && (e.key === "/" || e.code === "Slash")) {
+      e.preventDefault();
+      const seqs = getSelectedSeqs();
+      if (seqs.length > 0 && onToggleHidden) {
+        onToggleHidden(seqs);
+        dirtyRef.current = true;
+        setMultiSelect(null);
+        setCtrlSelect(prev => prev.size > 0 ? new Set() : prev);
+      }
+      return;
+    }
+    // ; 打开注释编辑框（IDA 风格）
+    // e.key 在某些键盘布局下可能不是 ";"，用 e.code 回退
+    if ((e.key === ";" || (e.code === "Semicolon" && !e.shiftKey)) && !e.ctrlKey && !e.metaKey && !e.altKey && !commentEditor) {
+      e.preventDefault();
+      const seqs = getSelectedSeqs();
+      if (seqs.length > 0) {
+        openCommentEditor(seqs[0]);
+      }
+      return;
+    }
+    // Ctrl+C 复制
+    if ((e.ctrlKey || e.metaKey) && e.key === "c") {
+      const textSel = window.getSelection()?.toString();
+      if (textSel) return; // 让浏览器默认复制文本
+      if (multiSelect || ctrlSelect.size > 0) {
+        e.preventDefault();
+        copyAs("raw");
+        return;
+      }
+    }
+    if (e.key === "Escape") {
+      if (multiSelect || ctrlSelect.size > 0) {
+        setMultiSelect(null);
+        setCtrlSelect(prev => prev.size > 0 ? new Set() : prev);
+        dirtyRef.current = true;
+        return;
+      }
+      if (arrowState) {
+        setArrowState(null);
+        return;
+      }
+      return;
+    }
+    if (e.key === "PageUp" || e.key === "PageDown") {
+      e.preventDefault();
+      const delta = e.key === "PageDown" ? visibleRows : -visibleRows;
+      setCurrentRow(prev => Math.max(0, Math.min(maxRow, prev + delta)));
+      return;
+    }
+    if (e.key !== "ArrowUp" && e.key !== "ArrowDown") return;
+    e.preventDefault();
+    if (finalVirtualTotalRows === 0) return;
+
+    const curVIdx = selectedSeq != null ? finalSeqToVirtualIndex(selectedSeq) : -1;
+    let nextVIdx: number;
+    if (e.key === "ArrowDown") {
+      nextVIdx = curVIdx < finalVirtualTotalRows - 1 ? curVIdx + 1 : curVIdx;
+    } else {
+      nextVIdx = curVIdx > 0 ? curVIdx - 1 : 0;
+    }
+    const resolved = finalResolveVirtualIndex(nextVIdx);
+    const nextSeq = resolved.type === "line" ? resolved.seq : resolved.type === "summary" ? resolved.entrySeq : resolved.seqs[0];
+    isInternalClick.current = true;
+    onSelectSeq(nextSeq);
+    // 自动滚动使该行可见
+    if (nextVIdx < currentRow) setCurrentRow(nextVIdx);
+    else if (nextVIdx >= currentRow + visibleRows) setCurrentRow(nextVIdx - visibleRows + 1);
+  }, [finalVirtualTotalRows, selectedSeq, onSelectSeq, finalSeqToVirtualIndex, finalResolveVirtualIndex,
+      arrowState, visibleRows, maxRow, currentRow, multiSelect, copyAs, getSelectedSeqs,
+      onSetHighlight, onToggleStrikethrough, onResetHighlight, onToggleHidden, openCommentEditor, commentEditor, ctrlSelect]);
+
+  // === 主绘制函数 ===
+  const drawFrame = useCallback(() => {
+    const canvas = canvasRef.current;
+    if (!canvas || !fontReady) return;
+    const ctxOrNull = canvas.getContext("2d");
+    if (!ctxOrNull) return;
+    const ctx: CanvasRenderingContext2D = ctxOrNull;
+
+    const dpr = window.devicePixelRatio || 1;
+    ctx.save();
+    ctx.scale(dpr, dpr);
+    const W = canvasSize.width;
+    const H = canvasSize.height;
+
+    // 清除
+    ctx.fillStyle = COLORS.bgPrimary;
+    ctx.fillRect(0, 0, W, H);
+
+    ctx.font = FONT;
+    ctx.textBaseline = "alphabetic";
+
+    const colChanges = W - effectiveChangesWidth - RIGHT_GUTTER;
+    const hitboxes: TokenHitbox[] = [];
+    const useSeqsSet = arrowState ? new Set(arrowState.useSeqs) : null;
+
+    // 折叠/展开 clip 动画
+    let clipActive = false;
+    let clipTopPx = 0;
+    let clipHeightPx = 0;
+    let clipBelowOffset = 0; // clip 区域之下的行的 Y 偏移
+    const anim = foldAnimRef.current;
+    if (anim) {
+      const elapsed = performance.now() - anim.startTime;
+      const isFoldAnim = anim.direction === "fold";
+      const duration = isFoldAnim ? FOLD_ANIM_DURATION : UNFOLD_ANIM_DURATION;
+      const t = Math.min(1, elapsed / duration);
+
+      // 缓动函数：折叠用 easeInOutCubic，展开用 easeOutCubic
+      let eased: number;
+      if (isFoldAnim) {
+        // easeInOutCubic：平滑 S 曲线
+        eased = t < 0.5
+          ? 4 * t * t * t
+          : 1 - Math.pow(-2 * t + 2, 3) / 2;
+      } else {
+        // easeOutCubic：快速开始、缓慢收尾
+        eased = 1 - Math.pow(1 - t, 3);
+      }
+
+      clipActive = true;
+      clipTopPx = anim.clipTopPx;
+      // 偏移量预留摘要行空间（ROW_HEIGHT），使动画结束时与 toggleFold 后的状态无缝衔接
+      const offsetMax = Math.max(0, anim.clipMaxHeightPx - ROW_HEIGHT);
+      if (isFoldAnim) {
+        // 折叠：clip 从满高度→0（行从下往上消失）
+        clipHeightPx = Math.round(anim.clipMaxHeightPx * (1 - eased));
+        // clip 之下的行上移，填补消失的空间（预留摘要行位置）
+        clipBelowOffset = Math.round(-(offsetMax * eased));
+      } else {
+        // 展开：clip 从0→满高度（行从上往下出现）
+        clipHeightPx = Math.round(anim.clipMaxHeightPx * eased);
+        // clip 之下的行下移，让出空间（预留摘要行已消失的位置）
+        clipBelowOffset = Math.round(-(offsetMax * (1 - eased)));
+      }
+
+      if (t >= 1) {
+        if (isFoldAnim && anim.pendingNodeId != null) {
+          toggleFold(anim.pendingNodeId);
+          // 折叠完成：保持 clip 遮罩（clipHeight=0）防止旧行在 toggleFold 异步生效前闪现
+          // clipHeightPx 已经是 0，clipActive 保持 true，下一帧 foldAnimRef 为 null 自然消除
+        } else {
+          clipActive = false;
+        }
+        foldAnimRef.current = null;
+        dirtyRef.current = true; // 确保下一帧重绘以反映新的折叠状态
+        if (textOverlayRef.current) textOverlayRef.current.style.visibility = "visible";
+      } else {
+        dirtyRef.current = true;
+        if (textOverlayRef.current) textOverlayRef.current.style.visibility = "hidden";
+      }
+    }
+
+    for (let i = 0; i < visibleRows + 2; i++) {
+      const vi = currentRow + i;
+      if (vi >= finalVirtualTotalRows) break;
+      const resolved = finalResolveVirtualIndex(vi);
+      const baseY = i * ROW_HEIGHT;
+
+      // 动画时计算 Y 偏移
+      let y = baseY;
+      let inClipRegion = false;
+      if (clipActive) {
+        const clipBottom = clipTopPx + clipHeightPx;
+        if (baseY >= clipTopPx && baseY < clipTopPx + anim!.clipMaxHeightPx) {
+          // 行在 clip 区域内（被折叠/展开的行）
+          inClipRegion = true;
+        } else if (baseY >= clipTopPx + anim!.clipMaxHeightPx) {
+          // 行在 clip 区域之下：应用偏移
+          y = baseY + clipBelowOffset;
+        }
+      }
+
+      if (y >= H || y + ROW_HEIGHT <= 0) continue;
+
+      // clip 区域内的行：用 clip rect 限制渲染
+      if (inClipRegion && clipActive) {
+        if (baseY + ROW_HEIGHT > clipTopPx + clipHeightPx) {
+          // 行的部分或全部在 clip 可见区域之外，跳过
+          if (baseY >= clipTopPx + clipHeightPx) continue;
+          // 部分可见：后面会用 clip 处理
+        }
+        ctx.save();
+        ctx.beginPath();
+        ctx.rect(0, clipTopPx, W, clipHeightPx);
+        ctx.clip();
+      }
+      const needClipRestore = inClipRegion && clipActive;
+
+      // --- 背景 ---
+      let bgColor: string;
+      if (resolved.type === "line" && resolved.seq === selectedSeq) {
+        bgColor = COLORS.bgSelected;
+      } else if (resolved.type === "line" && arrowState) {
+        if (resolved.seq === arrowState.anchorSeq) bgColor = COLORS.arrowAnchorBg;
+        else if (resolved.seq === arrowState.defSeq) bgColor = COLORS.arrowDefBg;
+        else if (useSeqsSet?.has(resolved.seq)) bgColor = COLORS.arrowUseBg;
+        else bgColor = vi % 2 === 0 ? COLORS.bgRowEven : COLORS.bgRowOdd;
+      } else if (resolved.type === "summary") {
+        bgColor = COLORS.bgSecondary;
+      } else {
+        bgColor = vi % 2 === 0 ? COLORS.bgRowEven : COLORS.bgRowOdd;
+      }
+      const rowW = W - RIGHT_GUTTER; // 行背景不延伸到 minimap/scrollbar 区域
+      ctx.fillStyle = bgColor;
+      ctx.fillRect(0, y, rowW, ROW_HEIGHT);
+
+      // hover 高亮（非选中行叠加微弱白色）
+      if (i === hoverRowRef.current && !(resolved.type === "line" && resolved.seq === selectedSeq)) {
+        ctx.fillStyle = COLORS.bgHover;
+        ctx.fillRect(0, y, rowW, ROW_HEIGHT);
+      }
+
+      // 持久化高亮背景
+      const hlInfo = resolved.type === "line" && highlights ? highlights.get(resolved.seq) : undefined;
+      if (hlInfo?.color) {
+        const hlColor = HIGHLIGHT_COLORS.find(c => c.key === hlInfo.color);
+        if (hlColor) {
+          ctx.fillStyle = hlColor.color;
+          ctx.fillRect(0, y, rowW, ROW_HEIGHT);
+        }
+      }
+
+      // 多选高亮（范围选择 + Ctrl 任意选择）
+      if ((multiSelect && vi >= multiSelect.startVi && vi <= multiSelect.endVi) || ctrlSelect.has(vi)) {
+        ctx.fillStyle = COLORS.bgMultiSelect;
+        ctx.fillRect(0, y, rowW, ROW_HEIGHT);
+      }
+
+      // 切片高亮
+      const lineSeq = resolved.type === "line" ? resolved.seq : -1;
+      const isTainted = sliceActive && lineSeq >= 0 && (sliceStatuses.get(lineSeq) ?? false);
+      const isSourceLine = sliceActive && lineSeq >= 0 && lineSeq === sliceSourceSeq;
+      if (sliceActive && resolved.type === "line") {
+        if (isTainted || isSourceLine) {
+          // 左侧竖条：污点源行始终橙色，普通污点行绿色
+          ctx.fillStyle = isSourceLine ? "#fab387" : "#a6e3a1";
+          ctx.fillRect(0, y, 3, ROW_HEIGHT);
+        } else {
+          // 未标记行变灰
+          ctx.globalAlpha = 0.3;
+        }
+      }
+
+      const textY = y + TEXT_BASELINE_Y;
+
+      if (resolved.type === "summary") {
+        // --- 折叠摘要行 ---
+        ctx.font = FONT;
+        ctx.fillStyle = COLORS.textSecondary;
+        ctx.fillText("\u25B6", COL_FOLD + 8, textY); // ▶
+
+        const summaryX = COL_MEMRW;
+        ctx.font = FONT_ITALIC;
+        ctx.fillStyle = COLORS.asmMnemonic;
+        const funcLabel = `Func ${resolved.funcAddr}`;
+        ctx.fillText(funcLabel, summaryX, textY);
+        const funcLabelW = ctx.measureText(funcLabel).width;
+
+        ctx.font = FONT;
+        ctx.fillStyle = COLORS.textSecondary;
+        ctx.fillText(`(${resolved.lineCount.toLocaleString()} lines)`, summaryX + funcLabelW + 6, textY);
+        if (needClipRestore) ctx.restore();
+        continue;
+      }
+
+      if (resolved.type === "hidden-summary") {
+        // --- 隐藏摘要行 ---
+        ctx.font = FONT_ITALIC;
+        ctx.fillStyle = COLORS.textSecondary;
+        ctx.fillText(`\u2026 ${resolved.count} hidden lines`, COL_MEMRW, textY);
+        if (needClipRestore) ctx.restore();
+        continue;
+      }
+
+      // --- 正常行 ---
+      const seq = resolved.seq;
+      const line = visibleLines.get(seq);
+
+      // Fold 按钮（▼）
+      const blNode = blLineMap.get(seq);
+      const hasFoldBtn = blNode && blNode.exit_seq > blNode.entry_seq && !isFolded(blNode.id);
+      if (hasFoldBtn) {
+        ctx.fillStyle = COLORS.textSecondary;
+        ctx.fillText("\u25BC", COL_FOLD + 8, textY); // ▼
+      }
+
+      // MemRW
+      if (line?.mem_rw === "W" || line?.mem_rw === "R") {
+        ctx.fillStyle = COLORS.textSecondary;
+        ctx.fillText(line.mem_rw, COL_MEMRW, textY);
+      }
+
+      // Seq
+      ctx.fillStyle = COLORS.textSecondary;
+      ctx.fillText(String(seq + 1), COL_SEQ, textY);
+
+      // Address
+      if (line?.address) {
+        ctx.fillStyle = COLORS.textAddress;
+        ctx.fillText(line.address, COL_ADDR, textY);
+      }
+
+      // Disasm（语法高亮 + hitbox）
+      if (line?.disasm) {
+        ctx.font = FONT;
+        let curX = COL_DISASM;
+        let isFirst = true;
+        let lastIdx = 0;
+        let match: RegExpExecArray | null;
+        TOKEN_RE.lastIndex = 0;
+
+        const activeReg = arrowState?.anchorSeq === seq ? arrowState.regName : null;
+
+        while ((match = TOKEN_RE.exec(line.disasm)) !== null) {
+          // 间隔文字
+          if (match.index > lastIdx) {
+            const gap = line.disasm.slice(lastIdx, match.index);
+            ctx.fillStyle = COLORS.textPrimary;
+            ctx.fillText(gap, curX, textY);
+            curX += ctx.measureText(gap).width;
+          }
+          const token = match[0];
+          const color = canvasTokenColor(token, isFirst);
+          const isReg = !isFirst && REG_RE.test(token);
+          const tokenW = ctx.measureText(token).width;
+
+          ctx.fillStyle = color;
+          ctx.fillText(token, curX, textY);
+
+          // activeReg 下划线
+          if (isReg && activeReg && token.toLowerCase() === activeReg.toLowerCase()) {
+            ctx.strokeStyle = color;
+            ctx.lineWidth = 1;
+            ctx.beginPath();
+            ctx.moveTo(curX, textY + 2);
+            ctx.lineTo(curX + tokenW, textY + 2);
+            ctx.stroke();
+          }
+
+          if (isReg) {
+            hitboxes.push({ x: curX, width: tokenW, rowIndex: i, token, seq });
+          }
+
+          curX += tokenW;
+          isFirst = false;
+          lastIdx = TOKEN_RE.lastIndex;
+        }
+        // 尾部文字
+        if (lastIdx < line.disasm.length) {
+          const tail = line.disasm.slice(lastIdx);
+          ctx.fillStyle = COLORS.textPrimary;
+          ctx.fillText(tail, curX, textY);
+          curX += ctx.measureText(tail).width;
+        }
+      }
+
+      // 内联注释（固定对齐位置 COL_COMMENT）
+      if (hlInfo?.comment) {
+        ctx.font = FONT;
+        ctx.fillStyle = COLORS.commentInline;
+        const isMultiLine = hlInfo.comment.includes("\n");
+        const firstLine = isMultiLine ? hlInfo.comment.split("\n")[0] + " …" : hlInfo.comment;
+        const commentLabel = "; " + firstLine;
+        const commentX = COL_COMMENT;
+        // 裁剪到 changes 列之前
+        ctx.save();
+        ctx.beginPath();
+        ctx.rect(commentX, y, colChanges - commentX, ROW_HEIGHT);
+        ctx.clip();
+        ctx.fillText(commentLabel, commentX, textY);
+        ctx.restore();
+      }
+
+      // Changes（裁剪到列宽）
+      if (line?.changes) {
+        ctx.font = FONT;
+        ctx.fillStyle = COLORS.textChanges;
+        ctx.save();
+        ctx.beginPath();
+        ctx.rect(colChanges, y, effectiveChangesWidth, ROW_HEIGHT);
+        ctx.clip();
+        ctx.fillText(line.changes, colChanges, textY);
+        ctx.restore();
+      }
+
+      // 划线（strikethrough）
+      if (hlInfo?.strikethrough) {
+        ctx.strokeStyle = COLORS.strikethroughLine;
+        ctx.lineWidth = 1;
+        ctx.beginPath();
+        const strikeY = y + ROW_HEIGHT / 2;
+        ctx.moveTo(COL_MEMRW, strikeY);
+        ctx.lineTo(W - RIGHT_GUTTER, strikeY);
+        ctx.stroke();
+      }
+
+      // 恢复切片变灰的 alpha
+      if (sliceActive && resolved.type === "line" && !isTainted) {
+        ctx.globalAlpha = 1.0;
+      }
+
+      if (needClipRestore) ctx.restore();
+    }
+
+    hitboxesRef.current = hitboxes;
+
+    // === DEF/USE 箭头绘制 ===
+    const arrowLabels: ArrowLabelHitbox[] = [];
+
+    if (arrowState) {
+      const anchorVIdx = finalSeqToVirtualIndex(arrowState.anchorSeq);
+      const anchorLocalY = (anchorVIdx - currentRow) * ROW_HEIGHT + ROW_HEIGHT / 2;
+      const defStartY = anchorLocalY - ANCHOR_GAP;
+      const useStartY = anchorLocalY + ANCHOR_GAP;
+
+      const firstVI = currentRow;
+      const lastVI = currentRow + visibleRows;
+
+      // 辅助：虚拟索引 → 本地 y
+      const viToY = (vi: number) => (vi - currentRow) * ROW_HEIGHT + ROW_HEIGHT / 2;
+
+      // 圆点
+      for (let i = 0; i < visibleRows + 1; i++) {
+        const vi = currentRow + i;
+        if (vi >= finalVirtualTotalRows) break;
+        const resolved2 = finalResolveVirtualIndex(vi);
+        if (resolved2.type !== "line") continue;
+        const dotY = i * ROW_HEIGHT + ROW_HEIGHT / 2;
+        const seq2 = resolved2.seq;
+
+        let fill: string;
+        let r: number;
+        let alpha: number;
+
+        if (seq2 === arrowState.anchorSeq) {
+          fill = COLORS.arrowAnchor; r = 3; alpha = 1;
+        } else if (seq2 === arrowState.defSeq || useSeqsSet?.has(seq2)) {
+          fill = COLORS.textSecondary; r = 2.5; alpha = 0.6;
+        } else {
+          fill = COLORS.textSecondary; r = 2; alpha = 0.3;
+        }
+
+        ctx.globalAlpha = alpha;
+        ctx.fillStyle = fill;
+        ctx.beginPath();
+        ctx.arc(COL_ARROW + DOT_X, dotY, r, 0, Math.PI * 2);
+        ctx.fill();
+      }
+      ctx.globalAlpha = 1;
+
+      const arrowBaseX = COL_ARROW;
+
+      // 绘制弯曲路径的辅助函数
+      function drawCurvedPath(fromY: number, toY: number, vertX: number, color: string) {
+        const dy = toY < fromY ? -BEND_R : BEND_R;
+        ctx.strokeStyle = color;
+        ctx.lineWidth = 1.5;
+        ctx.beginPath();
+        ctx.moveTo(arrowBaseX + CONN_X, fromY);
+        ctx.lineTo(arrowBaseX + vertX + BEND_R, fromY);
+        ctx.quadraticCurveTo(arrowBaseX + vertX, fromY, arrowBaseX + vertX, fromY + dy);
+        ctx.lineTo(arrowBaseX + vertX, toY - dy);
+        ctx.quadraticCurveTo(arrowBaseX + vertX, toY, arrowBaseX + vertX + BEND_R, toY);
+        ctx.lineTo(arrowBaseX + CONN_X, toY);
+        ctx.stroke();
+      }
+
+      function drawTrunkPath(startY: number, endY: number, vertX: number, dir: 1 | -1, color: string) {
+        const dy = dir * BEND_R;
+        ctx.strokeStyle = color;
+        ctx.lineWidth = 1.5;
+        ctx.beginPath();
+        ctx.moveTo(arrowBaseX + CONN_X, startY);
+        ctx.lineTo(arrowBaseX + vertX + BEND_R, startY);
+        ctx.quadraticCurveTo(arrowBaseX + vertX, startY, arrowBaseX + vertX, startY + dy);
+        ctx.lineTo(arrowBaseX + vertX, endY);
+        ctx.stroke();
+      }
+
+      function drawArrowHead(x: number, y2: number, color: string) {
+        ctx.fillStyle = color;
+        ctx.beginPath();
+        ctx.moveTo(x, y2);
+        ctx.lineTo(x - 4, y2 - 3);
+        ctx.lineTo(x - 4, y2 + 3);
+        ctx.closePath();
+        ctx.fill();
+      }
+
+      function drawBranch(vertX: number, y2: number, color: string) {
+        ctx.strokeStyle = color;
+        ctx.lineWidth = 1;
+        ctx.beginPath();
+        ctx.moveTo(arrowBaseX + vertX, y2);
+        ctx.lineTo(arrowBaseX + CONN_X, y2);
+        ctx.stroke();
+      }
+
+      // 绘制边缘标签（越界时的行号提示，可点击跳转）
+      function drawEdgeLabel(
+        seq: number, atTop: boolean, color: string, prefix: string
+      ) {
+        ctx.fillStyle = color;
+        ctx.font = '9px monospace';
+        const label = `${prefix}#${seq + 1}`;
+        const labelW = ctx.measureText(label).width;
+        const labelX = arrowBaseX;
+        const labelY = atTop ? 13 : H - 6;
+        ctx.fillText(label, labelX, labelY);
+        arrowLabels.push({
+          x: labelX,
+          y: atTop ? 0 : H - EDGE_LABEL_PAD,
+          width: Math.max(labelW, ARROW_COL_WIDTH),
+          height: EDGE_LABEL_PAD,
+          seq,
+        });
+        ctx.font = FONT;
+      }
+
+      // 绘制竖线段
+      function drawVerticalSegment(fromY: number, toY: number, vertX: number, color: string) {
+        ctx.strokeStyle = color;
+        ctx.lineWidth = 1.5;
+        ctx.beginPath();
+        ctx.moveTo(arrowBaseX + vertX, fromY);
+        ctx.lineTo(arrowBaseX + vertX, toY);
+        ctx.stroke();
+      }
+
+      const anchorVisible = anchorVIdx >= firstVI && anchorVIdx < lastVI;
+
+      // === DEF 箭头（绿色，向上） ===
+      if (arrowState.defSeq !== null) {
+        const defVIdx = finalSeqToVirtualIndex(arrowState.defSeq);
+        const defY = viToY(defVIdx);
+        const defVisible = defVIdx >= firstVI && defVIdx < lastVI;
+
+        if (anchorVisible && defVisible) {
+          // 情况 1: 两端都可见 → 完整弯曲路径
+          drawCurvedPath(defStartY, defY, VERT_X_DEF, COLORS.arrowDef);
+          drawArrowHead(arrowBaseX + CONN_X, defY, COLORS.arrowDef);
+
+        } else if (anchorVisible && !defVisible) {
+          // 情况 2/3: 锚点可见，DEF 越界
+          if (defVIdx < firstVI) {
+            drawTrunkPath(defStartY, EDGE_LABEL_PAD, VERT_X_DEF, -1, COLORS.arrowDef);
+            drawEdgeLabel(arrowState.defSeq, true, COLORS.arrowDef, "\u2191");
+          } else {
+            drawTrunkPath(defStartY, H - EDGE_LABEL_PAD, VERT_X_DEF, 1, COLORS.arrowDef);
+            drawEdgeLabel(arrowState.defSeq, false, COLORS.arrowDef, "\u2193");
+          }
+
+        } else if (!anchorVisible && defVisible) {
+          // 情况 4/5: 锚点越界，DEF 可见
+          if (anchorVIdx < firstVI) {
+            drawVerticalSegment(EDGE_LABEL_PAD, defY, VERT_X_DEF, COLORS.arrowDef);
+            drawBranch(VERT_X_DEF, defY, COLORS.arrowDef);
+            drawArrowHead(arrowBaseX + CONN_X, defY, COLORS.arrowDef);
+            drawEdgeLabel(arrowState.anchorSeq, true, COLORS.arrowAnchor, "\u2191");
+          } else {
+            drawVerticalSegment(H - EDGE_LABEL_PAD, defY, VERT_X_DEF, COLORS.arrowDef);
+            drawBranch(VERT_X_DEF, defY, COLORS.arrowDef);
+            drawArrowHead(arrowBaseX + CONN_X, defY, COLORS.arrowDef);
+            drawEdgeLabel(arrowState.anchorSeq, false, COLORS.arrowAnchor, "\u2193");
+          }
+
+        } else {
+          // 情况 6: 两端都越界
+          if ((defVIdx < firstVI && anchorVIdx >= lastVI) ||
+              (defVIdx >= lastVI && anchorVIdx < firstVI)) {
+            // 对侧越界 → 竖线穿过视口
+            drawVerticalSegment(EDGE_LABEL_PAD, H - EDGE_LABEL_PAD, VERT_X_DEF, COLORS.arrowDef);
+            if (defVIdx < firstVI) {
+              drawEdgeLabel(arrowState.defSeq, true, COLORS.arrowDef, "\u2191");
+              drawEdgeLabel(arrowState.anchorSeq, false, COLORS.arrowAnchor, "\u2193");
+            } else {
+              drawEdgeLabel(arrowState.anchorSeq, true, COLORS.arrowAnchor, "\u2191");
+              drawEdgeLabel(arrowState.defSeq, false, COLORS.arrowDef, "\u2193");
+            }
+          }
+          // 同侧越界 → 不绘制
+        }
+      }
+
+      // === USE 箭头（蓝色，向下） ===
+      if (arrowState.useSeqs.length > 0) {
+        const firstUseSeq = arrowState.useSeqs[0];
+        const lastUseSeq = arrowState.useSeqs[arrowState.useSeqs.length - 1];
+        const firstUseVIdx = finalSeqToVirtualIndex(firstUseSeq);
+        const lastUseVIdx = finalSeqToVirtualIndex(lastUseSeq);
+
+        // trunk 终点：最后一个 USE 的位置，clamp 到视口
+        const trunkEndY = lastUseVIdx < lastVI
+          ? viToY(lastUseVIdx)
+          : H - EDGE_LABEL_PAD;
+
+        // trunk 起点
+        if (anchorVisible) {
+          drawTrunkPath(useStartY, trunkEndY, VERT_X_DEF, 1, COLORS.arrowUse);
+        } else if (anchorVIdx < firstVI) {
+          // 锚点在上方越界
+          if (lastUseVIdx >= firstVI) {
+            drawVerticalSegment(EDGE_LABEL_PAD, trunkEndY, VERT_X_DEF, COLORS.arrowUse);
+          }
+          drawEdgeLabel(arrowState.anchorSeq, true, COLORS.arrowAnchor, "\u2191");
+        } else {
+          // 锚点在下方越界（防御性处理）
+          if (firstUseVIdx < lastVI) {
+            drawVerticalSegment(H - EDGE_LABEL_PAD, viToY(firstUseVIdx), VERT_X_DEF, COLORS.arrowUse);
+          }
+          drawEdgeLabel(arrowState.anchorSeq, false, COLORS.arrowAnchor, "\u2193");
+        }
+
+        // 分支 + 箭头（仅视口内的 USE）
+        for (const useSeq of arrowState.useSeqs) {
+          const useVIdx = finalSeqToVirtualIndex(useSeq);
+          if (useVIdx >= firstVI && useVIdx < lastVI) {
+            const useY = viToY(useVIdx);
+            drawBranch(VERT_X_DEF, useY, COLORS.arrowUse);
+            drawArrowHead(arrowBaseX + CONN_X, useY, COLORS.arrowUse);
+          }
+        }
+
+        // 上方越界的 USE 标签
+        if (firstUseVIdx < firstVI) {
+          drawEdgeLabel(firstUseSeq, true, COLORS.arrowUse, "\u2191");
+        }
+
+        // 下方越界的 USE 标签
+        if (lastUseVIdx >= lastVI) {
+          drawEdgeLabel(lastUseSeq, false, COLORS.arrowUse, "\u2193");
+        }
+      }
+    }
+
+    arrowLabelHitboxesRef.current = arrowLabels;
+
+    ctx.restore();
+  }, [canvasSize, currentRow, visibleRows, finalVirtualTotalRows, finalResolveVirtualIndex,
+      visibleLines, selectedSeq, arrowState, effectiveChangesWidth, fontReady,
+      blLineMap, isFolded, finalSeqToVirtualIndex, toggleFold, multiSelect, ctrlSelect, highlights,
+      sliceActive, sliceStatuses, sliceSourceSeq]);
+
+  // === DOM 文本层同步（支持文本选择/复制） ===
+  useEffect(() => {
+    const overlay = textOverlayRef.current;
+    if (!overlay) return;
+    // 清空旧内容
+    overlay.textContent = "";
+
+    // CSS Grid 列模板：与 Canvas 列位置精确对齐
+    // 末尾 12px 为滚动条预留空间，与 Canvas 的 colChanges = W - effectiveChangesWidth - 12 对齐
+    const gridCols = `${COL_FOLD}px ${COL_MEMRW - COL_FOLD}px ${COL_SEQ - COL_MEMRW}px ${COL_ADDR - COL_SEQ}px ${COL_DISASM - COL_ADDR}px 1fr ${effectiveChangesWidth}px`;
+
+    for (let i = 0; i < visibleRows + 1; i++) {
+      const vi = currentRow + i;
+      if (vi >= finalVirtualTotalRows) break;
+      const resolved = finalResolveVirtualIndex(vi);
+
+      const rowDiv = document.createElement("div");
+      rowDiv.style.display = "grid";
+      rowDiv.style.gridTemplateColumns = gridCols;
+      rowDiv.style.height = ROW_HEIGHT + "px";
+      rowDiv.style.lineHeight = ROW_HEIGHT + "px";
+      rowDiv.style.whiteSpace = "nowrap";
+
+      // Arrow 列占位
+      const arrowSpan = document.createElement("span");
+      rowDiv.appendChild(arrowSpan);
+
+      // Fold 列
+      const foldSpan = document.createElement("span");
+      if (resolved.type === "summary") {
+        foldSpan.textContent = "\u25B6";
+      }
+      rowDiv.appendChild(foldSpan);
+
+      if (resolved.type === "summary") {
+        const memSpan = document.createElement("span");
+        rowDiv.appendChild(memSpan);
+
+        const seqSpan = document.createElement("span");
+        rowDiv.appendChild(seqSpan);
+
+        const addrSpan = document.createElement("span");
+        rowDiv.appendChild(addrSpan);
+
+        const disasmSpan = document.createElement("span");
+        disasmSpan.textContent = `Func ${resolved.funcAddr} (${resolved.lineCount.toLocaleString()} lines)`;
+        rowDiv.appendChild(disasmSpan);
+
+        const changesSpan = document.createElement("span");
+        rowDiv.appendChild(changesSpan);
+      } else if (resolved.type === "hidden-summary") {
+        // hidden-summary: placeholder row for text overlay
+        const memSpan = document.createElement("span");
+        rowDiv.appendChild(memSpan);
+        const seqSpan = document.createElement("span");
+        rowDiv.appendChild(seqSpan);
+        const addrSpan = document.createElement("span");
+        rowDiv.appendChild(addrSpan);
+        const disasmSpan = document.createElement("span");
+        disasmSpan.textContent = `Hidden (${resolved.count} lines)`;
+        rowDiv.appendChild(disasmSpan);
+        const changesSpan = document.createElement("span");
+        rowDiv.appendChild(changesSpan);
+      } else {
+        const cols = lineToTextColumns(resolved.seq, visibleLines.get(resolved.seq));
+
+        const memSpan = document.createElement("span");
+        memSpan.textContent = cols.memRW;
+        rowDiv.appendChild(memSpan);
+
+        const seqSpan = document.createElement("span");
+        seqSpan.textContent = cols.seqText;
+        rowDiv.appendChild(seqSpan);
+
+        const addrSpan = document.createElement("span");
+        addrSpan.textContent = cols.addr;
+        rowDiv.appendChild(addrSpan);
+
+        const disasmSpan = document.createElement("span");
+        disasmSpan.style.overflow = "hidden";
+        disasmSpan.textContent = cols.disasm;
+        rowDiv.appendChild(disasmSpan);
+
+        const changesSpan = document.createElement("span");
+        changesSpan.style.overflow = "hidden";
+        changesSpan.textContent = cols.changes;
+        rowDiv.appendChild(changesSpan);
+      }
+
+      overlay.appendChild(rowDiv);
+    }
+  }, [currentRow, visibleRows, finalVirtualTotalRows, finalResolveVirtualIndex, visibleLines, canvasSize.width, effectiveChangesWidth]);
+
+  // === 脏标记 ===
+  useEffect(() => { dirtyRef.current = true; }, [
+    currentRow, selectedSeq, arrowState, canvasSize, effectiveChangesWidth,
+    visibleLines, finalVirtualTotalRows, fontReady, highlights, ctrlSelect,
+    sliceActive, sliceStatuses, sliceSourceSeq,
+  ]);
+
+  // === rAF 渲染循环 ===
+  useEffect(() => {
+    let running = true;
+    const loop = () => {
+      if (!running) return;
+      if (dirtyRef.current) {
+        dirtyRef.current = false;
+        drawFrame();
+      }
+      rafIdRef.current = requestAnimationFrame(loop);
+    };
+    rafIdRef.current = requestAnimationFrame(loop);
+    return () => { running = false; cancelAnimationFrame(rafIdRef.current); };
+  }, [drawFrame]);
+
+  // === 空状态 ===
+  if (!isLoaded) {
+    return (
+      <div
+        style={{
+          height: "100%",
+          display: "flex",
+          flexDirection: "column",
+          background: "var(--bg-primary)",
+        }}
+      >
+        <TableHeader changesWidth={effectiveChangesWidth} onResizeMouseDown={changesCol.onMouseDown} />
+        <div
+          style={{
+            flex: 1,
+            display: "flex",
+            alignItems: "center",
+            justifyContent: "center",
+          }}
+        >
+          <span style={{ color: "var(--text-secondary)" }}>
+            Drop or click Open to load a trace file
+          </span>
+        </div>
+      </div>
+    );
+  }
+
+  return (
+    <div style={{ height: "100%", display: "flex", flexDirection: "column", background: "var(--bg-primary)" }}>
+      <TableHeader changesWidth={effectiveChangesWidth} onResizeMouseDown={changesCol.onMouseDown} />
+      <div
+        ref={containerRef}
+        tabIndex={0}
+        onKeyDown={handleKeyDown}
+        style={{ flex: 1, position: "relative", outline: "none", overflow: "hidden" }}
+      >
+        <canvas
+          ref={canvasRef}
+          style={{ position: "absolute", top: 0, left: 0, pointerEvents: "none" }}
+        />
+        <div
+          ref={textOverlayRef}
+          onMouseDown={handleOverlayMouseDown}
+          onMouseUp={handleOverlayMouseUp}
+          onDoubleClick={handleOverlayDblClick}
+          onMouseMove={handleCanvasMouseMove}
+          onMouseLeave={() => { isDraggingSelect.current = false; dragPending.current = false; if (hoverRowRef.current !== -1) { hoverRowRef.current = -1; dirtyRef.current = true; } if (textOverlayRef.current) { textOverlayRef.current.style.userSelect = "text"; textOverlayRef.current.style.webkitUserSelect = "text"; } }}
+          onContextMenu={handleContextMenu}
+          style={{
+            position: "absolute",
+            top: 0,
+            left: 0,
+            width: canvasSize.width > 0 ? canvasSize.width - RIGHT_GUTTER : `calc(100% - ${RIGHT_GUTTER}px)`,
+            height: "100%",
+            zIndex: 1,
+            color: "transparent",
+            font: FONT,
+            userSelect: "text",
+            WebkitUserSelect: "text",
+            cursor: "text",
+            overflow: "hidden",
+          }}
+        />
+        {/* 右键菜单 */}
+        {ctxMenu && (
+          <ContextMenu x={ctxMenu.x} y={ctxMenu.y} onClose={() => { setCtxMenu(null); setHighlightSubmenuOpen(false); textSelectionRef.current = ""; }}>
+            {textSelectionRef.current ? (
+              <div
+                onClick={() => { navigator.clipboard.writeText(textSelectionRef.current); textSelectionRef.current = ""; setCtxMenu(null); }}
+                onMouseEnter={(e) => { (e.currentTarget as HTMLElement).style.background = "var(--bg-selected)"; setHighlightSubmenuOpen(false); }}
+                onMouseLeave={(e) => { (e.currentTarget as HTMLElement).style.background = "transparent"; }}
+                style={{ padding: "6px 12px", fontSize: 12, color: "var(--text-primary)", cursor: "pointer", whiteSpace: "nowrap" }}
+              >Copy</div>
+            ) : (
+              <>
+                <div
+                  onClick={() => copyAs("raw")}
+                  onMouseEnter={(e) => { (e.currentTarget as HTMLElement).style.background = "var(--bg-selected)"; setHighlightSubmenuOpen(false); }}
+                  onMouseLeave={(e) => { (e.currentTarget as HTMLElement).style.background = "transparent"; }}
+                  style={{ padding: "6px 12px", fontSize: 12, color: "var(--text-primary)", cursor: "pointer", whiteSpace: "nowrap" }}
+                >Copy as Original Trace</div>
+                <div
+                  onClick={() => copyAs("tab")}
+                  onMouseEnter={(e) => { (e.currentTarget as HTMLElement).style.background = "var(--bg-selected)"; setHighlightSubmenuOpen(false); }}
+                  onMouseLeave={(e) => { (e.currentTarget as HTMLElement).style.background = "transparent"; }}
+                  style={{ padding: "6px 12px", fontSize: 12, color: "var(--text-primary)", cursor: "pointer", whiteSpace: "nowrap" }}
+                >Copy as Tab-Separated</div>
+                <div
+                  onClick={() => copyAs("disasm")}
+                  onMouseEnter={(e) => { (e.currentTarget as HTMLElement).style.background = "var(--bg-selected)"; setHighlightSubmenuOpen(false); }}
+                  onMouseLeave={(e) => { (e.currentTarget as HTMLElement).style.background = "transparent"; }}
+                  style={{ padding: "6px 12px", fontSize: 12, color: "var(--text-primary)", cursor: "pointer", whiteSpace: "nowrap" }}
+                >Copy as Disasm Only</div>
+                {/* 分隔线 */}
+                <ContextMenuSeparator />
+                {/* Highlight 子菜单 */}
+                <div
+                  onMouseEnter={(e) => { (e.currentTarget as HTMLElement).style.background = "var(--bg-selected)"; setHighlightSubmenuOpen(true); }}
+                  onMouseLeave={(e) => { (e.currentTarget as HTMLElement).style.background = "transparent"; setHighlightSubmenuOpen(false); }}
+                  style={{ padding: "6px 12px", fontSize: 12, color: "var(--text-primary)", cursor: "pointer", whiteSpace: "nowrap", position: "relative" }}
+                >
+                  <span>Highlight</span>
+                  <span style={{ float: "right", marginLeft: 16 }}>▸</span>
+                  {highlightSubmenuOpen && (
+                    <div
+                      style={{
+                        position: "absolute",
+                        left: "100%",
+                        top: -4,
+                        background: "var(--bg-dialog)",
+                        border: "1px solid var(--border-color)",
+                        borderRadius: 6,
+                        boxShadow: "0 4px 16px rgba(0,0,0,0.4)",
+                        padding: "4px 0",
+                        minWidth: 160,
+                        zIndex: 10001,
+                      }}
+                    >
+                      {HIGHLIGHT_COLORS.map(hc => (
+                        <div
+                          key={hc.key}
+                          onClick={() => {
+                            const seqs = getSelectedSeqs();
+                            if (seqs.length > 0 && onSetHighlight) {
+                              onSetHighlight(seqs, { color: hc.key });
+                              dirtyRef.current = true;
+                            }
+                            setCtxMenu(null);
+                            setHighlightSubmenuOpen(false);
+                          }}
+                          onMouseEnter={(e) => { (e.currentTarget as HTMLElement).style.background = "var(--bg-selected)"; }}
+                          onMouseLeave={(e) => { (e.currentTarget as HTMLElement).style.background = "transparent"; }}
+                          style={{ padding: "6px 12px", fontSize: 12, color: "var(--text-primary)", cursor: "pointer", whiteSpace: "nowrap", display: "flex", alignItems: "center", gap: 8 }}
+                        >
+                          <span style={{ display: "inline-block", width: 12, height: 12, borderRadius: 2, background: hc.color, border: "1px solid rgba(255,255,255,0.2)" }} />
+                          <span style={{ flex: 1 }}>{hc.label}</span>
+                          <span style={{ color: "var(--text-secondary)", fontSize: 11 }}>{hc.shortcut()}</span>
+                        </div>
+                      ))}
+                      {/* 分隔线 */}
+                      <ContextMenuSeparator />
+                      <div
+                        onClick={() => {
+                          const seqs = getSelectedSeqs();
+                          if (seqs.length > 0 && onToggleStrikethrough) {
+                            onToggleStrikethrough(seqs);
+                            dirtyRef.current = true;
+                          }
+                          setCtxMenu(null);
+                          setHighlightSubmenuOpen(false);
+                        }}
+                        onMouseEnter={(e) => { (e.currentTarget as HTMLElement).style.background = "var(--bg-selected)"; }}
+                        onMouseLeave={(e) => { (e.currentTarget as HTMLElement).style.background = "transparent"; }}
+                        style={{ padding: "6px 12px", fontSize: 12, color: "var(--text-primary)", cursor: "pointer", whiteSpace: "nowrap", display: "flex", alignItems: "center", justifyContent: "space-between" }}
+                      >
+                        <span>Strikethrough</span>
+                        <span style={{ color: "var(--text-secondary)", fontSize: 11 }}>Alt+-</span>
+                      </div>
+                      <div
+                        onClick={() => {
+                          const seqs = getSelectedSeqs();
+                          if (seqs.length > 0 && onResetHighlight) {
+                            onResetHighlight(seqs);
+                            dirtyRef.current = true;
+                          }
+                          setCtxMenu(null);
+                          setHighlightSubmenuOpen(false);
+                        }}
+                        onMouseEnter={(e) => { (e.currentTarget as HTMLElement).style.background = "var(--bg-selected)"; }}
+                        onMouseLeave={(e) => { (e.currentTarget as HTMLElement).style.background = "transparent"; }}
+                        style={{ padding: "6px 12px", fontSize: 12, color: "var(--text-primary)", cursor: "pointer", whiteSpace: "nowrap", display: "flex", alignItems: "center", justifyContent: "space-between" }}
+                      >
+                        <span>Reset</span>
+                        <span style={{ color: "var(--text-secondary)", fontSize: 11 }}>Alt+0</span>
+                      </div>
+                    </div>
+                  )}
+                </div>
+                {/* 分隔线 */}
+                <ContextMenuSeparator />
+                {/* Hide */}
+                <div
+                  onClick={() => {
+                    const seqs = getSelectedSeqs();
+                    if (seqs.length > 0 && onToggleHidden) {
+                      onToggleHidden(seqs);
+                      dirtyRef.current = true;
+                      setMultiSelect(null);
+                    }
+                    setCtxMenu(null);
+                  }}
+                  onMouseEnter={(e) => { (e.currentTarget as HTMLElement).style.background = "var(--bg-selected)"; setHighlightSubmenuOpen(false); }}
+                  onMouseLeave={(e) => { (e.currentTarget as HTMLElement).style.background = "transparent"; }}
+                  style={{ padding: "6px 12px", fontSize: 12, color: "var(--text-primary)", cursor: "pointer", whiteSpace: "nowrap", display: "flex", alignItems: "center", justifyContent: "space-between" }}
+                >
+                  <span>Hide</span>
+                  <span style={{ color: "var(--text-secondary)", fontSize: 11 }}>Ctrl+/</span>
+                </div>
+                {/* 分隔线 */}
+                <ContextMenuSeparator />
+                {/* Add/Edit Comment */}
+                <div
+                  onClick={() => {
+                    const seqs = getSelectedSeqs();
+                    if (seqs.length > 0) {
+                      openCommentEditor(seqs[0]);
+                    }
+                    setCtxMenu(null);
+                  }}
+                  onMouseEnter={(e) => { (e.currentTarget as HTMLElement).style.background = "var(--bg-selected)"; setHighlightSubmenuOpen(false); }}
+                  onMouseLeave={(e) => { (e.currentTarget as HTMLElement).style.background = "transparent"; }}
+                  style={{ padding: "6px 12px", fontSize: 12, color: "var(--text-primary)", cursor: "pointer", whiteSpace: "nowrap", display: "flex", alignItems: "center", justifyContent: "space-between" }}
+                >
+                  <span>{(() => { const seqs = getSelectedSeqs(); return seqs.length > 0 && highlights?.get(seqs[0])?.comment ? "Edit Comment" : "Add Comment"; })()}</span>
+                  <span style={{ color: "var(--text-secondary)", fontSize: 11 }}>;</span>
+                </div>
+                {/* Delete Comment（仅有注释时显示） */}
+                {(() => { const seqs = getSelectedSeqs(); return seqs.length > 0 && highlights?.get(seqs[0])?.comment; })() && (
+                  <div
+                    onClick={() => {
+                      const seqs = getSelectedSeqs();
+                      if (seqs.length > 0 && onDeleteComment) {
+                        onDeleteComment(seqs[0]);
+                        dirtyRef.current = true;
+                      }
+                      setCtxMenu(null);
+                    }}
+                    onMouseEnter={(e) => { (e.currentTarget as HTMLElement).style.background = "var(--bg-selected)"; setHighlightSubmenuOpen(false); }}
+                    onMouseLeave={(e) => { (e.currentTarget as HTMLElement).style.background = "transparent"; }}
+                    style={{ padding: "6px 12px", fontSize: 12, color: "var(--text-primary)", cursor: "pointer", whiteSpace: "nowrap" }}
+                  >Delete Comment</div>
+                )}
+                {/* Taint Trace */}
+                {onTaintRequest && (
+                  <>
+                    <ContextMenuSeparator />
+                    <div
+                      onClick={() => {
+                        const seqs = getSelectedSeqs();
+                        if (seqs.length > 0 && onTaintRequest) {
+                          onTaintRequest(seqs[0], ctxRegRef.current);
+                        }
+                        setCtxMenu(null);
+                      }}
+                      onMouseEnter={(e) => { (e.currentTarget as HTMLElement).style.background = "var(--bg-selected)"; setHighlightSubmenuOpen(false); }}
+                      onMouseLeave={(e) => { (e.currentTarget as HTMLElement).style.background = "transparent"; }}
+                      style={{ padding: "6px 12px", fontSize: 12, color: "var(--text-primary)", cursor: "pointer", whiteSpace: "nowrap" }}
+                    >Taint Trace</div>
+                  </>
+                )}
+              </>
+            )}
+          </ContextMenu>
+        )}
+        {/* 注释悬浮预览 */}
+        {commentTooltip && !commentEditor && (
+          <div
+            style={{
+              position: "fixed",
+              left: commentTooltip.x,
+              top: commentTooltip.y,
+              background: "var(--bg-dialog, #2b2d30)",
+              border: "1px solid var(--border-color, #3e4150)",
+              borderRadius: 4,
+              boxShadow: "0 2px 8px rgba(0,0,0,0.4)",
+              padding: "6px 10px",
+              maxWidth: 300,
+              maxHeight: 200,
+              overflow: "auto",
+              zIndex: 10000,
+              fontSize: 12,
+              color: "var(--text-primary, #abb2bf)",
+              whiteSpace: "pre-wrap",
+              wordBreak: "break-word",
+              pointerEvents: "none",
+            }}
+          >
+            {commentTooltip.text}
+          </div>
+        )}
+        {/* 注释编辑框 */}
+        {commentEditor && (
+          <div
+            ref={commentEditorRef}
+            style={{
+              position: "fixed",
+              left: commentEditor.x,
+              top: commentEditor.y,
+              background: "var(--bg-dialog, #2b2d30)",
+              border: "1px solid var(--border-color, #3e4150)",
+              borderRadius: 6,
+              boxShadow: "0 4px 16px rgba(0,0,0,0.5)",
+              padding: "8px",
+              zIndex: 10001,
+              minWidth: 320,
+              maxWidth: 500,
+            }}
+            onMouseDown={(e) => e.stopPropagation()}
+          >
+            <textarea
+              ref={commentTextareaRef}
+              defaultValue={commentEditor.text}
+              autoFocus
+              onFocus={(e) => {
+                const el = e.currentTarget;
+                el.selectionStart = el.selectionEnd = el.value.length;
+              }}
+              onKeyDown={(e) => {
+                if (e.key === "Escape") {
+                  e.stopPropagation();
+                  closeCommentEditor();
+                }
+                // Ctrl+Enter 保存
+                if (e.key === "Enter" && (e.ctrlKey || e.metaKey)) {
+                  e.preventDefault();
+                  const val = commentTextareaRef.current?.value ?? "";
+                  if (onSetComment) {
+                    if (val.trim()) {
+                      onSetComment(commentEditor.seq, val);
+                    } else if (onDeleteComment) {
+                      onDeleteComment(commentEditor.seq);
+                    }
+                    dirtyRef.current = true;
+                  }
+                  closeCommentEditor();
+                }
+              }}
+              style={{
+                width: "100%",
+                minHeight: 100,
+                maxHeight: 300,
+                resize: "vertical",
+                background: "var(--bg-primary, #1e1f22)",
+                border: "1px solid var(--border-color, #3e4150)",
+                borderRadius: 4,
+                color: "var(--text-primary, #abb2bf)",
+                fontSize: 12,
+                fontFamily: "inherit",
+                padding: "6px 8px",
+                outline: "none",
+                boxSizing: "border-box",
+              }}
+            />
+            <div style={{ display: "flex", justifyContent: "center", gap: 8, marginTop: 6 }}>
+              <button
+                onClick={() => {
+                  const val = commentTextareaRef.current?.value ?? "";
+                  if (onSetComment) {
+                    if (val.trim()) {
+                      onSetComment(commentEditor.seq, val);
+                    } else if (onDeleteComment) {
+                      onDeleteComment(commentEditor.seq);
+                    }
+                    dirtyRef.current = true;
+                  }
+                  closeCommentEditor();
+                }}
+                style={{
+                  padding: "4px 16px",
+                  fontSize: 11,
+                  background: "var(--accent-primary, #4c8ed9)",
+                  color: "#fff",
+                  border: "none",
+                  borderRadius: 4,
+                  cursor: "pointer",
+                }}
+              >Save</button>
+              <button
+                onClick={() => closeCommentEditor()}
+                style={{
+                  padding: "4px 16px",
+                  fontSize: 11,
+                  background: "transparent",
+                  color: "var(--text-secondary, #636d83)",
+                  border: "1px solid var(--border-color, #3e4150)",
+                  borderRadius: 4,
+                  cursor: "pointer",
+                }}
+              >Cancel</button>
+            </div>
+          </div>
+        )}
+        <Minimap
+          virtualTotalRows={finalVirtualTotalRows}
+          visibleRows={visibleRows}
+          currentRow={currentRow}
+          maxRow={maxRow}
+          height={canvasSize.height}
+          onScroll={setCurrentRow}
+          resolveVirtualIndex={finalResolveVirtualIndex}
+          getLines={getLines}
+          selectedSeq={selectedSeq}
+        />
+        <CustomScrollbar
+          currentRow={currentRow}
+          maxRow={maxRow}
+          visibleRows={visibleRows}
+          virtualTotalRows={finalVirtualTotalRows}
+          trackHeight={canvasSize.height}
+          onScroll={setCurrentRow}
+        />
+      </div>
+    </div>
+  );
+}
+
+function TableHeader({ changesWidth, onResizeMouseDown }: { changesWidth: number; onResizeMouseDown: (e: React.MouseEvent) => void }) {
+  return (
+    <div
+      style={{
+        display: "flex",
+        padding: "4px 8px",
+        background: "var(--bg-secondary)",
+        borderBottom: "1px solid var(--border-color)",
+        fontSize: "var(--font-size-sm)",
+        color: "var(--text-secondary)",
+      }}
+    >
+      <span style={{ width: COL_FOLD - COL_ARROW, flexShrink: 0 }}></span>
+      <span style={{ width: COL_MEMRW - COL_FOLD, flexShrink: 0 }}></span>
+      <span style={{ width: COL_SEQ - COL_MEMRW, flexShrink: 0 }}></span>
+      <span style={{ width: COL_ADDR - COL_SEQ, flexShrink: 0 }}>#</span>
+      <span style={{ width: COL_DISASM - COL_ADDR, flexShrink: 0 }}>Address</span>
+      <span style={{ flex: 1 }}>Disassembly</span>
+      <div
+        onMouseDown={onResizeMouseDown}
+        style={{
+          width: 8, cursor: "col-resize", flexShrink: 0,
+          display: "flex", alignItems: "center", justifyContent: "center",
+        }}
+      >
+        <div style={{ width: 1, height: "100%", background: "var(--border-color)" }} />
+      </div>
+      <span style={{ width: changesWidth, flexShrink: 0 }}>Changes</span>
+      <span style={{ width: RIGHT_GUTTER, flexShrink: 0 }}></span>
+    </div>
+  );
+}
