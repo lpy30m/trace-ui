@@ -69,7 +69,7 @@ pub async fn search_trace(
         let session = sessions.get(&session_id).ok_or_else(|| format!("Session {} 不存在", session_id))?;
         (
             session.mmap.clone(),
-            session.line_index.total_lines(),
+            session.line_index.as_ref().map(|li| li.total_lines()).unwrap_or(0),
         )
     };
 

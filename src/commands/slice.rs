@@ -52,7 +52,7 @@ fn resolve_start_index(
 
         if suffix == "last" {
             scan_state.mem_last_def.get(&addr)
-                .map(|&(line, _)| line)
+                .map(|(line, _)| line)
                 .ok_or_else(|| format!("地址 0x{:x} 在 trace 中从未被写入", addr))
         } else {
             let line: u32 = suffix.parse::<u32>()
@@ -133,7 +133,7 @@ pub fn run_slice(
 
         let mut start_indices = Vec::new();
         for spec in &from_specs {
-            let idx = resolve_start_index(spec, scan_state, &session.mmap, &session.line_index)?;
+            let idx = resolve_start_index(spec, scan_state, &session.mmap, session.line_index.as_ref().ok_or_else(|| "索引尚未构建完成".to_string())?)?;
             start_indices.push(idx);
         }
 
@@ -141,14 +141,12 @@ pub fn run_slice(
 
         // Apply optional range filter
         if let Some(s) = start_seq {
-            for i in 0..((s as usize).min(marked.len())) {
-                marked.set(i, false);
-            }
+            let end = (s as usize).min(marked.len());
+            marked[..end].fill(false);
         }
         if let Some(e) = end_seq {
-            for i in ((e as usize + 1).min(marked.len()))..marked.len() {
-                marked.set(i, false);
-            }
+            let start = ((e as usize) + 1).min(marked.len());
+            marked[start..].fill(false);
         }
 
         marked
@@ -244,6 +242,7 @@ pub fn export_taint_results(
         .ok_or_else(|| format!("Session {} 不存在", session_id))?;
     let marked = session.slice_result.as_ref()
         .ok_or("没有活跃的污点分析结果")?;
+    let line_index = session.line_index.as_ref().ok_or_else(|| "索引尚未构建完成".to_string())?;
 
     let marked_count = marked.count_ones() as u32;
     let total_lines = marked.len() as u32;
@@ -257,7 +256,7 @@ pub fn export_taint_results(
         // 收集污点行
         let mut tainted_lines = Vec::with_capacity(marked_count as usize);
         for seq in marked.iter_ones() {
-            if let Some(raw) = session.line_index.get_line(&session.mmap, seq as u32) {
+            if let Some(raw) = line_index.get_line(&session.mmap, seq as u32) {
                 let text = String::from_utf8_lossy(raw);
                 tainted_lines.push(serde_json::json!({
                     "seq": seq + 1,
@@ -294,7 +293,7 @@ pub fn export_taint_results(
     } else {
         // TXT: 纯污点行原文
         for seq in marked.iter_ones() {
-            if let Some(raw) = session.line_index.get_line(&session.mmap, seq as u32) {
+            if let Some(raw) = line_index.get_line(&session.mmap, seq as u32) {
                 writer.write_all(raw).map_err(|e| format!("写入失败: {}", e))?;
                 writer.write_all(b"\n").map_err(|e| format!("写入失败: {}", e))?;
             }

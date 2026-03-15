@@ -1,4 +1,5 @@
 import { useRef, useEffect, type ReactNode } from "react";
+import { createPortal } from "react-dom";
 
 interface ContextMenuProps {
   x: number;
@@ -34,7 +35,8 @@ export default function ContextMenu({ x, y, onClose, children, minWidth = 180 }:
     minWidth,
   };
 
-  return <div ref={ref} style={style}>{children}</div>;
+  // Portal 到 body，避免祖先 contain:paint 导致 fixed 定位失效
+  return createPortal(<div ref={ref} style={style}>{children}</div>, document.body);
 }
 
 /** 右键菜单项 */

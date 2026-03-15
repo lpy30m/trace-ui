@@ -37,6 +37,7 @@ pub fn get_registers_at(session_id: String, seq: u32, state: State<'_, AppState>
     let sessions = state.sessions.read().map_err(|e| e.to_string())?;
     let session = sessions.get(&session_id).ok_or_else(|| format!("Session {} 不存在", session_id))?;
     let phase2 = session.phase2.as_ref().ok_or("索引尚未构建完成")?;
+    let line_index = session.line_index.as_ref().ok_or_else(|| "索引尚未构建完成".to_string())?;
 
     // 找最近检查点
     let (ckpt_seq, snapshot) = phase2.reg_checkpoints
@@ -47,7 +48,7 @@ pub fn get_registers_at(session_id: String, seq: u32, state: State<'_, AppState>
 
     // 从检查点重放到目标 seq
     for replay_seq in ckpt_seq..=seq {
-        if let Some(raw) = session.line_index.get_line(&session.mmap, replay_seq) {
+        if let Some(raw) = line_index.get_line(&session.mmap, replay_seq) {
             if let Ok(line_str) = std::str::from_utf8(raw) {
                 crate::phase2::update_reg_values(&mut values, line_str);
             }
@@ -66,7 +67,7 @@ pub fn get_registers_at(session_id: String, seq: u32, state: State<'_, AppState>
     }
 
     // PC = 当前行的指令地址 + 提取当前行被修改的寄存器名
-    if let Some(raw) = session.line_index.get_line(&session.mmap, seq) {
+    if let Some(raw) = line_index.get_line(&session.mmap, seq) {
         if let Some(parsed) = crate::commands::browse::parse_trace_line(seq, raw) {
             let pc_display = if let Some(hex_str) = parsed.address.strip_prefix("0x")
                 .or_else(|| parsed.address.strip_prefix("0X"))

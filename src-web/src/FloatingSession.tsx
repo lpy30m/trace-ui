@@ -34,19 +34,32 @@ export default function FloatingSession({
   const { getLines } = useLineCache(sessionId);
 
   // CallTree + FoldState
+  const LAZY_THRESHOLD = 100_000;
   const [callTreeNodeMap, setCallTreeNodeMap] = useState<Map<number, CallTreeNodeDto>>(new Map());
 
   // 加载 call tree：初始挂载时尝试加载（检测 phase2 是否已完成），
   // isPhase2Ready 变为 true 时重新加载以获取最新数据
   useEffect(() => {
     if (!sessionId) return;
-    invoke<CallTreeNodeDto[]>("get_call_tree", { sessionId })
-      .then(nodes => {
-        if (nodes.length > 0) {
-          if (!isPhase2Ready) setIsPhase2Ready(true);
-          const map = new Map<number, CallTreeNodeDto>();
-          for (const n of nodes) map.set(n.id, n);
-          setCallTreeNodeMap(map);
+    invoke<number>("get_call_tree_node_count", { sessionId })
+      .then(count => {
+        if (count === 0) return;
+        if (!isPhase2Ready) setIsPhase2Ready(true);
+        if (count <= LAZY_THRESHOLD) {
+          return invoke<CallTreeNodeDto[]>("get_call_tree", { sessionId })
+            .then(nodes => {
+              const map = new Map<number, CallTreeNodeDto>();
+              for (const n of nodes) map.set(n.id, n);
+              setCallTreeNodeMap(map);
+            });
+        } else {
+          return invoke<CallTreeNodeDto[]>("get_call_tree_children", {
+            sessionId, nodeId: 0, includeSelf: true,
+          }).then(nodes => {
+            const map = new Map<number, CallTreeNodeDto>();
+            for (const n of nodes) map.set(n.id, n);
+            setCallTreeNodeMap(map);
+          });
         }
       })
       .catch(() => {});
@@ -125,12 +138,13 @@ export default function FloatingSession({
     return result;
   }, [sessionId, sliceActive]);
 
-  const handleClearSlice = useCallback(async () => {
-    await invoke("clear_slice", { sessionId });
+  const handleClearSlice = useCallback(() => {
+    // 先同步更新 UI 状态，再 fire-and-forget 发送 IPC（避免写锁饿死卡顿）
     sliceCacheRef.current.clear();
     setSliceActive(false);
     setSliceInfo(null);
     setTaintedSeqs([]);
+    invoke("clear_slice", { sessionId }).catch(console.error);
   }, [sessionId]);
 
   const handleFilterModeChange = useCallback((mode: "highlight" | "filter-only") => {

@@ -148,6 +148,7 @@ fn parse_line_inner(raw: &str, extract_regs: bool) -> Option<ParsedLine> {
     result_line.mnemonic = Mnemonic::new(mnemonic);
     result_line.mem_op = mem_op;
     result_line.has_arrow = has_arrow;
+    result_line.arrow_pos = arrow_rel.map(|rel| q2 + rel);
     result_line.writeback = writeback;
     result_line.pre_arrow_regs = pre_arrow_regs;
     result_line.post_arrow_regs = post_arrow_regs;

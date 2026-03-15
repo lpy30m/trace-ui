@@ -1,5 +1,6 @@
 use tauri::{AppHandle, Emitter, State};
 use crate::cache;
+use crate::line_index::LineIndex;
 use crate::state::AppState;
 use crate::taint;
 
@@ -14,11 +15,16 @@ pub async fn build_index(
 
     // 无论成功或失败，都发送 done 事件，防止前端永远卡在 loading
     let error = result.as_ref().err().cloned();
+    let total_lines = {
+        let sessions = state.sessions.read().map_err(|e| e.to_string())?;
+        sessions.get(&*session_id).map(|s| s.total_lines).unwrap_or(0)
+    };
     let _ = app.emit("index-progress", serde_json::json!({
         "sessionId": session_id,
         "progress": 1.0,
         "done": true,
         "error": error,
+        "totalLines": total_lines,
     }));
 
     result
@@ -54,13 +60,24 @@ async fn build_index_inner(
     let result = tauri::async_runtime::spawn_blocking(move || {
         let data: &[u8] = &mmap_arc;
 
+        // 辅助：加载或构建 LineIndex
+        let load_or_build_line_index = |fp: &str, d: &[u8]| -> LineIndex {
+            if let Some(cached) = cache::load_line_index_cache(fp, d) {
+                return cached;
+            }
+            let li = LineIndex::build(d);
+            cache::save_line_index_cache(fp, d, &li);
+            li
+        };
+
         // 尝试从缓存加载
         if !force {
             if let Some(cached_phase2) = cache::load_cache(&file_path, data) {
                 // Phase2 命中，尝试加载 ScanState 缓存
                 if let Some(cached_scan) = cache::load_scan_cache(&file_path, data) {
-                    // 双缓存命中，跳过所有扫描，不发送任何进度事件
-                    return Ok((cached_scan, cached_phase2));
+                    // 双缓存命中，加载或构建 LineIndex
+                    let line_index = load_or_build_line_index(&file_path, data);
+                    return Ok((cached_scan, cached_phase2, line_index));
                 }
                 // 仅 Phase2 命中，需要重建 ScanState — 发送初始进度
                 let _ = app_for_init.emit("index-progress", serde_json::json!({
@@ -68,12 +85,14 @@ async fn build_index_inner(
                     "progress": 0.0,
                     "done": false,
                 }));
-                let scan_state = taint::scanner::scan_pass1_bytes_with_progress(
+                let mut scan_state = taint::scanner::scan_pass1_bytes_with_progress(
                     data, false, 0, None, &Default::default(), false, false,
                     Some(&*progress_fn),
                 ).map_err(|e| format!("Scanner 失败: {}", e))?;
+                scan_state.compact();
                 cache::save_scan_cache(&file_path, data, &scan_state);
-                return Ok((scan_state, cached_phase2));
+                let line_index = load_or_build_line_index(&file_path, data);
+                return Ok((scan_state, cached_phase2, line_index));
             }
         }
 
@@ -83,7 +102,7 @@ async fn build_index_inner(
             "progress": 0.0,
             "done": false,
         }));
-        let (scan_state, phase2) = taint::scan_unified(data, false, false, Some(progress_fn))
+        let (mut scan_state, phase2, line_index) = taint::scan_unified(data, false, false, Some(progress_fn))
             .map_err(|e| format!("统一扫描失败: {}", e))?;
 
         // 格式检查：如果没有任何行被成功解析，说明不是有效的 trace 文件
@@ -101,22 +120,26 @@ async fn build_index_inner(
             );
         }
 
-        // 保存缓存
+        // 压缩 + 保存缓存
+        scan_state.compact();
         cache::save_cache(&file_path, data, &phase2);
         cache::save_scan_cache(&file_path, data, &scan_state);
+        cache::save_line_index_cache(&file_path, data, &line_index);
 
-        Ok::<_, String>((scan_state, phase2))
+        Ok::<_, String>((scan_state, phase2, line_index))
     })
     .await
-    .map_err(|e| format!("扫描线程 panic: {}", e))?
-    .map_err(|e: String| e)?;
+    .map_err(|e| format!("扫描线程 panic: {}", e))??;
 
     // 写入结果
     {
+        let (scan_state, phase2, line_index) = result;
         let mut sessions = state.sessions.write().map_err(|e| e.to_string())?;
         if let Some(session) = sessions.get_mut(session_id) {
-            session.phase2 = Some(result.1);
-            session.scan_state = Some(result.0);
+            session.total_lines = line_index.total_lines();
+            session.scan_state = Some(scan_state);
+            session.phase2 = Some(phase2);
+            session.line_index = Some(line_index);
         }
     }
 

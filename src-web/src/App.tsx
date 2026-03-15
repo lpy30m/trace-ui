@@ -17,7 +17,8 @@ import TaintConfigDialog from "./components/TaintConfigDialog";
 import { useTraceStore } from "./hooks/useTraceStore";
 import { useSliceState } from "./hooks/useSliceState";
 import { useRecentFiles } from "./hooks/useRecentFiles";
-import { useNavigationHistory } from "./hooks/useNavigationHistory";
+import { selectedSeqStore, useSelectedSeq } from "./stores/selectedSeqStore";
+import { navigationStore } from "./stores/navigationStore";
 import { isModKey } from "./utils/platform";
 import { useFoldState } from "./hooks/useFoldState";
 import { usePreferences, saveSessionSnapshot, loadSessionSnapshot } from "./hooks/usePreferences";
@@ -52,8 +53,6 @@ function App() {
   const {
     totalLines,
     isLoaded,
-    selectedSeq,
-    setSelectedSeq,
     isPhase2Ready,
     isLoading,
     loadingMessage,
@@ -78,6 +77,7 @@ function App() {
     cancelLoading,
     indexError,
     clearIndexError,
+    getSelectedSeqForSession,
   } = useTraceStore();
 
   const slice = useSliceState(activeSessionId);
@@ -85,14 +85,10 @@ function App() {
   const [taintDialogReg, setTaintDialogReg] = useState<string | undefined>(undefined);
 
   const [showGoto, setShowGoto] = useState(false);
-  const [selectedMem, setSelectedMem] = useState<{
-    addr: string | null; rw: string | null; size: number | null;
-  }>({ addr: null, rw: null, size: null });
 
   const { recentFiles, addRecent, removeRecent } = useRecentFiles();
   const { preferences, updatePreferences } = usePreferences();
   const { highlights, loadForFile, setHighlight, toggleStrikethrough, resetHighlight, toggleHidden, unhideGroup, setComment, deleteComment } = useHighlights();
-  const { navigate, goBack, goForward, canGoBack, canGoForward } = useNavigationHistory(setSelectedSeq);
 
   // 文件切换时加载高亮
   useEffect(() => { loadForFile(filePath); }, [filePath, loadForFile]);
@@ -101,16 +97,26 @@ function App() {
   const scrollAlignRef = useRef<"center" | "auto" | "end">("center");
   // 强制触发 TraceTable 滚动（即使 selectedSeq 未变化）
   const [scrollTrigger, setScrollTrigger] = useState(0);
-  const handleGoBack = useCallback(() => { scrollAlignRef.current = "auto"; goBack(); }, [goBack]);
-  const handleGoForward = useCallback(() => { scrollAlignRef.current = "auto"; goForward(); }, [goForward]);
+  const handleGoBack = useCallback(() => { scrollAlignRef.current = "auto"; navigationStore.goBack(); }, []);
+  const handleGoForward = useCallback(() => { scrollAlignRef.current = "auto"; navigationStore.goForward(); }, []);
 
   const [callTreeNodeMap, setCallTreeNodeMap] = useState<Map<number, CallTreeNodeDto>>(new Map());
   const [callTreeCount, setCallTreeCount] = useState(0);
   const [callTreeLoading, setCallTreeLoading] = useState(false);
   const [callTreeError, setCallTreeError] = useState<string | null>(null);
+  const [callTreeLazyMode, setCallTreeLazyMode] = useState(false);
+  const [callTreeLoadedNodes, setCallTreeLoadedNodes] = useState<Set<number>>(new Set());
+
+  // 懒加载阈值：超过此节点数时不一次性加载全部 call tree
+  const LAZY_CALL_TREE_THRESHOLD = 100_000;
 
   // per-session CallTree 缓存
-  const callTreeCache = useRef<Map<string, { nodeMap: Map<number, CallTreeNodeDto>; count: number }>>(new Map());
+  const callTreeCache = useRef<Map<string, {
+    nodeMap: Map<number, CallTreeNodeDto>;
+    count: number;
+    lazyMode: boolean;
+    loadedNodes: Set<number>;
+  }>>(new Map());
 
   // 渲染期间同步恢复 callTree（避免 useEffect 延迟一帧导致折叠区间错误）
   const prevCallTreeSessionRef = useRef<string | null>(null);
@@ -120,11 +126,15 @@ function App() {
       setCallTreeNodeMap(new Map());
       setCallTreeCount(0);
       setCallTreeError(null);
+      setCallTreeLazyMode(false);
+      setCallTreeLoadedNodes(new Set());
     } else {
       const cached = callTreeCache.current.get(activeSessionId);
       if (cached) {
         setCallTreeNodeMap(cached.nodeMap);
         setCallTreeCount(cached.count);
+        setCallTreeLazyMode(cached.lazyMode);
+        setCallTreeLoadedNodes(cached.loadedNodes);
       }
     }
   }
@@ -132,10 +142,10 @@ function App() {
   // ── 面板自适应尺寸 ──
   // Memory 底部面板高度：TabPanel tab(28) + toolbar(28) + hex header(20) + 16×20(320) + padding(8) = 404px
   // Register 面板高度：padding(16) + header(19) + 15×17(255) + gap(4) + 2×17(34) = 328px
-  // 左侧面板宽度：两列寄存器 name(36) + value(~130) × 2 + gap(16) + padding(16) = 364px
+  // 左侧面板宽度：两列寄存器 name(36) + value(~130) × 2 + gap(16) + padding(16) = 364px + 余量
   const MEMORY_PANEL_TARGET_PX = 404;
   const REG_PANEL_TARGET_PX = 328;
-  const LEFT_PANEL_TARGET_PX = 364;
+  const LEFT_PANEL_TARGET_PX = 376;
 
   const bottomPanelRef = useRef<PanelImperativeHandle>(null);
   const rightGroupRef = useRef<HTMLDivElement>(null);
@@ -182,12 +192,74 @@ function App() {
 
     requestAnimationFrame(resizePanels);
 
-    const ro = new ResizeObserver(() => {
-      requestAnimationFrame(resizePanels);
-    });
-    if (hGroupRef.current) ro.observe(hGroupRef.current);
+    // 仅在窗口大小变化时重算面板尺寸，避免拖拽分割线时产生反馈循环
+    const onWindowResize = () => requestAnimationFrame(resizePanels);
+    window.addEventListener("resize", onWindowResize);
 
-    return () => ro.disconnect();
+    return () => window.removeEventListener("resize", onWindowResize);
+  }, []);
+
+  // ── 分割线拖拽即时响应：在 React 渲染管线之前直接操作 DOM ──
+  // react-resizable-panels 通过 useSyncExternalStore 更新 flexGrow，
+  // React 19 可能将 DOM commit 延迟到下一帧，导致分割线落后鼠标一帧。
+  // 此 hook 在 capturing 阶段先于库的 handler 直接设置 flexGrow，
+  // 提供零延迟视觉反馈。库后续通过 React 覆写相同值，无副作用。
+  useEffect(() => {
+    let dragging = false;
+    let startPos = 0;
+    let leftPanel: HTMLElement | null = null;
+    let rightPanel: HTMLElement | null = null;
+    let startLeftGrow = 0;
+    let startRightGrow = 0;
+    let groupSize = 0;
+    let isHorizontal = true;
+
+    const onDown = (e: PointerEvent) => {
+      const sep = (e.target as HTMLElement).closest("[data-separator]");
+      if (!sep) return;
+      let prev = sep.previousElementSibling as HTMLElement | null;
+      while (prev && !prev.hasAttribute("data-panel")) prev = prev.previousElementSibling as HTMLElement | null;
+      let next = sep.nextElementSibling as HTMLElement | null;
+      while (next && !next.hasAttribute("data-panel")) next = next.nextElementSibling as HTMLElement | null;
+      if (!prev || !next) return;
+      leftPanel = prev;
+      rightPanel = next;
+      startLeftGrow = parseFloat(leftPanel.style.flexGrow) || 1;
+      startRightGrow = parseFloat(rightPanel.style.flexGrow) || 1;
+      const group = sep.parentElement;
+      if (!group) return;
+      isHorizontal = getComputedStyle(group).flexDirection === "row";
+      groupSize = isHorizontal ? group.offsetWidth : group.offsetHeight;
+      startPos = isHorizontal ? e.clientX : e.clientY;
+      dragging = true;
+      document.documentElement.dataset.separatorDrag = "1";
+    };
+
+    const onMove = (e: PointerEvent) => {
+      if (!dragging || !leftPanel || !rightPanel || groupSize <= 0) return;
+      const pos = isHorizontal ? e.clientX : e.clientY;
+      const totalGrow = startLeftGrow + startRightGrow;
+      const deltaGrow = ((pos - startPos) / groupSize) * totalGrow;
+      leftPanel.style.flexGrow = String(Math.max(0.01, startLeftGrow + deltaGrow));
+      rightPanel.style.flexGrow = String(Math.max(0.01, startRightGrow - deltaGrow));
+    };
+
+    const onUp = () => {
+      dragging = false;
+      leftPanel = null;
+      rightPanel = null;
+      delete document.documentElement.dataset.separatorDrag;
+    };
+
+    // capturing 阶段：在库的 handler 之前执行，提供即时视觉反馈
+    document.addEventListener("pointerdown", onDown, true);
+    document.addEventListener("pointermove", onMove, true);
+    document.addEventListener("pointerup", onUp, true);
+    return () => {
+      document.removeEventListener("pointerdown", onDown, true);
+      document.removeEventListener("pointermove", onMove, true);
+      document.removeEventListener("pointerup", onUp, true);
+    };
   }, []);
 
   // 浮动面板状态
@@ -204,35 +276,71 @@ function App() {
     setCallTreeLoading(true);
     setCallTreeError(null);
     const sid = activeSessionId;
-    invoke<CallTreeNodeDto[]>("get_call_tree", { sessionId: sid })
-      .then((nodes) => {
-        const map = new Map<number, CallTreeNodeDto>();
-        for (const n of nodes) map.set(n.id, n);
-        setCallTreeNodeMap(map);
-        setCallTreeCount(nodes.length);
-        callTreeCache.current.set(sid, { nodeMap: map, count: nodes.length });
+
+    // 先获取节点总数，决定全量加载还是懒加载
+    invoke<number>("get_call_tree_node_count", { sessionId: sid })
+      .then((count) => {
+        if (count <= LAZY_CALL_TREE_THRESHOLD) {
+          // 小文件：全量加载（保持原有行为）
+          return invoke<CallTreeNodeDto[]>("get_call_tree", { sessionId: sid })
+            .then((nodes) => {
+              const map = new Map<number, CallTreeNodeDto>();
+              for (const n of nodes) map.set(n.id, n);
+              setCallTreeNodeMap(map);
+              setCallTreeCount(count);
+              setCallTreeLazyMode(false);
+              setCallTreeLoadedNodes(new Set());
+              callTreeCache.current.set(sid, {
+                nodeMap: map, count, lazyMode: false, loadedNodes: new Set(),
+              });
+            });
+        } else {
+          // 大文件：懒加载模式，只加载根节点 + 第一层子节点
+          return invoke<CallTreeNodeDto[]>("get_call_tree_children", {
+            sessionId: sid, nodeId: 0, includeSelf: true,
+          }).then((nodes) => {
+            const map = new Map<number, CallTreeNodeDto>();
+            for (const n of nodes) map.set(n.id, n);
+            const loaded = new Set([0]); // 根节点的子节点已加载
+            setCallTreeNodeMap(map);
+            setCallTreeCount(count);
+            setCallTreeLazyMode(true);
+            setCallTreeLoadedNodes(loaded);
+            callTreeCache.current.set(sid, {
+              nodeMap: map, count, lazyMode: true, loadedNodes: loaded,
+            });
+          });
+        }
       })
       .catch((e) => setCallTreeError(String(e)))
       .finally(() => setCallTreeLoading(false));
   }, [isPhase2Ready, activeSessionId]);
 
-  const foldState = useFoldState(callTreeNodeMap, totalLines);
-
-  useEffect(() => {
-    if (selectedSeq === null) {
-      setSelectedMem({ addr: null, rw: null, size: null });
-      return;
-    }
-    getLines([selectedSeq]).then((lines) => {
-      if (lines.length > 0) {
-        setSelectedMem({
-          addr: lines[0].mem_addr ?? null,
-          rw: lines[0].mem_rw ?? null,
-          size: lines[0].mem_size ?? null,
-        });
-      }
+  // 懒加载子节点回调（FunctionTree 展开节点时调用）
+  const loadCallTreeChildren = useCallback(async (nodeId: number) => {
+    if (!activeSessionId) return;
+    const children = await invoke<CallTreeNodeDto[]>("get_call_tree_children", {
+      sessionId: activeSessionId, nodeId, includeSelf: false,
     });
-  }, [selectedSeq, getLines]);
+    setCallTreeNodeMap(prev => {
+      const next = new Map(prev);
+      for (const n of children) next.set(n.id, n);
+      return next;
+    });
+    setCallTreeLoadedNodes(prev => {
+      const next = new Set(prev);
+      next.add(nodeId);
+      return next;
+    });
+    // 更新缓存
+    const cached = callTreeCache.current.get(activeSessionId);
+    if (cached) {
+      for (const n of children) cached.nodeMap.set(n.id, n);
+      cached.loadedNodes.add(nodeId);
+    }
+  }, [activeSessionId]);
+
+  const foldState = useFoldState(callTreeNodeMap, totalLines);
 
   const handleOpenFile = useCallback(
     async (path: string) => {
@@ -306,7 +414,7 @@ function App() {
         const sliceState = slice.getStateForSession(s.sessionId);
         return {
           filePath: s.filePath,
-          selectedSeq: s.selectedSeq,
+          selectedSeq: getSelectedSeqForSession(s.sessionId),
           taintConfig: sliceState?.sliceActive ? {
             fromSpecs: sliceState.sliceFromSpecs,
             startSeq: sliceState.sliceStartSeq,
@@ -358,8 +466,8 @@ function App() {
 
   const handleJumpToSeq = useCallback((seq: number) => {
     foldState.ensureSeqVisible(seq);
-    navigate(seq);
-  }, [navigate, foldState.ensureSeqVisible]);
+    navigationStore.navigate(seq);
+  }, [foldState.ensureSeqVisible]);
 
   // 搜索路由：Search 已浮动时转发，否则本地搜索
   const handleSearch = useCallback((query: string) => {
@@ -382,6 +490,7 @@ function App() {
       ...clampToScreen(size.width, size.height),
       ...(position ? { x: position.x, y: position.y } : {}),
       decorations: false,
+      transparent: true,
     });
     win.once("tauri://created", () => {
       setFloatedPanels(prev => new Set([...prev, panel]));
@@ -427,6 +536,7 @@ function App() {
       ...clampToScreen(1000, 600),
       ...(position ? { x: position.x, y: position.y } : {}),
       decorations: false,
+      transparent: true,
     });
 
     win.once("tauri://created", () => {
@@ -451,8 +561,6 @@ function App() {
   // Refs 持有最新值，供稳定事件监听器读取（避免监听器因依赖变化频繁重建）
   const activeSessionIdRef = useRef(activeSessionId);
   activeSessionIdRef.current = activeSessionId;
-  const selectedSeqRef = useRef(selectedSeq);
-  selectedSeqRef.current = selectedSeq;
   const isPhase2ReadyRef = useRef(isPhase2Ready);
   isPhase2ReadyRef.current = isPhase2Ready;
   const isLoadedRef = useRef(isLoaded);
@@ -482,7 +590,7 @@ function App() {
     unlisteners.push(listen<{ panel: string }>("panel:ready", (e) => {
       emit("sync:init-state", {
         sessionId: activeSessionIdRef.current,
-        selectedSeq: selectedSeqRef.current,
+        selectedSeq: selectedSeqStore.get(),
         isPhase2Ready: isPhase2ReadyRef.current,
         isLoaded: isLoadedRef.current,
         totalLines: totalLinesRef.current,
@@ -527,13 +635,20 @@ function App() {
     return () => { unlisten.then(fn => fn()); };
   }, []);
 
-  // 状态变化时广播给浮动窗口（trace 分析状态）
+  // selectedSeq sync via store subscriber (non-React)
+  useEffect(() => {
+    if (floatedPanels.size === 0) return;
+    return selectedSeqStore.subscribe(() => {
+      emit("sync:selected-seq", { seq: selectedSeqStore.get() });
+    });
+  }, [floatedPanels.size]);
+
+  // isPhase2Ready sync (infrequent, keep as React effect)
   useEffect(() => {
     if (floatedPanels.size > 0) {
-      emit("sync:selected-seq", { seq: selectedSeq });
       emit("sync:phase2-ready", { ready: isPhase2Ready });
     }
-  }, [selectedSeq, isPhase2Ready, floatedPanels.size]);
+  }, [isPhase2Ready, floatedPanels.size]);
 
   // 状态变化时广播给浮动窗口（session 状态）
   useEffect(() => {
@@ -610,6 +725,9 @@ function App() {
         if (el.tagName === "INPUT" || el.tagName === "TEXTAREA" || el.isContentEditable) return;
         e.preventDefault();
         setShowGoto(true);
+      } else if (e.key === "F12") {
+        e.preventDefault();
+        invoke("toggle_devtools");
       }
     };
     window.addEventListener("keydown", handler);
@@ -646,13 +764,12 @@ function App() {
         onRemoveRecent={removeRecent}
         onGoBack={handleGoBack}
         onGoForward={handleGoForward}
-        canGoBack={canGoBack}
-        canGoForward={canGoForward}
         preferences={preferences}
         onUpdatePreferences={updatePreferences}
         onTaintAnalysis={() => {
-          if (selectedSeq !== null) {
-            setTaintDialogSeq(selectedSeq);
+          const seq = selectedSeqStore.get();
+          if (seq !== null) {
+            setTaintDialogSeq(seq);
             setTaintDialogReg(undefined);
           }
         }}
@@ -688,22 +805,21 @@ function App() {
             console.error("Save taint results failed:", e);
           }
         }}
-        hasSelectedSeq={selectedSeq !== null}
-        onHighlight={(color) => { if (selectedSeq !== null) setHighlight([selectedSeq], { color }); }}
-        onStrikethrough={() => { if (selectedSeq !== null) toggleStrikethrough([selectedSeq]); }}
-        onResetHighlight={() => { if (selectedSeq !== null) resetHighlight([selectedSeq]); }}
-        onHide={() => { if (selectedSeq !== null) toggleHidden([selectedSeq]); }}
+        onHighlight={(color) => { const seq = selectedSeqStore.get(); if (seq !== null) setHighlight([seq], { color }); }}
+        onStrikethrough={() => { const seq = selectedSeqStore.get(); if (seq !== null) toggleStrikethrough([seq]); }}
+        onResetHighlight={() => { const seq = selectedSeqStore.get(); if (seq !== null) resetHighlight([seq]); }}
+        onHide={() => { const seq = selectedSeqStore.get(); if (seq !== null) toggleHidden([seq]); }}
         sliceActive={slice.sliceActive}
         sliceFilterMode={slice.sliceFilterMode}
         sliceInfo={slice.sliceInfo}
         onTaintFilterModeChange={(mode) => {
           slice.setSliceFilterMode(mode);
-          // 视图切换后保持当前行焦点
-          if (selectedSeq !== null) {
+          const seq = selectedSeqStore.get();
+          if (seq !== null) {
             requestAnimationFrame(() => {
               scrollAlignRef.current = "auto";
               setScrollTrigger(c => c + 1);
-              navigate(selectedSeq);
+              navigationStore.navigate(seq);
             });
           }
         }}
@@ -712,7 +828,7 @@ function App() {
           if (slice.sliceSourceSeq !== undefined) {
             scrollAlignRef.current = "end";
             setScrollTrigger(c => c + 1);
-            navigate(slice.sliceSourceSeq);
+            navigationStore.navigate(slice.sliceSourceSeq);
           }
         }}
         onTaintReconfigure={() => {
@@ -734,11 +850,14 @@ function App() {
                 nodeCount={callTreeCount}
                 loading={callTreeLoading}
                 error={callTreeError}
+                lazyMode={callTreeLazyMode}
+                loadedNodes={callTreeLoadedNodes}
+                onLoadChildren={loadCallTreeChildren}
               />
             </Panel>
             <Separator style={{ height: 3 }} />
             <Panel defaultSize={35} minSize={15} panelRef={regPanelRef}>
-              <RegisterPanel selectedSeq={selectedSeq} isPhase2Ready={isPhase2Ready} sessionId={activeSessionId} />
+              <RegisterPanel isPhase2Ready={isPhase2Ready} sessionId={activeSessionId} />
             </Panel>
           </Group>
         </Panel>
@@ -765,8 +884,7 @@ function App() {
                   <TraceTable
                     totalLines={totalLines}
                     isLoaded={isLoaded}
-                    selectedSeq={selectedSeq}
-                    onSelectSeq={navigate}
+                    onSelectSeq={navigationStore.navigate}
                     getLines={getLines}
                     savedScrollSeq={savedScrollSeq}
                     foldState={foldState}
@@ -802,11 +920,7 @@ function App() {
                 searchStatus={searchStatus}
                 searchTotalMatches={searchTotalMatches}
                 onJumpToSeq={handleJumpToSeq}
-                selectedSeq={selectedSeq}
                 isPhase2Ready={isPhase2Ready}
-                memAddr={selectedMem.addr}
-                memRw={selectedMem.rw}
-                memSize={selectedMem.size}
                 floatedPanels={floatedPanels}
                 onFloat={handleFloat}
                 sessionId={activeSessionId}
@@ -830,9 +944,7 @@ function App() {
             ? `${filePath.split(/[/\\]/).pop()} — ${totalLines.toLocaleString()} lines`
             : ""}
         </span>
-        <span>
-          {selectedSeq !== null ? `selected: #${selectedSeq + 1}` : ""}
-        </span>
+        <StatusBarSelection />
       </div>
       {taintDialogSeq !== null && (
         <TaintConfigDialog
@@ -846,7 +958,7 @@ function App() {
             // 跳转到污点源行
             scrollAlignRef.current = "end";
             setScrollTrigger(c => c + 1);
-            navigate(sourceSeq);
+            navigationStore.navigate(sourceSeq);
           }}
           onClose={() => setTaintDialogSeq(null)}
         />
@@ -925,6 +1037,12 @@ function App() {
       )}
     </div>
   );
+}
+
+function StatusBarSelection() {
+  const selectedSeq = useSelectedSeq();
+  if (selectedSeq === null) return null;
+  return <span>selected: #{selectedSeq + 1}</span>;
 }
 
 export default App;

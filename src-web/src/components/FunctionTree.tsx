@@ -10,6 +10,7 @@ interface FlatRow {
   depth: number;
   hasChildren: boolean;
   isExpanded: boolean;
+  isChildrenLoaded: boolean;
 }
 
 interface Props {
@@ -19,6 +20,9 @@ interface Props {
   nodeCount: number;
   loading: boolean;
   error: string | null;
+  lazyMode?: boolean;
+  loadedNodes?: Set<number>;
+  onLoadChildren?: (nodeId: number) => Promise<void>;
 }
 
 function formatLineCount(count: number): string {
@@ -27,9 +31,13 @@ function formatLineCount(count: number): string {
   return String(count);
 }
 
-export default function FunctionTree({ isPhase2Ready, onJumpToSeq, nodeMap, nodeCount, loading, error }: Props) {
+export default function FunctionTree({
+  isPhase2Ready, onJumpToSeq, nodeMap, nodeCount, loading, error,
+  lazyMode = false, loadedNodes, onLoadChildren,
+}: Props) {
   const [expanded, setExpanded] = useState<Set<number>>(new Set([0]));
   const [selectedId, setSelectedId] = useState<number | null>(null);
+  const [loadingNodes, setLoadingNodes] = useState<Set<number>>(new Set());
   const parentRef = useRef<HTMLDivElement>(null);
 
   const rows = useMemo(() => {
@@ -40,18 +48,19 @@ export default function FunctionTree({ isPhase2Ready, onJumpToSeq, nodeMap, node
       if (!dto) return;
       const hasChildren = dto.children_ids.length > 0;
       const isExp = expanded.has(id);
+      const isChildrenLoaded = !lazyMode || (loadedNodes?.has(id) ?? false);
       result.push({
         id: dto.id, func_addr: dto.func_addr, entry_seq: dto.entry_seq,
         line_count: dto.exit_seq - dto.entry_seq + 1,
-        depth, hasChildren, isExpanded: isExp,
+        depth, hasChildren, isExpanded: isExp, isChildrenLoaded,
       });
-      if (hasChildren && isExp) {
+      if (hasChildren && isExp && isChildrenLoaded) {
         for (const cid of dto.children_ids) walk(cid, depth + 1);
       }
     }
     walk(0, 0);
     return result;
-  }, [nodeMap, expanded]);
+  }, [nodeMap, expanded, lazyMode, loadedNodes]);
 
   const virtualizer = useVirtualizerNoSync({
     count: rows.length,
@@ -60,13 +69,30 @@ export default function FunctionTree({ isPhase2Ready, onJumpToSeq, nodeMap, node
     overscan: 20,
   });
 
-  const toggleExpand = useCallback((id: number) => {
-    setExpanded((prev) => {
-      const next = new Set(prev);
-      if (next.has(id)) next.delete(id); else next.add(id);
-      return next;
-    });
-  }, []);
+  const toggleExpand = useCallback(async (id: number) => {
+    if (expanded.has(id)) {
+      setExpanded((prev) => {
+        const next = new Set(prev);
+        next.delete(id);
+        return next;
+      });
+    } else {
+      // 懒加载模式：展开前先加载子节点
+      if (lazyMode && onLoadChildren && !(loadedNodes?.has(id))) {
+        setLoadingNodes(prev => { const n = new Set(prev); n.add(id); return n; });
+        try {
+          await onLoadChildren(id);
+        } finally {
+          setLoadingNodes(prev => { const n = new Set(prev); n.delete(id); return n; });
+        }
+      }
+      setExpanded((prev) => {
+        const next = new Set(prev);
+        next.add(id);
+        return next;
+      });
+    }
+  }, [expanded, lazyMode, onLoadChildren, loadedNodes]);
 
   const handleClick = useCallback((row: FlatRow) => {
     setSelectedId(row.id);
@@ -114,6 +140,7 @@ export default function FunctionTree({ isPhase2Ready, onJumpToSeq, nodeMap, node
           {virtualItems.map((virtualRow) => {
             const row = rows[virtualRow.index];
             if (!row) return null;
+            const isNodeLoading = loadingNodes.has(row.id);
             return (
               <div
                 key={row.id}
@@ -132,7 +159,9 @@ export default function FunctionTree({ isPhase2Ready, onJumpToSeq, nodeMap, node
                 onMouseLeave={(e) => { if (selectedId !== row.id) e.currentTarget.style.background = "transparent"; }}
               >
                 <span style={{ width: 12, textAlign: "center", color: "var(--text-secondary)", fontSize: 10, flexShrink: 0 }}>
-                  {row.hasChildren ? (row.isExpanded ? "\u25BC" : "\u25B6") : ""}
+                  {row.hasChildren
+                    ? (isNodeLoading ? "\u23F3" : (row.isExpanded && row.isChildrenLoaded ? "\u25BC" : "\u25B6"))
+                    : ""}
                 </span>
                 <span style={{ color: "var(--text-address)", flexShrink: 0 }}>{row.func_addr}</span>
                 <span style={{ color: "var(--text-secondary)", fontSize: 11, marginLeft: "auto", flexShrink: 0 }}>

@@ -20,6 +20,13 @@ Thumbs.db
 # Tauri generated
 gen/schemas/
 
+# Claude
+CLAUDE.md
+
+# Docs（仅允许 docs/images/）
+docs/*
+!docs/images/
+
 # Trace files
 *.trace
 trace-*.txt

@@ -3,6 +3,8 @@ import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import type { CreateSessionResult, SessionData, SearchMatch, SearchResult } from "../types/trace";
 import { useLineCache } from "./useLineCache";
+import { selectedSeqStore } from "../stores/selectedSeqStore";
+import { navigationStore } from "../stores/navigationStore";
 
 const SCROLL_POS_KEY = "trace-ui-scroll-positions";
 function saveScrollPos(filePath: string, seq: number) {
@@ -43,6 +45,24 @@ export function useTraceStore() {
   // Line cache (extracted to useLineCache hook, per-session)
   const { getLines, removeSessionCache } = useLineCache(activeSessionId);
   const scrollSaveTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const selectedSeqMapRef = useRef<Map<string, number | null>>(new Map());
+
+  // Store subscriber: persist selectedSeq to ref map + debounced localStorage
+  useEffect(() => {
+    return selectedSeqStore.subscribe(() => {
+      const seq = selectedSeqStore.get();
+      const sid = activeSessionIdRef.current;
+      if (!sid) return;
+      selectedSeqMapRef.current.set(sid, seq);
+      if (seq !== null) {
+        const s = sessionsRef.current.get(sid);
+        if (s?.filePath) {
+          if (scrollSaveTimer.current) clearTimeout(scrollSaveTimer.current);
+          scrollSaveTimer.current = setTimeout(() => saveScrollPos(s.filePath, seq), 1000);
+        }
+      }
+    });
+  }, []);
 
   const clearSearchState = useCallback(() => {
     setSearchResults([]);
@@ -62,7 +82,6 @@ export function useTraceStore() {
   const activeSession = activeSessionId ? sessions.get(activeSessionId) : undefined;
   const totalLines = activeSession?.totalLines ?? 0;
   const isLoaded = activeSession?.isLoaded ?? false;
-  const selectedSeq = activeSession?.selectedSeq ?? null;
   const isPhase2Ready = activeSession?.isPhase2Ready ?? false;
   const filePath = activeSession?.filePath ?? null;
 
@@ -93,14 +112,18 @@ export function useTraceStore() {
 
   // 阶段2：索引构建进度 0-100%
   useEffect(() => {
-    const unlisten = listen<{ sessionId: string; progress: number; done: boolean; error?: string }>(
+    const unlisten = listen<{ sessionId: string; progress: number; done: boolean; error?: string; totalLines?: number }>(
       "index-progress",
       (event) => {
-        const { sessionId, progress, done, error } = event.payload;
-        updateSession(sessionId, {
+        const { sessionId, progress, done, error, totalLines } = event.payload;
+        const updates: Partial<SessionData> = {
           indexProgress: progress,
           isPhase2Ready: done && !error,
-        });
+        };
+        if (done && totalLines != null) {
+          updates.totalLines = totalLines;
+        }
+        updateSession(sessionId, updates);
         if (sessionId === activeSessionIdRef.current) {
           if (done) {
             setIsLoading(false);
@@ -123,16 +146,9 @@ export function useTraceStore() {
     };
   }, [updateSession]);
 
-  const setSelectedSeqWithSave = useCallback((seq: number | null) => {
-    const sid = activeSessionIdRef.current;
-    if (!sid) return;
-    updateSession(sid, { selectedSeq: seq });
-    const s = sessionsRef.current.get(sid);
-    if (seq !== null && s?.filePath) {
-      if (scrollSaveTimer.current) clearTimeout(scrollSaveTimer.current);
-      scrollSaveTimer.current = setTimeout(() => saveScrollPos(s.filePath, seq), 1000);
-    }
-  }, [updateSession]);
+  const getSelectedSeqForSession = useCallback((sid: string): number | null => {
+    return selectedSeqMapRef.current.get(sid) ?? null;
+  }, []);
 
   const openTrace = useCallback(async (path: string) => {
     // Check if already opened
@@ -156,7 +172,6 @@ export function useTraceStore() {
         totalLines: result.totalLines,
         fileSize: result.fileSize,
         isLoaded: true,
-        selectedSeq: null,
         isPhase2Ready: false,
         indexProgress: 0,
       };
@@ -168,14 +183,8 @@ export function useTraceStore() {
       // Restore scroll position
       const lastSeq = loadScrollPos(path);
       if (lastSeq !== null && lastSeq < result.totalLines) {
-        setSessions(prev => {
-          const next = new Map(prev);
-          const existing = next.get(result.sessionId);
-          if (existing) {
-            next.set(result.sessionId, { ...existing, selectedSeq: lastSeq });
-          }
-          return next;
-        });
+        selectedSeqMapRef.current.set(result.sessionId, lastSeq);
+        selectedSeqStore.set(lastSeq);
         setSavedScrollSeq(lastSeq);
       } else {
         setSavedScrollSeq(null);
@@ -229,6 +238,7 @@ export function useTraceStore() {
       }
       return next;
     });
+    selectedSeqMapRef.current.delete(sessionId);
     removeSessionCache(sessionId);
   }, [removeSessionCache]);
 
@@ -261,12 +271,10 @@ export function useTraceStore() {
   const switchSession = useCallback((id: string) => {
     setActiveSessionId(id);
     clearSearchState();
-    const s = sessionsRef.current.get(id);
-    if (s?.selectedSeq !== null && s?.selectedSeq !== undefined) {
-      setSavedScrollSeq(s.selectedSeq);
-    } else {
-      setSavedScrollSeq(null);
-    }
+    navigationStore.reset();
+    const seq = selectedSeqMapRef.current.get(id) ?? null;
+    selectedSeqStore.set(seq);
+    setSavedScrollSeq(seq);
   }, [clearSearchState]);
 
   const rebuildIndex = useCallback(async () => {
@@ -330,9 +338,8 @@ export function useTraceStore() {
     totalLines,
     fileSize: activeSession?.fileSize ?? 0,
     isLoaded,
-    selectedSeq,
-    setSelectedSeq: setSelectedSeqWithSave,
     isPhase2Ready,
+    getSelectedSeqForSession,
     indexProgress: activeSession?.indexProgress ?? 0,
     isLoading,
     loadingMessage,

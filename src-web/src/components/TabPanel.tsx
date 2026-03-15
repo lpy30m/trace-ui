@@ -22,11 +22,7 @@ interface Props {
   searchStatus: string;
   searchTotalMatches: number;
   onJumpToSeq: (seq: number) => void;
-  selectedSeq: number | null;
   isPhase2Ready: boolean;
-  memAddr: string | null;
-  memRw: string | null;
-  memSize: number | null;
   floatedPanels: Set<string>;
   onFloat: (panel: string, position?: { x: number; y: number }) => void;
   sessionId: string | null;
@@ -37,7 +33,7 @@ interface Props {
 
 export default function TabPanel({
   searchResults, searchQuery, isSearching, searchStatus, searchTotalMatches, onJumpToSeq,
-  selectedSeq, isPhase2Ready, memAddr, memRw, memSize,
+  isPhase2Ready,
   floatedPanels, onFloat, sessionId,
   sliceActive, sliceInfo, sliceFromSpecs,
 }: Props) {
@@ -99,7 +95,6 @@ export default function TabPanel({
               <>
                 <SearchResultList
                   results={searchResults}
-                  selectedSeq={selectedSeq}
                   onJumpToSeq={onJumpToSeq}
                   changesWidth={changesCol.width}
                   onResizeChanges={changesCol.onMouseDown}
@@ -122,11 +117,7 @@ export default function TabPanel({
         return (
           <div style={{ flex: 1, display: "flex", flexDirection: "column", overflow: "hidden" }}>
             <MemoryPanel
-              selectedSeq={selectedSeq}
               isPhase2Ready={isPhase2Ready}
-              memAddr={memAddr}
-              memRw={memRw}
-              memSize={memSize}
               onJumpToSeq={onJumpToSeq}
               sessionId={sessionId}
               resetKey={memResetKey}

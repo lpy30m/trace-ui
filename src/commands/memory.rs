@@ -120,10 +120,11 @@ pub fn get_mem_history(
 
     use crate::taint::mem_access::MemRw;
     use crate::commands::browse::parse_trace_line;
+    let line_index = session.line_index.as_ref().ok_or_else(|| "索引尚未构建完成".to_string())?;
     let result: Vec<MemHistoryRecord> = records
         .iter()
         .map(|rec| {
-            let disasm = session.line_index.get_line(&session.mmap, rec.seq)
+            let disasm = line_index.get_line(&session.mmap, rec.seq)
                 .and_then(|raw| parse_trace_line(rec.seq, raw))
                 .map(|parsed| parsed.disasm)
                 .unwrap_or_default();

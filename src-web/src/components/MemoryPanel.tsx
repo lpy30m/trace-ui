@@ -2,6 +2,7 @@ import { useState, useEffect, useCallback, useRef, useMemo } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { useVirtualizerNoSync } from "../hooks/useVirtualizerNoSync";
 import type { MemorySnapshot, TraceLine } from "../types/trace";
+import { useSelectedSeq } from "../stores/selectedSeqStore";
 import type { ResolvedRow } from "../hooks/useFoldState";
 import Minimap, { MINIMAP_WIDTH } from "./Minimap";
 import CustomScrollbar from "./CustomScrollbar";
@@ -16,11 +17,11 @@ interface MemHistoryRecord {
 }
 
 interface Props {
-  selectedSeq: number | null;
+  selectedSeq?: number | null;
   isPhase2Ready: boolean;
-  memAddr: string | null;
-  memRw: string | null;
-  memSize: number | null;
+  memAddr?: string | null;
+  memRw?: string | null;
+  memSize?: number | null;
   onJumpToSeq: (seq: number) => void;
   sessionId: string | null;
   resetKey?: number;
@@ -39,7 +40,33 @@ function toAsciiChar(byte: number): string {
   return byte >= 0x20 && byte <= 0x7e ? String.fromCharCode(byte) : ".";
 }
 
-export default function MemoryPanel({ selectedSeq, isPhase2Ready, memAddr, memRw, memSize, onJumpToSeq, sessionId, resetKey }: Props) {
+export default function MemoryPanel({ selectedSeq: selectedSeqProp, isPhase2Ready, memAddr: memAddrProp, memRw: memRwProp, memSize: memSizeProp, onJumpToSeq, sessionId, resetKey }: Props) {
+  const selectedSeqFromStore = useSelectedSeq();
+  const selectedSeq = selectedSeqProp !== undefined ? selectedSeqProp : selectedSeqFromStore;
+
+  // Internal mem info state (used when memAddrProp is not provided)
+  const [memAddrInternal, setMemAddrInternal] = useState<string | null>(null);
+  const [memRwInternal, setMemRwInternal] = useState<string | null>(null);
+  const [memSizeInternal, setMemSizeInternal] = useState<number | null>(null);
+
+  useEffect(() => {
+    if (memAddrProp !== undefined) return;
+    if (selectedSeq === null || !sessionId) {
+      setMemAddrInternal(null); setMemRwInternal(null); setMemSizeInternal(null);
+      return;
+    }
+    invoke<TraceLine[]>("get_lines", { sessionId, seqs: [selectedSeq] }).then((lines) => {
+      if (lines.length > 0) {
+        setMemAddrInternal(lines[0].mem_addr ?? null);
+        setMemRwInternal(lines[0].mem_rw ?? null);
+        setMemSizeInternal(lines[0].mem_size ?? null);
+      }
+    });
+  }, [selectedSeq, sessionId, memAddrProp]);
+
+  const memAddr = memAddrProp !== undefined ? memAddrProp : memAddrInternal;
+  const memRw = memRwProp !== undefined ? memRwProp : memRwInternal;
+  const memSize = memSizeProp !== undefined ? memSizeProp : memSizeInternal;
   const [autoTrack, setAutoTrack] = useState(true);
   const [inputAddr, setInputAddr] = useState("");
   const [currentAddr, setCurrentAddr] = useState<string | null>(null);
@@ -59,10 +86,14 @@ export default function MemoryPanel({ selectedSeq, isPhase2Ready, memAddr, memRw
       hexWrapperObserver.current = null;
     }
     if (el) {
+      let timer = 0;
       const ro = new ResizeObserver((entries) => {
         const h = entries[0]?.contentRect.height;
         if (h && h > 0) {
-          setHexClippedHeight(Math.floor(h / HEX_ROW_HEIGHT) * HEX_ROW_HEIGHT);
+          clearTimeout(timer);
+          timer = window.setTimeout(() => {
+            setHexClippedHeight(Math.floor(h / HEX_ROW_HEIGHT) * HEX_ROW_HEIGHT);
+          }, document.documentElement.dataset.separatorDrag ? 300 : 0);
         }
       });
       ro.observe(el);
@@ -182,8 +213,15 @@ export default function MemoryPanel({ selectedSeq, isPhase2Ready, memAddr, memRw
       return;
     }
     // 设置新的 observer
+    let timer = 0;
     const ro = new ResizeObserver((entries) => {
-      if (entries[0]) setHistoryContainerHeight(entries[0].contentRect.height);
+      if (entries[0]) {
+        clearTimeout(timer);
+        const h = entries[0].contentRect.height;
+        timer = window.setTimeout(() => {
+          setHistoryContainerHeight(h);
+        }, document.documentElement.dataset.separatorDrag ? 300 : 0);
+      }
     });
     el.addEventListener("scroll", handleHistoryScroll);
     ro.observe(el);

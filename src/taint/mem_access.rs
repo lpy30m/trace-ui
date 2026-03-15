@@ -1,4 +1,4 @@
-use std::collections::HashMap;
+use rustc_hash::FxHashMap;
 use serde::{Serialize, Deserialize};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -18,14 +18,14 @@ pub struct MemAccessRecord {
 
 #[derive(Serialize, Deserialize)]
 pub struct MemAccessIndex {
-    index: HashMap<u64, Vec<MemAccessRecord>>,
+    index: FxHashMap<u64, Vec<MemAccessRecord>>,
 }
 
 #[allow(dead_code)]
 impl MemAccessIndex {
     pub fn new() -> Self {
         Self {
-            index: HashMap::new(),
+            index: FxHashMap::default(),
         }
     }
 

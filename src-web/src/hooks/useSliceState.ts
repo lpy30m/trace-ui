@@ -101,11 +101,13 @@ export function useSliceState(sessionId: string | null) {
     }
   }, [sessionId, updateState, getSliceCache]);
 
-  const clearSlice = useCallback(async () => {
+  const clearSlice = useCallback(() => {
     if (!sessionId) return;
-    await invoke("clear_slice", { sessionId });
+    // 先同步更新 UI 状态（即时退出污点模式），再 fire-and-forget 发送 IPC。
+    // 避免 await 期间后端写锁被前端预取的读锁饿死导致 UI 卡顿数秒。
     getSliceCache(sessionId).clear();
     updateState(sessionId, defaultState());
+    invoke("clear_slice", { sessionId }).catch(console.error);
   }, [sessionId, updateState, getSliceCache]);
 
   const setSliceFilterMode = useCallback((mode: "highlight" | "filter-only") => {

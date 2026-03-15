@@ -32,13 +32,29 @@ pub fn get_reg_def_use_chain(
         .ok_or_else(|| format!("未知寄存器: {}", reg_name))?;
 
     let total = session.total_lines;
+    let line_index = session.line_index.as_ref().ok_or_else(|| "索引尚未构建完成".to_string())?;
 
-    // === 向上扫描：找最近一次 DEF 该寄存器的行 ===
+    // === 分析 anchor 行：判断 target_reg 在当前行是 DEF 还是 USE ===
+    let mut anchor_is_use = false;
+    let mut anchor_is_def = false;
+    if let Some(raw) = line_index.get_line(&session.mmap, seq) {
+        if let Ok(line_str) = std::str::from_utf8(raw) {
+            if let Some(parsed) = parser::parse_line(line_str) {
+                let first_reg = parsed.operands.first().and_then(|op| op.as_reg());
+                let cls = insn_class::classify(parsed.mnemonic.as_str(), first_reg);
+                let (defs, uses) = determine_def_use(cls, &parsed);
+                anchor_is_def = defs.iter().any(|r| *r == target_reg);
+                anchor_is_use = uses.iter().any(|r| *r == target_reg);
+            }
+        }
+    }
+
+    // === 向上扫描：仅当 anchor 行 USE 了该寄存器时才查找上游 DEF ===
     let mut def_seq: Option<u32> = None;
-    if seq > 0 {
+    if anchor_is_use && seq > 0 {
         let scan_start = seq.saturating_sub(MAX_SCAN_RANGE);
         for s in (scan_start..seq).rev() {
-            if let Some(raw) = session.line_index.get_line(&session.mmap, s) {
+            if let Some(raw) = line_index.get_line(&session.mmap, s) {
                 if let Ok(line_str) = std::str::from_utf8(raw) {
                     if let Some(parsed) = parser::parse_line(line_str) {
                         let first_reg = parsed.operands.first().and_then(|op| op.as_reg());
@@ -54,27 +70,29 @@ pub fn get_reg_def_use_chain(
         }
     }
 
-    // === 向下扫描：收集 USE 行，直到寄存器被重新 DEF ===
+    // === 向下扫描：仅当 anchor 行 DEF 了该寄存器时才收集下游 USE ===
     let mut use_seqs: Vec<u32> = Vec::new();
     let mut redefined_seq: Option<u32> = None;
-    let scan_end = total.min(seq + MAX_SCAN_RANGE);
-    for s in (seq + 1)..scan_end {
-        if let Some(raw) = session.line_index.get_line(&session.mmap, s) {
-            if let Ok(line_str) = std::str::from_utf8(raw) {
-                if let Some(parsed) = parser::parse_line(line_str) {
-                    let first_reg = parsed.operands.first().and_then(|op| op.as_reg());
-                    let cls = insn_class::classify(parsed.mnemonic.as_str(), first_reg);
-                    let (defs, uses) = determine_def_use(cls, &parsed);
+    if anchor_is_def {
+        let scan_end = total.min(seq + MAX_SCAN_RANGE);
+        for s in (seq + 1)..scan_end {
+            if let Some(raw) = line_index.get_line(&session.mmap, s) {
+                if let Ok(line_str) = std::str::from_utf8(raw) {
+                    if let Some(parsed) = parser::parse_line(line_str) {
+                        let first_reg = parsed.operands.first().and_then(|op| op.as_reg());
+                        let cls = insn_class::classify(parsed.mnemonic.as_str(), first_reg);
+                        let (defs, uses) = determine_def_use(cls, &parsed);
 
-                    // 先检查 USE（同一行可能既 USE 又 DEF，如 add x0, x0, #1）
-                    if uses.iter().any(|r| *r == target_reg) {
-                        use_seqs.push(s);
-                    }
+                        // 先检查 USE（同一行可能既 USE 又 DEF，如 add x0, x0, #1）
+                        if uses.iter().any(|r| *r == target_reg) {
+                            use_seqs.push(s);
+                        }
 
-                    // 再检查 DEF（重新定义 = 扫描终点）
-                    if defs.iter().any(|r| *r == target_reg) {
-                        redefined_seq = Some(s);
-                        break;
+                        // 再检查 DEF（重新定义 = 扫描终点）
+                        if defs.iter().any(|r| *r == target_reg) {
+                            redefined_seq = Some(s);
+                            break;
+                        }
                     }
                 }
             }

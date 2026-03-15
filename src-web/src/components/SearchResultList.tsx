@@ -4,11 +4,12 @@ import type { SearchMatch, TraceLine } from "../types/trace";
 import type { ResolvedRow } from "../hooks/useFoldState";
 import DisasmHighlight from "./DisasmHighlight";
 import Minimap, { MINIMAP_WIDTH } from "./Minimap";
+import { useSelectedSeq } from "../stores/selectedSeqStore";
 import CustomScrollbar from "./CustomScrollbar";
 
 interface SearchResultListProps {
   results: SearchMatch[];
-  selectedSeq: number | null;
+  selectedSeq?: number | null;
   onJumpToSeq: (seq: number) => void;
   changesWidth?: number;
   onResizeChanges?: (e: React.MouseEvent) => void;
@@ -16,11 +17,14 @@ interface SearchResultListProps {
 
 export default function SearchResultList({
   results,
-  selectedSeq,
+  selectedSeq: selectedSeqProp,
   onJumpToSeq,
   changesWidth = 300,
   onResizeChanges,
 }: SearchResultListProps) {
+  const selectedSeqFromStore = useSelectedSeq();
+  const selectedSeq = selectedSeqProp !== undefined ? selectedSeqProp : selectedSeqFromStore;
+
   const parentRef = useRef<HTMLDivElement>(null);
   const [selectedIdx, setSelectedIdx] = useState<number | null>(null);
   const [scrollRow, setScrollRow] = useState(0);
@@ -55,10 +59,16 @@ export default function SearchResultList({
     const el = parentRef.current;
     if (!el) return;
     const handleScroll = () => { setScrollRow(Math.floor(el.scrollTop / 22)); };
-    const ro = new ResizeObserver((entries) => { setContainerHeight(entries[0].contentRect.height); });
+    let timer = 0;
+    const ro = new ResizeObserver((entries) => {
+      clearTimeout(timer);
+      const h = entries[0].contentRect.height;
+      timer = window.setTimeout(() => { setContainerHeight(h); },
+        document.documentElement.dataset.separatorDrag ? 300 : 0);
+    });
     el.addEventListener("scroll", handleScroll);
     ro.observe(el);
-    return () => { el.removeEventListener("scroll", handleScroll); ro.disconnect(); };
+    return () => { clearTimeout(timer); el.removeEventListener("scroll", handleScroll); ro.disconnect(); };
   }, [results.length]);
 
   // Minimap 适配函数

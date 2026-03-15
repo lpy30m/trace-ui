@@ -49,14 +49,27 @@
 
 * { margin: 0; padding: 0; box-sizing: border-box; }
 
-html, body, #root {
+html, body {
   height: 100%; width: 100%; overflow: hidden;
-  background: var(--bg-primary);
+  background: transparent;
   color: var(--text-primary);
   font-family: var(--font-mono);
   font-size: var(--font-size-base);
   -webkit-font-smoothing: antialiased;
   -moz-osx-font-smoothing: grayscale;
+}
+
+#root {
+  height: 100%; width: 100%; overflow: hidden;
+  background: var(--bg-primary);
+}
+
+/* 库的 Panel 内层 div 默认 overflow:auto，每次 flex 布局变化都会触发滚动条计算；
+   改为 hidden 消除布局抖动，各组件内部自行管理 overflow。
+   contain:content 隔离内部布局重算范围，加速拖拽分割线时的浏览器回流。 */
+[data-panel] > div {
+  overflow: hidden !important;
+  contain: layout paint style;
 }
 
 [data-separator] {

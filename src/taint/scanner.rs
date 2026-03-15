@@ -91,12 +91,161 @@ pub struct PairSplitDeps {
     pub half2_deps: SmallVec<[u32; 4]>,
 }
 
+/// mem_last_def 的紧凑存储：扫描期间用 HashMap（快速插入），
+/// compact 后转为排序数组（节省内存，二分查找）。
+#[derive(serde::Serialize, serde::Deserialize)]
+pub enum MemLastDef {
+    Map(FxHashMap<u64, (u32, u64)>),
+    Sorted(Vec<(u64, u32, u64)>),
+}
+
+impl Default for MemLastDef {
+    fn default() -> Self {
+        Self::Map(FxHashMap::default())
+    }
+}
+
+impl MemLastDef {
+    /// 查找地址对应的 (line, value)。返回拷贝。
+    pub fn get(&self, addr: &u64) -> Option<(u32, u64)> {
+        match self {
+            Self::Map(m) => m.get(addr).copied(),
+            Self::Sorted(v) => {
+                v.binary_search_by_key(addr, |(a, _, _)| *a)
+                    .ok()
+                    .map(|i| (v[i].1, v[i].2))
+            }
+        }
+    }
+
+    /// 扫描期间插入（仅 Map 模式）
+    pub fn insert(&mut self, addr: u64, value: (u32, u64)) {
+        match self {
+            Self::Map(m) => { m.insert(addr, value); },
+            Self::Sorted(_) => panic!("cannot insert into compacted MemLastDef"),
+        }
+    }
+
+    /// 返回条目数
+    pub fn len(&self) -> usize {
+        match self {
+            Self::Map(m) => m.len(),
+            Self::Sorted(v) => v.len(),
+        }
+    }
+
+    /// 压缩为排序数组，释放 HashMap 开销
+    pub fn compact(&mut self) {
+        if let Self::Map(m) = self {
+            let mut sorted: Vec<(u64, u32, u64)> = m.drain()
+                .map(|(addr, (line, val))| (addr, line, val))
+                .collect();
+            sorted.sort_unstable_by_key(|(addr, _, _)| *addr);
+            *self = Self::Sorted(sorted);
+        }
+    }
+}
+
+/// 紧凑依赖图存储（CSR 格式）。
+///
+/// 使用 offsets + data 两个连续数组代替 `Vec<SmallVec<[u32; 4]>>`，
+/// 消除每行 24 字节的 SmallVec 开销，至少节省 4 字节/行。
+///
+/// - `offsets[i]` = 第 i 行的依赖在 `data` 中的起始索引
+/// - 第 i 行的依赖 = `data[offsets[i]..offsets[i+1]]`
+/// - `offsets` 长度 = 行数 + 1（末尾哨兵）
+#[derive(Clone, serde::Serialize, serde::Deserialize)]
+pub struct CompactDeps {
+    offsets: Vec<u32>,
+    data: Vec<u32>,
+}
+
+impl CompactDeps {
+    #[allow(dead_code)]
+    pub fn new() -> Self {
+        Self {
+            offsets: Vec::new(),
+            data: Vec::new(),
+        }
+    }
+
+    pub fn with_capacity(estimated_lines: usize, estimated_deps: usize) -> Self {
+        Self {
+            offsets: Vec::with_capacity(estimated_lines + 1),
+            data: Vec::with_capacity(estimated_deps),
+        }
+    }
+
+    /// 开始新的一行。必须在 push_unique 之前调用。
+    #[inline]
+    pub fn start_row(&mut self) {
+        self.offsets.push(self.data.len() as u32);
+    }
+
+    /// 向当前行添加依赖（去重）。
+    #[inline]
+    pub fn push_unique(&mut self, val: u32) {
+        let start = *self.offsets.last().unwrap() as usize;
+        if !self.data[start..].contains(&val) {
+            self.data.push(val);
+        }
+    }
+
+    /// 获取第 i 行的依赖切片。
+    #[inline]
+    pub fn row(&self, i: usize) -> &[u32] {
+        let start = self.offsets[i] as usize;
+        let end = if i + 1 < self.offsets.len() {
+            self.offsets[i + 1] as usize
+        } else {
+            self.data.len()
+        };
+        &self.data[start..end]
+    }
+
+    /// 总依赖边数。
+    pub fn total_deps(&self) -> usize {
+        self.data.len()
+    }
+
+    /// 行数。
+    #[allow(dead_code)]
+    pub fn num_rows(&self) -> usize {
+        self.offsets.len()
+    }
+
+    /// 是否没有任何行。
+    #[allow(dead_code)]
+    pub fn is_empty(&self) -> bool {
+        self.offsets.is_empty()
+    }
+
+    /// 收缩内部存储以释放多余内存。
+    #[allow(dead_code)]
+    pub fn shrink_to_fit(&mut self) {
+        self.data.shrink_to_fit();
+        self.offsets.shrink_to_fit();
+    }
+
+    /// 判断第 i 行是否有依赖。
+    #[allow(dead_code)]
+    pub fn row_is_empty(&self, i: usize) -> bool {
+        self.row(i).is_empty()
+    }
+
+    /// 第 i 行是否包含某个依赖值。
+    #[allow(dead_code)]
+    pub fn row_contains(&self, i: usize, val: &u32) -> bool {
+        self.row(i).contains(val)
+    }
+}
+
 #[derive(serde::Serialize, serde::Deserialize)]
 pub struct ScanState {
     pub reg_last_def: RegLastDef,
-    pub mem_last_def: FxHashMap<u64, (u32, u64)>,
+    pub mem_last_def: MemLastDef,
     pub last_cond_branch: Option<u32>,
-    pub deps: Vec<SmallVec<[u32; 4]>>,
+    pub deps: CompactDeps,
     pub line_count: u32,
     /// 成功解析的指令行数（parse_line 返回 Some 的次数）
     pub parsed_count: u32,
@@ -110,6 +259,16 @@ pub struct ScanState {
     pub init_mem_loads: bitvec::prelude::BitVec,
     /// Pair 指令的分半依赖（仅 LoadPair/StorePair 行有条目）。
     pub pair_split: FxHashMap<u32, PairSplitDeps>,
+}
+
+impl ScanState {
+    /// 扫描完成后压缩数据结构，释放仅扫描期间使用的字段。
+    pub fn compact(&mut self) {
+        self.mem_last_def.compact();
+        self.last_cond_branch = None;
+        self.resolved_targets = FxHashMap::default();
+        self.unknown_mnemonics = FxHashMap::default();
+    }
 }
 
 /// Push `val` into a SmallVec only if not already present (dedup).
@@ -209,12 +368,9 @@ pub fn scan_pass1_bytes_with_progress(
 
     let mut state = ScanState {
         reg_last_def: RegLastDef::new(),
-        mem_last_def: FxHashMap::with_capacity_and_hasher(
-            line_count_est / 4, // heuristic: ~25% of lines have mem ops
-            Default::default(),
-        ),
+        mem_last_def: MemLastDef::default(),
         last_cond_branch: None,
-        deps: Vec::with_capacity(line_count_est),
+        deps: CompactDeps::with_capacity(line_count_est, line_count_est * 2),
         line_count: 0,
         parsed_count: 0,
         mem_op_count: 0,
@@ -270,7 +426,7 @@ pub fn scan_pass1_bytes_with_progress(
         }
 
         let i = state.line_count;
-        state.deps.push(SmallVec::new());
+        state.deps.start_row();
 
         // Range limiting: skip lines outside [start_seq, end_seq]
         if i < start_seq || end_seq.is_some_and(|end| i > end) {
@@ -341,7 +497,7 @@ pub fn scan_pass1_bytes_with_progress(
                         });
                         if is_store {
                             state.resolved_targets.insert((i, target.clone()), i);
-                        } else if let Some(&(prev, _)) = state.mem_last_def.get(addr) {
+                        } else if let Some((prev, _)) = state.mem_last_def.get(addr) {
                             eprintln!("[info] mem 0x{:x} not STORE'd at line {}, resolved to last STORE at line {}", addr, i + 1, prev + 1);
                             state.resolved_targets.insert((i, target.clone()), prev);
                         } else {
@@ -371,8 +527,8 @@ pub fn scan_pass1_bytes_with_progress(
             let mut store_val: Option<u64> = None;
 
             for offset in 0..width as u64 {
-                if let Some(&(def_line, def_val)) = state.mem_last_def.get(&(mem.abs + offset)) {
-                    push_unique(&mut state.deps[i as usize], def_line);
+                if let Some((def_line, def_val)) = state.mem_last_def.get(&(mem.abs + offset)) {
+                    state.deps.push_unique(def_line);
                     match first_store_raw {
                         None => {
                             first_store_raw = Some(def_line);
@@ -408,7 +564,7 @@ pub fn scan_pass1_bytes_with_progress(
         if !is_pair && !is_pass_through {
             for r in &uses {
                 if let Some(&def_line) = state.reg_last_def.get(r) {
-                    push_unique(&mut state.deps[i as usize], def_line);
+                    state.deps.push_unique(def_line);
                 }
             }
         }
@@ -421,9 +577,9 @@ pub fn scan_pass1_bytes_with_progress(
                 let width = mem_access_width(class, mem.elem_width, &line);
                 let mut has_init_mem = false;
                 for offset in 0..width as u64 {
-                    if let Some(&(def_line, _)) = state.mem_last_def.get(&(mem.abs + offset)) {
+                    if let Some((def_line, _)) = state.mem_last_def.get(&(mem.abs + offset)) {
                         if !is_pair {
-                            push_unique(&mut state.deps[i as usize], def_line);
+                            state.deps.push_unique(def_line);
                         }
                     } else {
                         has_init_mem = true;
@@ -438,7 +594,7 @@ pub fn scan_pass1_bytes_with_progress(
         // Step 3c: Control dependencies (skip for pair — handled in 3d)
         if !is_pair && !data_only {
             if let Some(cb) = state.last_cond_branch {
-                push_unique(&mut state.deps[i as usize], cb);
+                state.deps.push_unique(cb);
             }
         }
 
@@ -452,13 +608,13 @@ pub fn scan_pass1_bytes_with_progress(
                     InsnClass::LoadPair => {
                         // half1 mem deps (first elem_width bytes)
                         for offset in 0..ew as u64 {
-                            if let Some(&(raw, _)) = state.mem_last_def.get(&(mem.abs + offset)) {
+                            if let Some((raw, _)) = state.mem_last_def.get(&(mem.abs + offset)) {
                                 push_unique(&mut split.half1_deps, raw);
                             }
                         }
                         // half2 mem deps (second elem_width bytes)
                         for offset in ew as u64..2 * ew as u64 {
-                            if let Some(&(raw, _)) = state.mem_last_def.get(&(mem.abs + offset)) {
+                            if let Some((raw, _)) = state.mem_last_def.get(&(mem.abs + offset)) {
                                 push_unique(&mut split.half2_deps, raw);
                             }
                         }
@@ -613,7 +769,7 @@ pub fn scan_pass1_bytes_with_progress(
         eprintln!("[profile] mem_last_def 条目: {}", state.mem_last_def.len());
         eprintln!(
             "[profile] deps 总边数      : {}",
-            state.deps.iter().map(|d| d.len()).sum::<usize>()
+            state.deps.total_deps()
         );
         eprintln!("[profile] pass-through 剪枝: {} loads", pruned_count);
         eprintln!("[profile] ──────────────────────────────");
@@ -720,8 +876,8 @@ mod tests {
         // add x0 should have last def at line 2
         assert_eq!(state.reg_last_def.get(&RegId::X0), Some(&2));
         // add x0, x8, x9 depends on mov x8 (line 0) and mov x9 (line 1)
-        assert!(state.deps[2].contains(&0), "add should depend on mov x8");
-        assert!(state.deps[2].contains(&1), "add should depend on mov x9");
+        assert!(state.deps.row(2).contains(&0), "add should depend on mov x8");
+        assert!(state.deps.row(2).contains(&1), "add should depend on mov x9");
     }
 
     // =========================================================================
@@ -740,12 +896,12 @@ mod tests {
 
         // ldr (line 2) depends on str (line 1) via memory
         assert!(
-            state.deps[2].contains(&1),
+            state.deps.row(2).contains(&1),
             "ldr should depend on str via memory"
         );
         // str (line 1) depends on mov x8 (line 0) via register
         assert!(
-            state.deps[1].contains(&0),
+            state.deps.row(1).contains(&0),
             "str should depend on mov x8 via register"
         );
     }
@@ -767,7 +923,7 @@ mod tests {
         // b.eq (line 1) is a conditional branch -> sets lastCondBranch
         // mov x0 (line 2) should have control dep on b.eq (line 1)
         assert!(
-            state.deps[2].contains(&1),
+            state.deps.row(2).contains(&1),
             "mov after b.eq should have control dep"
         );
     }
@@ -788,7 +944,7 @@ mod tests {
 
         // In data_only mode, no control dependency edge from b.eq to mov
         assert!(
-            !state.deps[2].contains(&1),
+            !state.deps.row(2).contains(&1),
             "data_only should suppress control deps"
         );
     }
@@ -808,7 +964,7 @@ mod tests {
 
         // b.eq (line 1) USEs nzcv, which was DEF'd by cmp (line 0)
         assert!(
-            state.deps[1].contains(&0),
+            state.deps.row(1).contains(&0),
             "b.eq should depend on cmp via nzcv"
         );
     }
@@ -848,9 +1004,9 @@ mod tests {
 
         assert_eq!(state.line_count, 2);
         // The unparseable line has empty deps
-        assert!(state.deps[0].is_empty());
+        assert!(state.deps.row(0).is_empty());
         // mov x0 at line 1 has no deps (no prior defs)
-        assert!(state.deps[1].is_empty());
+        assert!(state.deps.row(1).is_empty());
         assert_eq!(state.reg_last_def.get(&RegId::X0), Some(&1));
     }
 
@@ -883,7 +1039,7 @@ mod tests {
 
         // ld1 lane (line 1) should depend on movi (line 0) via v0 old value (read-modify-write)
         assert!(
-            state.deps[1].contains(&0),
+            state.deps.row(1).contains(&0),
             "ld1 lane should depend on prior v0 def (read-modify-write)"
         );
     }
@@ -903,7 +1059,7 @@ mod tests {
 
         // mrs nzcv (line 1) should depend on cmp (line 0) via nzcv
         assert!(
-            state.deps[1].contains(&0),
+            state.deps.row(1).contains(&0),
             "mrs x0, nzcv should depend on cmp via nzcv register"
         );
     }
@@ -923,9 +1079,9 @@ mod tests {
         let state = scan_from_string_with_range(&trace, false, 2, None).unwrap();
 
         assert_eq!(state.line_count, 3);
-        assert!(state.deps[0].is_empty());
-        assert!(state.deps[1].is_empty());
-        assert!(state.deps[2].is_empty()); // no prior defs in range
+        assert!(state.deps.row(0).is_empty());
+        assert!(state.deps.row(1).is_empty());
+        assert!(state.deps.row(2).is_empty()); // no prior defs in range
         assert_eq!(state.reg_last_def.get(&RegId::X0), Some(&2));
         assert_eq!(state.reg_last_def.get(&RegId::X8), None);
     }
@@ -948,7 +1104,7 @@ mod tests {
         assert_eq!(state.reg_last_def.get(&RegId::X8), Some(&0));
         assert_eq!(state.reg_last_def.get(&RegId::X9), Some(&1));
         assert_eq!(state.reg_last_def.get(&RegId::X0), None);
-        assert!(state.deps[2].is_empty());
+        assert!(state.deps.row(2).is_empty());
     }
 
     // =========================================================================
@@ -1151,8 +1307,8 @@ mod tests {
         let trace = "this is not a valid trace line\nanother bad line";
         let state = scan_from_string(trace, false).unwrap();
         assert_eq!(state.line_count, 2);
-        assert!(state.deps[0].is_empty());
-        assert!(state.deps[1].is_empty());
+        assert!(state.deps.row(0).is_empty());
+        assert!(state.deps.row(1).is_empty());
     }
 
     #[test]

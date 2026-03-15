@@ -32,6 +32,8 @@ export default function FloatingWindowFrame({ title, children, onClose, titleBar
       flexDirection: "column",
       background: "var(--bg-primary)",
       color: "var(--text-primary)",
+      borderRadius: 8,
+      overflow: "hidden",
     }}>
       {/* 顶部标题栏 */}
       <div

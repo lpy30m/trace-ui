@@ -55,7 +55,7 @@ pub fn bfs_slice(state: &ScanState, start_indices: &[u32]) -> BitVec {
             }
         } else {
             // Non-pair instruction: follow all deps (deps may carry tags)
-            for &dep in &state.deps[line as usize] {
+            for &dep in state.deps.row(line as usize) {
                 enqueue_dep(dep, n, &mut queue, &mut marked, &mut pair_visited, &state.pair_split);
             }
         }

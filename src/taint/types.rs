@@ -261,6 +261,8 @@ pub struct ParsedLine {
     pub mem_op: Option<MemOp>,
     /// 是否包含 `=>` 箭头（区分有无输出值的行）。
     pub has_arrow: bool,
+    /// `" => "` 在原始行中的绝对字节位置（避免 phase2 重复搜索）。
+    pub arrow_pos: Option<usize>,
     /// 基址寄存器（`[Xn, ...]` 中的 Xn）。
     pub base_reg: Option<RegId>,
     /// 是否有回写标记（`!` 或 `], #offset`）。
@@ -271,19 +273,6 @@ pub struct ParsedLine {
     pub pre_arrow_regs: Option<Box<SmallVec<[(RegId, u64); 4]>>>,
     /// `=>` 箭头右侧的寄存器值对（仅 validate 模式填充）。
     pub post_arrow_regs: Option<Box<SmallVec<[(RegId, u64); 4]>>>,
-}
-
-/// 切片起点规范（`--from` 参数）。
-///
-/// 指定从哪个寄存器或内存地址开始反向切片。
-/// 支持 `@last`（最后一次定义）和 `@LINE`（指定行号处的定义）两种模式。
-#[derive(Debug, Clone)]
-#[allow(dead_code)]
-pub enum FromSpec {
-    RegLast(RegId),    // reg:x0@last
-    RegAt(RegId, u32), // reg:x0@5000
-    MemLast(u64),      // mem:0xbffff010@last
-    MemAt(u64, u32),   // mem:0xbffff010@1234
 }
 
 /// @LINE 目标验证条目，传入扫描器在 Pass 1 中验证
@@ -365,33 +354,6 @@ mod tests {
 
         let lane_op = Operand::RegLane(RegId::V0, 2);
         assert_eq!(lane_op.as_reg(), Some(RegId::V0));
-    }
-
-    #[test]
-    fn test_from_spec_variants() {
-        let s1 = FromSpec::RegLast(RegId::X0);
-        let s2 = FromSpec::RegAt(RegId::X8, 5000);
-        let s3 = FromSpec::MemLast(0xbffff010);
-        let s4 = FromSpec::MemAt(0xbffff010, 1234);
-        match s1 {
-            FromSpec::RegLast(_) => {}
-            _ => panic!("wrong variant"),
-        }
-        match s2 {
-            FromSpec::RegAt(_, line) => assert_eq!(line, 5000),
-            _ => panic!(),
-        }
-        match s3 {
-            FromSpec::MemLast(addr) => assert_eq!(addr, 0xbffff010),
-            _ => panic!(),
-        }
-        match s4 {
-            FromSpec::MemAt(addr, line) => {
-                assert_eq!(addr, 0xbffff010);
-                assert_eq!(line, 1234);
-            }
-            _ => panic!(),
-        }
     }
 
     #[test]

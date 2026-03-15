@@ -1,5 +1,6 @@
 import { useEffect, useState, useMemo, useRef, useCallback } from "react";
 import { invoke } from "@tauri-apps/api/core";
+import { useSelectedSeq } from "../stores/selectedSeqStore";
 
 const LEFT_REGS = [
   "X0", "X1", "X2", "X3", "X4", "X5", "X6", "X7",
@@ -18,7 +19,7 @@ const BOTTOM_RIGHT = ["SP", "PC"];
 const KEY_MAP: Record<string, string> = { LR: "X30" };
 
 interface Props {
-  selectedSeq: number | null;
+  selectedSeq?: number | null;
   isPhase2Ready: boolean;
   sessionId: string | null;
 }
@@ -49,7 +50,9 @@ function RegRow({ name, value, changed, read, special }: { name: string; value: 
   );
 }
 
-export default function RegisterPanel({ selectedSeq, isPhase2Ready, sessionId }: Props) {
+export default function RegisterPanel({ selectedSeq: selectedSeqProp, isPhase2Ready, sessionId }: Props) {
+  const selectedSeqFromStore = useSelectedSeq();
+  const selectedSeq = selectedSeqProp !== undefined ? selectedSeqProp : selectedSeqFromStore;
   const [regs, setRegs] = useState<Record<string, string>>({});
   const [displaySeq, setDisplaySeq] = useState<number | null>(null);
 

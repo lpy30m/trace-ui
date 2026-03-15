@@ -10,8 +10,8 @@ pub mod reg_checkpoint;
 
 use memchr::memchr;
 use rustc_hash::FxHashMap;
-use smallvec::SmallVec;
 
+use crate::line_index::LineIndexBuilder;
 use crate::phase2;
 use crate::state::Phase2State;
 use call_tree::CallTreeBuilder;
@@ -28,41 +28,32 @@ pub type ProgressFn = Box<dyn Fn(usize, usize) + Send>;
 
 const CHECKPOINT_INTERVAL: u32 = 1000;
 
-/// 统一扫描：单次文件遍历同时构建 ScanState（依赖图）和 Phase2State（CallTree/MemAccess/RegCheckpoints）。
+/// 统一扫描：单次文件遍历同时构建 ScanState（依赖图）、Phase2State（CallTree/MemAccess/RegCheckpoints）
+/// 和 LineIndex（采样行偏移索引）。
 ///
-/// 合并了 scanner::scan_pass1_bytes 和 phase2::build_phase2 的逻辑，
-/// 避免重复解析（解析是最大瓶颈 ~10s），总耗时从 ~30s 降到 ~17s。
+/// 合并了 scanner::scan_pass1_bytes、phase2::build_phase2 和 LineIndex::build 的逻辑，
+/// 避免重复解析和多次遍历。
 pub fn scan_unified(
     data: &[u8],
     data_only: bool,
     no_prune: bool,
     progress_fn: Option<ProgressFn>,
-) -> anyhow::Result<(ScanState, Phase2State)> {
+) -> anyhow::Result<(ScanState, Phase2State, crate::line_index::LineIndex)> {
     // ── ScanState 初始化（来自 scanner.rs） ──
-    // Pre-count lines for capacity pre-allocation.
-    // This memchr scan (~0.3s for 2.88GB) also pre-faults all mmap pages into
-    // physical memory, warming the page cache for the main loop.
-    let line_count_est = memchr::memchr_iter(b'\n', data).count()
-        + if !data.is_empty() && data.last() != Some(&b'\n') {
-            1
-        } else {
-            0
-        };
+    // 用文件大小估算行数（平均每行 ~110 字节），避免预扫描整个文件
+    let line_count_est = data.len() / 110 + 1;
 
     let mut state = ScanState {
         reg_last_def: RegLastDef::new(),
-        mem_last_def: FxHashMap::with_capacity_and_hasher(
-            line_count_est / 4,
-            Default::default(),
-        ),
+        mem_last_def: scanner::MemLastDef::default(),
         last_cond_branch: None,
-        deps: Vec::with_capacity(line_count_est),
+        deps: scanner::CompactDeps::with_capacity(line_count_est, line_count_est * 2),
         line_count: 0,
         parsed_count: 0,
         mem_op_count: 0,
         resolved_targets: FxHashMap::default(),
         unknown_mnemonics: FxHashMap::default(),
-        init_mem_loads: bitvec::prelude::BitVec::repeat(false, line_count_est),
+        init_mem_loads: bitvec::prelude::BitVec::with_capacity(line_count_est),
         pair_split: FxHashMap::default(),
     };
 
@@ -78,8 +69,12 @@ pub fn scan_unified(
     // BLR 后需要检测：如果下一行地址 = BLR的PC+4，说明是 unidbg 拦截调用（无函数体）
     let mut blr_pending_pc: Option<u64> = None;
 
+    // ── LineIndex builder ──
+    let mut li_builder = LineIndexBuilder::with_capacity_hint(line_count_est);
+
     let mut pos = 0usize;
     let len = data.len();
+    let progress_interval = len / 100 + 1;
     let mut last_report = 0usize;
 
     // ── 主循环 ──
@@ -99,10 +94,15 @@ pub fn scan_unified(
 
         // SAFETY: trace lines are ASCII (ARM64 disassembly text from unidbg)
         let raw_line = unsafe { std::str::from_utf8_unchecked(&data[pos..end]) };
+
+        // LineIndex: 记录行偏移
+        li_builder.add_line(pos as u64);
+
         pos = if line_end < len { line_end + 1 } else { len };
 
         let i = state.line_count;
-        state.deps.push(SmallVec::new());
+        state.deps.start_row();
+        state.init_mem_loads.push(false);
 
         // ── Phase2: BLR pending 检测（必须在 parse_line 之前，非指令行也需检查） ──
         if let Some(blr_pc) = blr_pending_pc.take() {
@@ -122,8 +122,6 @@ pub fn scan_unified(
 
         // Parse; unparseable lines get an empty dep set
         let Some(line) = parser::parse_line(raw_line) else {
-            // Phase2: RegCheckpoints 更新（即使不可解析也需要推进 seq）
-            // 注意：update_reg_values 只在 parsed 成功时调用（与 phase2.rs 一致）
             state.line_count += 1;
             // Checkpoint 保存
             if state.line_count % CHECKPOINT_INTERVAL == 0 {
@@ -131,7 +129,7 @@ pub fn scan_unified(
             }
             // 进度报告
             if let Some(ref cb) = progress_fn {
-                if pos - last_report > 10 * 1024 * 1024 {
+                if pos - last_report >= progress_interval {
                     cb(pos, len);
                     last_report = pos;
                 }
@@ -171,8 +169,8 @@ pub fn scan_unified(
             let mut store_val: Option<u64> = None;
 
             for offset in 0..width as u64 {
-                if let Some(&(def_line, def_val)) = state.mem_last_def.get(&(mem.abs + offset)) {
-                    push_unique(&mut state.deps[i as usize], def_line);
+                if let Some((def_line, def_val)) = state.mem_last_def.get(&(mem.abs + offset)) {
+                    state.deps.push_unique(def_line);
                     match first_store_raw {
                         None => {
                             first_store_raw = Some(def_line);
@@ -207,7 +205,7 @@ pub fn scan_unified(
         if !is_pair && !is_pass_through {
             for r in &uses {
                 if let Some(&def_line) = state.reg_last_def.get(r) {
-                    push_unique(&mut state.deps[i as usize], def_line);
+                    state.deps.push_unique(def_line);
                 }
             }
         }
@@ -220,9 +218,9 @@ pub fn scan_unified(
                 let width = mem_access_width(class, mem.elem_width, &line);
                 let mut has_init_mem = false;
                 for offset in 0..width as u64 {
-                    if let Some(&(def_line, _)) = state.mem_last_def.get(&(mem.abs + offset)) {
+                    if let Some((def_line, _)) = state.mem_last_def.get(&(mem.abs + offset)) {
                         if !is_pair {
-                            push_unique(&mut state.deps[i as usize], def_line);
+                            state.deps.push_unique(def_line);
                         }
                     } else {
                         has_init_mem = true;
@@ -237,7 +235,7 @@ pub fn scan_unified(
         // Step 3c: Control dependencies (skip for pair — handled in 3d)
         if !is_pair && !data_only {
             if let Some(cb) = state.last_cond_branch {
-                push_unique(&mut state.deps[i as usize], cb);
+                state.deps.push_unique(cb);
             }
         }
 
@@ -251,13 +249,13 @@ pub fn scan_unified(
                     InsnClass::LoadPair => {
                         // half1 mem deps (first elem_width bytes)
                         for offset in 0..ew as u64 {
-                            if let Some(&(raw, _)) = state.mem_last_def.get(&(mem.abs + offset)) {
+                            if let Some((raw, _)) = state.mem_last_def.get(&(mem.abs + offset)) {
                                 push_unique(&mut split.half1_deps, raw);
                             }
                         }
                         // half2 mem deps (second elem_width bytes)
                         for offset in ew as u64..2 * ew as u64 {
-                            if let Some(&(raw, _)) = state.mem_last_def.get(&(mem.abs + offset)) {
+                            if let Some((raw, _)) = state.mem_last_def.get(&(mem.abs + offset)) {
                                 push_unique(&mut split.half2_deps, raw);
                             }
                         }
@@ -401,7 +399,9 @@ pub fn scan_unified(
         }
 
         // ── Phase2: RegCheckpoints 逻辑 ──
-        phase2::update_reg_values(&mut reg_values, raw_line);
+        if let Some(arrow_pos) = line.arrow_pos {
+            phase2::update_reg_values_at(&mut reg_values, raw_line, arrow_pos);
+        }
 
         state.parsed_count += 1;
         state.line_count += 1;
@@ -411,9 +411,9 @@ pub fn scan_unified(
             reg_ckpts.save_checkpoint(&reg_values);
         }
 
-        // 每处理约 10MB 报告一次进度
+        // 进度报告
         if let Some(ref cb) = progress_fn {
-            if pos - last_report > 10 * 1024 * 1024 {
+            if pos - last_report >= progress_interval {
                 cb(pos, len);
                 last_report = pos;
             }
@@ -427,6 +427,7 @@ pub fn scan_unified(
         mem_accesses: mem_idx,
         reg_checkpoints: reg_ckpts,
     };
+    let line_index = li_builder.finish();
 
-    Ok((state, phase2_state))
+    Ok((state, phase2_state, line_index))
 }

@@ -7,13 +7,11 @@ use crate::taint::types::{parse_reg, Operand, RegId};
 
 use crate::state::Phase2State;
 
-pub type ProgressFn = Box<dyn Fn(usize, usize) + Send>;
-
 const CHECKPOINT_INTERVAL: u32 = 1000;
 
 /// 执行 Phase 2 扫描：构建 CallTree, MemAccessIndex, RegCheckpoints
 #[allow(dead_code)]
-pub fn build_phase2(data: &[u8], progress_fn: Option<ProgressFn>) -> Phase2State {
+pub fn build_phase2(data: &[u8], progress_fn: Option<Box<dyn Fn(usize, usize) + Send>>) -> Phase2State {
     let mut ct_builder = CallTreeBuilder::new();
     let mut mem_idx = MemAccessIndex::new();
     let mut reg_ckpts = RegCheckpoints::new(CHECKPOINT_INTERVAL);
@@ -179,16 +177,21 @@ pub fn extract_insn_addr(line: &str) -> u64 {
 /// 从 "=> " 之后提取寄存器变更并更新状态
 pub fn update_reg_values(values: &mut [u64; RegId::COUNT], line: &str) {
     if let Some(arrow_pos) = line.find(" => ") {
-        let changes = &line[arrow_pos + 4..];
-        for part in changes.split_whitespace() {
-            if let Some(eq_pos) = part.find('=') {
-                let reg_name = &part[..eq_pos];
-                let val_str = &part[eq_pos + 1..];
-                if let Some(reg) = parse_reg(reg_name) {
-                    let val_str = val_str.trim_start_matches("0x");
-                    if let Ok(val) = u64::from_str_radix(val_str, 16) {
-                        values[reg.0 as usize] = val;
-                    }
+        update_reg_values_at(values, line, arrow_pos);
+    }
+}
+
+/// 从已知的箭头位置提取寄存器变更（避免重复搜索 " => "）
+pub fn update_reg_values_at(values: &mut [u64; RegId::COUNT], line: &str, arrow_pos: usize) {
+    let changes = &line[arrow_pos + 4..];
+    for part in changes.split_whitespace() {
+        if let Some(eq_pos) = part.find('=') {
+            let reg_name = &part[..eq_pos];
+            let val_str = &part[eq_pos + 1..];
+            if let Some(reg) = parse_reg(reg_name) {
+                let val_str = val_str.trim_start_matches("0x");
+                if let Ok(val) = u64::from_str_radix(val_str, 16) {
+                    values[reg.0 as usize] = val;
                 }
             }
         }

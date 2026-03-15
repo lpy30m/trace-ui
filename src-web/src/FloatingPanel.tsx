@@ -5,7 +5,7 @@ import { invoke } from "@tauri-apps/api/core";
 import MemoryPanel from "./components/MemoryPanel";
 import FloatingWindowFrame from "./components/FloatingWindowFrame";
 import SearchResultList from "./components/SearchResultList";
-import type { SearchMatch, SearchResult, TraceLine } from "./types/trace";
+import type { SearchMatch, SearchResult } from "./types/trace";
 
 const PANEL_TITLES: Record<string, string> = {
   memory: "Memory",
@@ -34,11 +34,6 @@ export default function FloatingPanel({ panel }: { panel: string }) {
     totalLines: 0,
     filePath: null,
   });
-
-  // Memory 面板需要的额外状态
-  const [memAddr, setMemAddr] = useState<string | null>(null);
-  const [memRw, setMemRw] = useState<string | null>(null);
-  const [memSize, setMemSize] = useState<number | null>(null);
 
   // Search 面板状态
   const [searchResults, setSearchResults] = useState<SearchMatch[]>([]);
@@ -83,23 +78,6 @@ export default function FloatingPanel({ panel }: { panel: string }) {
 
     return () => { unlisteners.forEach(p => p.then(fn => fn())); };
   }, []);
-
-  // Memory 面板：selectedSeq 变化时获取内存访问信息
-  useEffect(() => {
-    if (panel !== "memory" || syncState.selectedSeq === null || !syncState.sessionId) {
-      setMemAddr(null);
-      setMemRw(null);
-      setMemSize(null);
-      return;
-    }
-    invoke<TraceLine[]>("get_lines", { sessionId: syncState.sessionId, seqs: [syncState.selectedSeq] }).then((lines) => {
-      if (lines.length > 0) {
-        setMemAddr(lines[0].mem_addr ?? null);
-        setMemRw(lines[0].mem_rw ?? null);
-        setMemSize(lines[0].mem_size ?? null);
-      }
-    });
-  }, [panel, syncState.selectedSeq, syncState.sessionId]);
 
   // Search 面板：监听主窗口搜索转发
   const handleSearch = useCallback(async (query: string) => {
@@ -179,9 +157,6 @@ export default function FloatingPanel({ panel }: { panel: string }) {
           <MemoryPanel
             selectedSeq={syncState.selectedSeq}
             isPhase2Ready={syncState.isPhase2Ready}
-            memAddr={memAddr}
-            memRw={memRw}
-            memSize={memSize}
             onJumpToSeq={handleJumpToSeq}
             sessionId={syncState.sessionId}
           />

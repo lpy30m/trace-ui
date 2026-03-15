@@ -168,10 +168,12 @@ pub fn get_lines(session_id: String, seqs: Vec<u32>, state: State<'_, AppState>)
         .read()
         .map_err(|e| format!("锁获取失败: {}", e))?;
     let session = sessions.get(&session_id).ok_or_else(|| format!("Session {} 不存在", session_id))?;
+    let line_index = session.line_index.as_ref()
+        .ok_or_else(|| "索引尚未构建完成".to_string())?;
 
     let mut results = Vec::with_capacity(seqs.len());
     for &seq in &seqs {
-        if let Some(raw) = session.line_index.get_line(&session.mmap, seq) {
+        if let Some(raw) = line_index.get_line(&session.mmap, seq) {
             if let Some(parsed) = parse_trace_line(seq, raw) {
                 results.push(parsed);
                 continue;

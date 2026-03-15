@@ -1,5 +1,6 @@
-import { useState, useCallback } from "react";
+import { useState, useCallback, useEffect } from "react";
 import { openUrl } from "@tauri-apps/plugin-opener";
+import { getCurrentWindow } from "@tauri-apps/api/window";
 import WindowControls from "./WindowControls";
 import ConfirmDialog from "./ConfirmDialog";
 import PreferencesDialog from "./PreferencesDialog";
@@ -8,6 +9,8 @@ import ContextMenu, { ContextMenuItem } from "./ContextMenu";
 import type { Preferences } from "../hooks/usePreferences";
 import { isMac, modKey } from "../utils/platform";
 import { HIGHLIGHT_COLORS } from "../utils/highlightColors";
+import { useHasSelectedSeq } from "../stores/selectedSeqStore";
+import { useCanGoBack, useCanGoForward } from "../stores/navigationStore";
 
 interface Props {
   onOpenFile: (path: string) => void;
@@ -19,13 +22,10 @@ interface Props {
   onRemoveRecent: (path: string) => void;
   onGoBack: () => void;
   onGoForward: () => void;
-  canGoBack: boolean;
-  canGoForward: boolean;
   preferences: Preferences;
   onUpdatePreferences: (updates: Partial<Preferences>) => void;
   onTaintAnalysis: () => void;
   onSaveTaintResults: () => void;
-  hasSelectedSeq: boolean;
   // Highlight & Hide
   onHighlight: (color: string) => void;
   onStrikethrough: () => void;
@@ -41,7 +41,24 @@ interface Props {
   onTaintReconfigure: () => void;
 }
 
-export default function TitleBar({ onOpenFile, onCloseFile, onRebuildIndex, onSearch, isLoaded, recentFiles, onRemoveRecent, onGoBack, onGoForward, canGoBack, canGoForward, preferences, onUpdatePreferences, onTaintAnalysis, onSaveTaintResults, hasSelectedSeq, onHighlight, onStrikethrough, onResetHighlight, onHide, sliceActive, sliceFilterMode, sliceInfo, onTaintFilterModeChange, onTaintClear, onTaintGoToSource, onTaintReconfigure }: Props) {
+export default function TitleBar({ onOpenFile, onCloseFile, onRebuildIndex, onSearch, isLoaded, recentFiles, onRemoveRecent, onGoBack, onGoForward, preferences, onUpdatePreferences, onTaintAnalysis, onSaveTaintResults, onHighlight, onStrikethrough, onResetHighlight, onHide, sliceActive, sliceFilterMode, sliceInfo, onTaintFilterModeChange, onTaintClear, onTaintGoToSource, onTaintReconfigure }: Props) {
+  const hasSelectedSeq = useHasSelectedSeq();
+  const canGoBack = useCanGoBack();
+  const canGoForward = useCanGoForward();
+  const [isFullscreen, setIsFullscreen] = useState(false);
+
+  useEffect(() => {
+    if (!isMac) return;
+    const win = getCurrentWindow();
+    // 初始化检查
+    win.isFullscreen().then(setIsFullscreen).catch(() => {});
+    // 监听窗口 resize 事件来检测全屏变化
+    const unlisten = win.onResized(() => {
+      win.isFullscreen().then(setIsFullscreen).catch(() => {});
+    });
+    return () => { unlisten.then(fn => fn()); };
+  }, []);
+
   const [manualPath, setManualPath] = useState("");
   const [showPathInput, setShowPathInput] = useState(false);
   const [showCloseConfirm, setShowCloseConfirm] = useState(false);
@@ -84,14 +101,14 @@ export default function TitleBar({ onOpenFile, onCloseFile, onRebuildIndex, onSe
           display: "flex",
           alignItems: "center",
           gap: 8,
-          padding: isMac ? "0" : "0 0 0 12px",
+          // macOS Overlay 模式：左侧 78px 留给原生交通灯按钮；全屏时交通灯隐藏，缩小到 12px
+          padding: isMac ? (isFullscreen ? "0 0 0 12px" : "0 0 0 78px") : "0 0 0 12px",
           height: 36,
           background: "var(--bg-secondary)",
           borderBottom: "1px solid var(--border-color)",
           flexShrink: 0,
         }}
       >
-        {isMac && <WindowControls />}
         {/* File 下拉菜单 */}
         <MenuDropdown label="File">
           <MenuItem label="Open File..." shortcut={modKey("O")} onClick={handleOpen} />

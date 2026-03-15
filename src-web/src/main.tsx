@@ -12,6 +12,12 @@ const params = new URLSearchParams(window.location.search);
 const panel = params.get("panel");
 const session = params.get("session");
 
+// 浮动窗口：#root 背景设为透明，让 FloatingWindowFrame 的圆角生效
+if (panel || session) {
+  const root = document.getElementById("root");
+  if (root) root.style.background = "transparent";
+}
+
 function renderRoot() {
   if (panel) {
     return <FloatingPanel panel={panel} />;

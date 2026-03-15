@@ -30,7 +30,6 @@ export interface SessionData {
   totalLines: number;
   fileSize: number;
   isLoaded: boolean;
-  selectedSeq: number | null;
   isPhase2Ready: boolean;
   indexProgress: number;
 }

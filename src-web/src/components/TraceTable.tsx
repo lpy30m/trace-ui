@@ -1,4 +1,5 @@
-import React, { useRef, useEffect, useState, useCallback, useMemo } from "react";
+import React, { useRef, useEffect, useLayoutEffect, useState, useCallback, useMemo } from "react";
+import { createPortal } from "react-dom";
 import { invoke } from "@tauri-apps/api/core";
 import type { TraceLine, CallTreeNodeDto, DefUseChain } from "../types/trace";
 import type { HighlightInfo } from "../hooks/useHighlights";
@@ -9,6 +10,7 @@ import Minimap, { MINIMAP_WIDTH } from "./Minimap";
 import { SHARED_COLORS, TRACE_TABLE_COLORS } from "../utils/canvasColors";
 import { HIGHLIGHT_COLORS } from "../utils/highlightColors";
 import ContextMenu, { ContextMenuItem, ContextMenuSeparator } from "./ContextMenu";
+import { useSelectedSeq } from "../stores/selectedSeqStore";
 
 const ROW_HEIGHT = 22;
 const ARROW_COL_WIDTH = 20;
@@ -68,7 +70,7 @@ function lineToTextColumns(
 interface Props {
   totalLines: number;
   isLoaded: boolean;
-  selectedSeq: number | null;
+  selectedSeq?: number | null;
   onSelectSeq: (seq: number) => void;
   getLines: (seqs: number[]) => Promise<TraceLine[]>;
   savedScrollSeq?: number | null;
@@ -121,7 +123,7 @@ interface ArrowLabelHitbox {
 export default function TraceTable({
   totalLines,
   isLoaded,
-  selectedSeq,
+  selectedSeq: selectedSeqProp,
   onSelectSeq,
   getLines,
   savedScrollSeq,
@@ -146,15 +148,25 @@ export default function TraceTable({
   sliceSourceSeq,
   scrollTrigger = 0,
 }: Props) {
+  const selectedSeqFromStore = useSelectedSeq();
+  const selectedSeq = selectedSeqProp !== undefined ? selectedSeqProp : selectedSeqFromStore;
+
   const [visibleLines, setVisibleLines] = useState<Map<number, TraceLine>>(
     new Map()
   );
+
+  // 滚动预取缓存（ref-based，绕过 React 状态，Canvas 直接读取）
+  const prefetchCacheRef = useRef<Map<number, TraceLine>>(new Map());
+  // 滚动预取污点状态缓存（ref-based，绕过 React 状态链路，Canvas 直接读取）
+  const sliceStatusCacheRef = useRef<Map<number, boolean>>(new Map());
 
   // 渲染期间同步清空 visibleLines（避免 useEffect 延迟导致旧 session 数据残留）
   const prevVisibleSessionRef = useRef<string | null | undefined>(undefined);
   if (sessionId !== prevVisibleSessionRef.current) {
     prevVisibleSessionRef.current = sessionId;
     setVisibleLines(new Map());
+    prefetchCacheRef.current = new Map();
+    sliceStatusCacheRef.current = new Map();
   }
 
   const changesCol = useResizableColumn(Math.min(300, Math.round(window.innerWidth * 0.2)));
@@ -294,6 +306,12 @@ export default function TraceTable({
   const containerRef = useRef<HTMLDivElement>(null);
   const textOverlayRef = useRef<HTMLDivElement>(null);
   const [currentRow, setCurrentRow] = useState(0);
+  // 防抖行号：滚动期间 IPC 和 DOM 重建延迟执行，只有 canvas 重绘使用 currentRow 即时响应
+  const [debouncedRow, setDebouncedRow] = useState(0);
+  useEffect(() => {
+    const timer = setTimeout(() => setDebouncedRow(currentRow), 80);
+    return () => clearTimeout(timer);
+  }, [currentRow]);
   const [canvasSize, setCanvasSize] = useState({ width: 0, height: 0 });
   const [fontReady, setFontReady] = useState(false);
   const hitboxesRef = useRef<TokenHitbox[]>([]);
@@ -310,6 +328,7 @@ export default function TraceTable({
   const isDraggingSelect = useRef(false);
   const dragPending = useRef(false); // mouseDown 后等待方向判定
   const dragStartVi = useRef(-1);
+  const dragInTextArea = useRef(false); // mouseDown 是否在文本区域（disasm/changes 列）
   const [ctxMenu, setCtxMenu] = useState<{ x: number; y: number } | null>(null);
   const ctxRegRef = useRef<string | undefined>(undefined);
   const [highlightSubmenuOpen, setHighlightSubmenuOpen] = useState(false);
@@ -325,6 +344,23 @@ export default function TraceTable({
   const commentTextareaRef = useRef<HTMLTextAreaElement>(null);
 
   const visibleRows = Math.floor(canvasSize.height / ROW_HEIGHT);
+
+  // === 滚动预取 ref 镜像（供 wheel handler 闭包访问最新值） ===
+  const prefetchTimerRef = useRef(0);
+  const finalResolveRef = useRef(finalResolveVirtualIndex);
+  finalResolveRef.current = finalResolveVirtualIndex;
+  const totalRowsRef = useRef(finalVirtualTotalRows);
+  totalRowsRef.current = finalVirtualTotalRows;
+  const visibleRowsRef = useRef(visibleRows);
+  visibleRowsRef.current = visibleRows;
+  const getLinesRef = useRef(getLines);
+  getLinesRef.current = getLines;
+  const sliceActiveRef = useRef(sliceActive);
+  sliceActiveRef.current = sliceActive;
+  const taintFilterActiveRef = useRef(taintFilterActive);
+  taintFilterActiveRef.current = taintFilterActive;
+  const getSliceStatusRef = useRef(getSliceStatus);
+  getSliceStatusRef.current = getSliceStatus;
 
   // === 折叠/展开 clip 动画 ===
   const FOLD_ANIM_DURATION = 350; // ms
@@ -357,8 +393,10 @@ export default function TraceTable({
     }
 
     // clip 区域最大高度：限制为可视区域剩余高度
-    const clickLocalRow = clickVi - currentRow;
-    const clipTop = (clickLocalRow + 1) * ROW_HEIGHT; // BL/summary 行底部
+    const renderStart = Math.floor(scrollPosRef.current);
+    const subPx = -(scrollPosRef.current - renderStart) * ROW_HEIGHT;
+    const clickLocalRow = clickVi - renderStart;
+    const clipTop = (clickLocalRow + 1) * ROW_HEIGHT + subPx;
     const clipMaxH = Math.min(hiddenRows * ROW_HEIGHT, canvasSize.height - clipTop);
 
     if (clipMaxH <= 0) {
@@ -389,13 +427,16 @@ export default function TraceTable({
       };
       dirtyRef.current = true;
     }
-  }, [toggleFold, isFolded, blLineMap, currentRow, canvasSize.height]);
+  }, [toggleFold, isFolded, blLineMap, canvasSize.height]);
 
   const maxRow = Math.max(0, finalVirtualTotalRows - visibleRows);
 
-  // 渲染期间同步钳位 currentRow（避免 taint filter 切换后 currentRow 超出新范围导致空白）
+  // 渲染期间同步钳位 currentRow 和 debouncedRow（避免 taint filter 切换后超出新范围导致空白）
   if (currentRow > maxRow && maxRow >= 0) {
     setCurrentRow(maxRow);
+  }
+  if (debouncedRow > maxRow && maxRow >= 0) {
+    setDebouncedRow(maxRow);
   }
 
   // Disasm 列最小保留宽度，防止 changes 列挤压
@@ -411,30 +452,61 @@ export default function TraceTable({
     document.fonts.ready.then(() => setFontReady(true));
   }, []);
 
-  // === ResizeObserver（isLoaded 变化后 containerRef 才有值） ===
+  // === ResizeObserver（分割线拖拽期间完全跳过 canvas 重绘，拖拽结束后一次性更新） ===
   useEffect(() => {
     const el = containerRef.current;
     if (!el) return;
+    // 同步获取初始尺寸，消除 ResizeObserver 异步回调的竞态条件
+    // （isLoaded 变 true 时 container 首次出现，若等 observer 异步回调，
+    //   drawFrame 可能在 canvasSize={0,0} 时先执行，导致指令行不显示）
+    const rect = el.getBoundingClientRect();
+    if (rect.width > 0 && rect.height > 0) {
+      setCanvasSize(prev =>
+        prev.width === rect.width && prev.height === rect.height ? prev : { width: rect.width, height: rect.height }
+      );
+      dirtyRef.current = true;
+    }
+    let timer = 0;
     const ro = new ResizeObserver((entries) => {
       const { width, height } = entries[0].contentRect;
-      setCanvasSize({ width, height });
+      clearTimeout(timer);
+      if (document.documentElement.dataset.separatorDrag) {
+        // 分割线拖拽中：记录最新尺寸但不触发渲染，等拖拽结束后由最后一次回调更新
+        timer = window.setTimeout(() => {
+          setCanvasSize(prev =>
+            prev.width === width && prev.height === height ? prev : { width, height }
+          );
+          dirtyRef.current = true;
+        }, 300);
+        return;
+      }
+      // 非拖拽：立即更新（避免 RAF 延迟导致首次渲染时 canvasSize 为 0）
+      setCanvasSize(prev =>
+        prev.width === width && prev.height === height ? prev : { width, height }
+      );
       dirtyRef.current = true;
     });
     ro.observe(el);
-    return () => ro.disconnect();
+    return () => { clearTimeout(timer); cancelAnimationFrame(timer); ro.disconnect(); };
   }, [isLoaded]);
 
-  // === HiDPI Canvas 尺寸同步 ===
-  useEffect(() => {
+  // === HiDPI Canvas 尺寸同步（useLayoutEffect 确保在 rAF/drawFrame 之前完成） ===
+  useLayoutEffect(() => {
     const canvas = canvasRef.current;
     if (!canvas || canvasSize.width === 0) return;
     const dpr = window.devicePixelRatio || 1;
-    canvas.width = canvasSize.width * dpr;
-    canvas.height = canvasSize.height * dpr;
+    const targetW = Math.round(canvasSize.width * dpr);
+    const targetH = Math.round(canvasSize.height * dpr);
+    // 尺寸未变时跳过：canvas.width/height 赋值即使值相同也会清空画布 + 重新分配 GPU 纹理
+    if (canvas.width === targetW && canvas.height === targetH) return;
+    canvas.width = targetW;
+    canvas.height = targetH;
     canvas.style.width = canvasSize.width + "px";
     canvas.style.height = canvasSize.height + "px";
     dirtyRef.current = true;
-  }, [canvasSize]);
+    // isLoaded 在 deps 中：isLoaded false→true 时 canvas 被 React 重建（默认 300×150），
+    // 即使 canvasSize 没变也必须重新设置 canvas 尺寸
+  }, [canvasSize, isLoaded]);
 
   // === scrollToSeq ===
   const scrollToSeq = useCallback((seq: number, align: "center" | "auto" | "end") => {
@@ -488,44 +560,61 @@ export default function TraceTable({
     }
   }, [selectedSeq, isLoaded, scrollAlignRef, scrollToSeq, scrollTrigger]);
 
-  // === 数据预取（currentRow 驱动） ===
+  // === 数据预取（debouncedRow 驱动，滚动期间不触发 IPC） ===
   useEffect(() => {
     if (!isLoaded || visibleRows === 0) return;
     const seqs: number[] = [];
     for (let i = 0; i < visibleRows + 2; i++) {
-      const vi = currentRow + i;
+      const vi = debouncedRow + i;
       if (vi >= finalVirtualTotalRows) break;
       const resolved = finalResolveVirtualIndex(vi);
       if (resolved.type === "line") seqs.push(resolved.seq);
     }
-    const missing = seqs.filter(s => !visibleLines.has(s));
-    if (missing.length === 0) return;
-    getLines(missing).then(lines => {
-      if (lines.length === 0) return;
+    const missing = seqs.filter(s => !visibleLines.has(s) && !prefetchCacheRef.current.has(s));
+    // 将预取缓存中已有的数据合并到 visibleLines
+    const fromPrefetch: TraceLine[] = [];
+    for (const s of seqs) {
+      if (!visibleLines.has(s) && prefetchCacheRef.current.has(s)) {
+        fromPrefetch.push(prefetchCacheRef.current.get(s)!);
+      }
+    }
+    if (missing.length === 0 && fromPrefetch.length === 0) return;
+    const doMerge = (fetched: TraceLine[]) => {
       setVisibleLines(prev => {
         const next = new Map(prev);
-        for (const line of lines) next.set(line.seq, line);
+        for (const line of fromPrefetch) next.set(line.seq, line);
+        for (const line of fetched) next.set(line.seq, line);
         if (next.size > 2000) {
           const entries = Array.from(next.entries());
           return new Map(entries.slice(-1000));
         }
         return next;
       });
-    });
+    };
+    if (missing.length > 0) {
+      getLines(missing).then(lines => {
+        // 同步写入预取缓存
+        for (const line of lines) prefetchCacheRef.current.set(line.seq, line);
+        doMerge(lines);
+      });
+    } else {
+      doMerge([]);
+    }
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [currentRow, visibleRows, isLoaded, getLines, finalVirtualTotalRows, finalResolveVirtualIndex]);
+  }, [debouncedRow, visibleRows, isLoaded, getLines, finalVirtualTotalRows, finalResolveVirtualIndex]);
 
-  // === 切片状态异步获取 ===
+  // === 切片状态异步获取（debouncedRow 驱动，滚动期间不触发 IPC） ===
   useEffect(() => {
     if (!sliceActive || !getSliceStatus) {
       if (sliceStatuses.size > 0) setSliceStatuses(new Map());
+      sliceStatusCacheRef.current = new Map();
       return;
     }
     // 过滤模式下所有可见行都是污点行，直接标记为 true
     if (taintFilterActive) {
       const map = new Map<number, boolean>();
       for (let i = 0; i < visibleRows + 2; i++) {
-        const vi = currentRow + i;
+        const vi = debouncedRow + i;
         if (vi >= finalVirtualTotalRows) break;
         const resolved = finalResolveVirtualIndex(vi);
         if (resolved.type === "line") map.set(resolved.seq, true);
@@ -537,7 +626,7 @@ export default function TraceTable({
     // 正常模式：按范围获取
     const seqs: number[] = [];
     for (let i = 0; i < visibleRows + 2; i++) {
-      const vi = currentRow + i;
+      const vi = debouncedRow + i;
       if (vi >= finalVirtualTotalRows) break;
       const resolved = finalResolveVirtualIndex(vi);
       if (resolved.type === "line") seqs.push(resolved.seq);
@@ -548,12 +637,15 @@ export default function TraceTable({
     const count = maxSeq - minSeq + 1;
     getSliceStatus(minSeq, count).then(statuses => {
       const map = new Map<number, boolean>();
-      statuses.forEach((v, i) => map.set(minSeq + i, v));
+      statuses.forEach((v, i) => {
+        map.set(minSeq + i, v);
+        sliceStatusCacheRef.current.set(minSeq + i, v);
+      });
       setSliceStatuses(map);
       dirtyRef.current = true;
     });
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [currentRow, visibleRows, sliceActive, getSliceStatus, finalVirtualTotalRows, finalResolveVirtualIndex, taintFilterActive]);
+  }, [debouncedRow, visibleRows, sliceActive, getSliceStatus, finalVirtualTotalRows, finalResolveVirtualIndex, taintFilterActive]);
 
   // === DEF/USE 箭头状态 ===
   const [arrowState, setArrowState] = useState<ArrowState | null>(null);
@@ -591,20 +683,108 @@ export default function TraceTable({
     scrollToSeq(seq, "center");
   }, [ensureSeqVisible, onSelectSeq, scrollToSeq]);
 
-  // === 滚轮事件（使用原生事件监听，避免 passive listener 问题） ===
+  // === 滚轮事件（同步更新 scrollPosRef，节流 React 状态以消除渲染开销） ===
   const maxRowRef = useRef(maxRow);
   maxRowRef.current = maxRow;
+  const scrollPosRef = useRef(0);        // 连续浮点位置（单位：行），如 42.7 = 第42行 + 70%
+  const lastEmittedRowRef = useRef(0);   // 上次发出的整数行号，用于检测外部变化
+  // 渲染期间同步钳位 scrollPosRef（配合 currentRow 钳位，避免 canvas 用旧位置绘制空白帧）
+  if (scrollPosRef.current > maxRow) {
+    scrollPosRef.current = maxRow;
+    lastEmittedRowRef.current = maxRow;
+  }
+  const wheelTimerRef = useRef(0);       // 节流定时器
   useEffect(() => {
     const el = containerRef.current;
     if (!el) return;
     const handler = (e: WheelEvent) => {
       e.preventDefault();
-      const delta = e.deltaY > 0 ? 3 : -3;
-      setCurrentRow(prev => Math.max(0, Math.min(maxRowRef.current, prev + delta)));
+      const speed = 3;
+      scrollPosRef.current += (e.deltaY / ROW_HEIGHT) * speed;
+      const max = maxRowRef.current;
+      if (scrollPosRef.current < 0) scrollPosRef.current = 0;
+      if (scrollPosRef.current > max) scrollPosRef.current = max;
+      dirtyRef.current = true;
+      // 节流 React 状态更新：滚轮停止 60ms 后才触发 setCurrentRow，
+      // 避免滚动期间大量 React 重渲染导致主线程卡顿
+      if (wheelTimerRef.current) clearTimeout(wheelTimerRef.current);
+      wheelTimerRef.current = window.setTimeout(() => {
+        const newRow = Math.floor(scrollPosRef.current);
+        if (newRow !== lastEmittedRowRef.current) {
+          lastEmittedRowRef.current = newRow;
+          setCurrentRow(newRow);
+        }
+      }, 60);
+      // 节流预取：滚动期间每 50ms 预取可视范围 + overscan 的数据，
+      // 绕过 React 状态链路（60ms+80ms 防抖），直接写入 ref 供 Canvas 读取
+      if (!prefetchTimerRef.current) {
+        prefetchTimerRef.current = window.setTimeout(() => {
+          prefetchTimerRef.current = 0;
+          const pos = Math.floor(scrollPosRef.current);
+          const rows = visibleRowsRef.current;
+          const total = totalRowsRef.current;
+          const OVERSCAN = 50;
+          const seqs: number[] = [];
+          const start = Math.max(0, pos - OVERSCAN);
+          const end = Math.min(total, pos + rows + OVERSCAN);
+          for (let vi = start; vi < end; vi++) {
+            const r = finalResolveRef.current(vi);
+            if (r.type === "line" && !prefetchCacheRef.current.has(r.seq)) {
+              seqs.push(r.seq);
+            }
+          }
+          if (seqs.length > 0) {
+            getLinesRef.current(seqs).then(lines => {
+              for (const line of lines) prefetchCacheRef.current.set(line.seq, line);
+              if (prefetchCacheRef.current.size > 5000) {
+                const entries = Array.from(prefetchCacheRef.current.entries());
+                prefetchCacheRef.current = new Map(entries.slice(-3000));
+              }
+              dirtyRef.current = true;
+            });
+          }
+          // 同步预取污点状态（highlight 模式）：绕过 debouncedRow 的 140ms 延迟
+          if (sliceActiveRef.current && !taintFilterActiveRef.current && getSliceStatusRef.current) {
+            // 只预取可视区域（污点状态查询较快，不需要大 overscan）
+            const sliceStart = Math.max(0, pos);
+            const sliceEnd = Math.min(total, pos + rows + 2);
+            const sliceSeqs: number[] = [];
+            for (let vi = sliceStart; vi < sliceEnd; vi++) {
+              const r = finalResolveRef.current(vi);
+              if (r.type === "line" && !sliceStatusCacheRef.current.has(r.seq)) {
+                sliceSeqs.push(r.seq);
+              }
+            }
+            if (sliceSeqs.length > 0) {
+              const minS = Math.min(...sliceSeqs);
+              const maxS = Math.max(...sliceSeqs);
+              getSliceStatusRef.current(minS, maxS - minS + 1).then(statuses => {
+                statuses.forEach((v, i) => sliceStatusCacheRef.current.set(minS + i, v));
+                if (sliceStatusCacheRef.current.size > 5000) {
+                  const entries = Array.from(sliceStatusCacheRef.current.entries());
+                  sliceStatusCacheRef.current = new Map(entries.slice(-3000));
+                }
+                dirtyRef.current = true;
+              });
+            }
+          }
+        }, 50);
+      }
     };
     el.addEventListener("wheel", handler, { passive: false });
-    return () => el.removeEventListener("wheel", handler);
+    return () => {
+      el.removeEventListener("wheel", handler);
+      if (wheelTimerRef.current) clearTimeout(wheelTimerRef.current);
+      if (prefetchTimerRef.current) clearTimeout(prefetchTimerRef.current);
+    };
   }, [isLoaded]);
+  // 外部 currentRow 变化时同步浮点位置（滚动条拖动、键盘跳转等）
+  useEffect(() => {
+    if (currentRow !== lastEmittedRowRef.current) {
+      scrollPosRef.current = currentRow;
+      lastEmittedRowRef.current = currentRow;
+    }
+  }, [currentRow]);
 
   // === Overlay 事件路由 ===
   const handleOverlayMouseDown = useCallback((e: React.MouseEvent) => {
@@ -620,8 +800,9 @@ export default function TraceTable({
       const rect = container.getBoundingClientRect();
       const x = e.clientX - rect.left;
       const y = e.clientY - rect.top;
-      const rowIdx = Math.floor(y / ROW_HEIGHT);
-      const vi = currentRow + rowIdx;
+      const scrollFrac = (scrollPosRef.current % 1) * ROW_HEIGHT;
+      const rowIdx = Math.floor((y + scrollFrac) / ROW_HEIGHT);
+      const vi = Math.floor(scrollPosRef.current) + rowIdx;
       // 仅在非功能区域启动拖选（跳过箭头列和折叠列）
       if (x >= COL_MEMRW && vi < finalVirtualTotalRows) {
         // 检查是否点击了寄存器 hitbox
@@ -640,7 +821,8 @@ export default function TraceTable({
             // 双击/三击：让浏览器处理文本选择，不启动拖选
             return;
           }
-          // 不立即启动行拖选，等 mouseMove 中根据方向判定
+          // 记录是否在文本区域（disasm/changes 列），用于后续方向判定
+          dragInTextArea.current = x >= COL_DISASM;
           dragPending.current = true;
           dragStartVi.current = vi;
         }
@@ -652,7 +834,7 @@ export default function TraceTable({
         }
       }
     }
-  }, [currentRow, finalVirtualTotalRows, canvasSize.width, effectiveChangesWidth]);
+  }, [finalVirtualTotalRows, canvasSize.width, effectiveChangesWidth]);
 
   // === Canvas 点击 ===
   const handleCanvasClick = useCallback((e: React.MouseEvent) => {
@@ -661,18 +843,17 @@ export default function TraceTable({
     const rect = container.getBoundingClientRect();
     const x = e.clientX - rect.left;
     const y = e.clientY - rect.top;
-    const rowIdx = Math.floor(y / ROW_HEIGHT);
-    const vi = currentRow + rowIdx;
+    const scrollFrac = (scrollPosRef.current % 1) * ROW_HEIGHT;
+    const rowIdx = Math.floor((y + scrollFrac) / ROW_HEIGHT);
+    const vi = Math.floor(scrollPosRef.current) + rowIdx;
     if (vi >= finalVirtualTotalRows) return;
     const resolved = finalResolveVirtualIndex(vi);
 
-    // 1. 箭头列标签点击 (x < COL_FOLD)
-    if (x < COL_FOLD) {
-      for (const lb of arrowLabelHitboxesRef.current) {
-        if (x >= lb.x && x <= lb.x + lb.width && y >= lb.y && y <= lb.y + lb.height) {
-          handleArrowJump(lb.seq);
-          return;
-        }
+    // 1. 箭头列标签点击（hitbox 可能延伸到 COL_FOLD 之外）
+    for (const lb of arrowLabelHitboxesRef.current) {
+      if (x >= lb.x && x <= lb.x + lb.width && y >= lb.y && y <= lb.y + lb.height) {
+        handleArrowJump(lb.seq);
+        return;
       }
     }
 
@@ -767,7 +948,7 @@ export default function TraceTable({
     onSelectSeq(resolved.seq);
     setCtrlSelect(prev => prev.size > 0 ? new Set() : prev);
     shiftAnchorVi.current = vi;
-  }, [currentRow, finalVirtualTotalRows, finalResolveVirtualIndex, finalSeqToVirtualIndex, animatedToggleFold, blLineMap,
+  }, [finalVirtualTotalRows, finalResolveVirtualIndex, finalSeqToVirtualIndex, animatedToggleFold, blLineMap,
       isFolded, sessionId, canvasSize, effectiveChangesWidth, handleRegClick,
       handleArrowJump, onSelectSeq, onUnhideGroup, selectedSeq]);
 
@@ -814,17 +995,19 @@ export default function TraceTable({
     const container = containerRef.current;
     if (!container) return;
     const vi = finalSeqToVirtualIndex(seq);
-    const localRow = vi - currentRow;
+    const renderStart = Math.floor(scrollPosRef.current);
+    const subPx = -(scrollPosRef.current - renderStart) * ROW_HEIGHT;
+    const localRow = vi - renderStart;
     const rect = container.getBoundingClientRect();
     const existingComment = highlights?.get(seq)?.comment ?? "";
     setCommentTooltip(null);
     setCommentEditor({
       seq,
       x: rect.left + COL_COMMENT,
-      y: rect.top + localRow * ROW_HEIGHT + ROW_HEIGHT,
+      y: rect.top + localRow * ROW_HEIGHT + subPx + ROW_HEIGHT,
       text: existingComment,
     });
-  }, [finalSeqToVirtualIndex, currentRow, highlights]);
+  }, [finalSeqToVirtualIndex, highlights]);
 
   // === 双击选词后去除尾随空格并自动复制 ===
   const handleOverlayDblClick = useCallback(() => {
@@ -850,7 +1033,8 @@ export default function TraceTable({
     const rect = container.getBoundingClientRect();
     const x = e.clientX - rect.left;
     const y = e.clientY - rect.top;
-    const rowIdx = Math.floor(y / ROW_HEIGHT);
+    const scrollFrac = (scrollPosRef.current % 1) * ROW_HEIGHT;
+    const rowIdx = Math.floor((y + scrollFrac) / ROW_HEIGHT);
 
     if (hoverRowRef.current !== rowIdx) {
       hoverRowRef.current = rowIdx;
@@ -867,7 +1051,7 @@ export default function TraceTable({
 
     // 检测折叠按钮区域或摘要行
     if (x >= COL_FOLD && x < COL_MEMRW) {
-      const vi = currentRow + rowIdx;
+      const vi = Math.floor(scrollPosRef.current) + rowIdx;
       if (vi < finalVirtualTotalRows) {
         const resolved = finalResolveVirtualIndex(vi);
         if (resolved.type === "summary") {
@@ -886,7 +1070,7 @@ export default function TraceTable({
 
     // 检测隐藏摘要行文本区域
     if (x >= COL_MEMRW) {
-      const vi = currentRow + rowIdx;
+      const vi = Math.floor(scrollPosRef.current) + rowIdx;
       if (vi < finalVirtualTotalRows) {
         const resolved = finalResolveVirtualIndex(vi);
         if (resolved.type === "hidden-summary") {
@@ -908,7 +1092,7 @@ export default function TraceTable({
 
     // 检测内联注释区域（COL_COMMENT ~ colChanges）→ 显示 tooltip
     if (!commentEditor && x >= COL_COMMENT) {
-      const vi = currentRow + rowIdx;
+      const vi = Math.floor(scrollPosRef.current) + rowIdx;
       if (vi < finalVirtualTotalRows) {
         const resolved = finalResolveVirtualIndex(vi);
         if (resolved.type === "line" && highlights) {
@@ -932,7 +1116,7 @@ export default function TraceTable({
                     setCommentTooltip({
                       seq: resolved.seq,
                       x: rect.left + COL_COMMENT,
-                      y: rect.top + rowIdx * ROW_HEIGHT,
+                      y: rect.top + rowIdx * ROW_HEIGHT - scrollFrac,
                       text: hlInfo.comment,
                     });
                   }
@@ -948,23 +1132,24 @@ export default function TraceTable({
     // 不在注释区域时关闭 tooltip
     if (commentTooltip) setCommentTooltip(null);
 
-    // 检测箭头标签
-    if (x < COL_FOLD) {
-      for (const lb of arrowLabelHitboxesRef.current) {
-        if (x >= lb.x && x <= lb.x + lb.width && y >= lb.y && y <= lb.y + lb.height) {
-          if (textOverlayRef.current) textOverlayRef.current.style.cursor = "pointer";
-          return;
-        }
+    // 检测箭头标签（hitbox 可能延伸到 COL_FOLD 之外）
+    for (const lb of arrowLabelHitboxesRef.current) {
+      if (x >= lb.x && x <= lb.x + lb.width && y >= lb.y && y <= lb.y + lb.height) {
+        if (textOverlayRef.current) textOverlayRef.current.style.cursor = "pointer";
+        return;
       }
     }
 
-    // 方向判定：超过死区后，纵向→行拖选，横向→文本选择（交给浏览器）
+    // 拖选判定：结合起始位置和拖动方向
+    // - 非文本区域（seq/addr 列）：任意方向均为行拖选
+    // - 文本区域（disasm/changes 列）：纵向→行拖选，横向→文本选择（交给浏览器）
     if (dragPending.current) {
       const dx = e.clientX - mouseDownPosRef.current.x;
       const dy = e.clientY - mouseDownPosRef.current.y;
       if (dx * dx + dy * dy < 25) return; // 死区 5px
-      if (Math.abs(dy) > Math.abs(dx)) {
-        // 纵向拖动 → 行拖选模式
+      const shouldRowSelect = !dragInTextArea.current || Math.abs(dy) > Math.abs(dx);
+      if (shouldRowSelect) {
+        // 行拖选模式
         isDraggingSelect.current = true;
         dragPending.current = false;
         setMultiSelect(null);
@@ -977,7 +1162,7 @@ export default function TraceTable({
         }
         window.getSelection()?.removeAllRanges();
       } else {
-        // 横向拖动 → 文本选择，不干预浏览器
+        // 文本区域横向拖动 → 文本选择，不干预浏览器
         dragPending.current = false;
         return;
       }
@@ -985,7 +1170,7 @@ export default function TraceTable({
 
     // 行拖选中：更新选择范围
     if (isDraggingSelect.current) {
-      const vi = Math.min(currentRow + rowIdx, finalVirtualTotalRows - 1);
+      const vi = Math.min(Math.floor(scrollPosRef.current) + rowIdx, finalVirtualTotalRows - 1);
       const startVi = Math.min(dragStartVi.current, vi);
       const endVi = Math.max(dragStartVi.current, vi);
       setMultiSelect({ startVi, endVi });
@@ -995,7 +1180,7 @@ export default function TraceTable({
     }
 
     if (textOverlayRef.current) textOverlayRef.current.style.cursor = "text";
-  }, [currentRow, finalVirtualTotalRows, finalResolveVirtualIndex, blLineMap, isFolded, highlights, commentTooltip, commentEditor, visibleLines, canvasSize, effectiveChangesWidth]);
+  }, [finalVirtualTotalRows, finalResolveVirtualIndex, blLineMap, isFolded, highlights, commentTooltip, commentEditor, visibleLines, canvasSize, effectiveChangesWidth]);
 
   // 获取当前选中的 seq 列表（多选或单选）
   const getSelectedSeqs = useCallback((): number[] => {
@@ -1057,7 +1242,8 @@ export default function TraceTable({
     if (container) {
       const rect = container.getBoundingClientRect();
       const cx = e.clientX - rect.left;
-      const rowIdx = Math.floor((e.clientY - rect.top) / ROW_HEIGHT);
+      const scrollFrac2 = (scrollPosRef.current % 1) * ROW_HEIGHT;
+      const rowIdx = Math.floor((e.clientY - rect.top + scrollFrac2) / ROW_HEIGHT);
       for (const hb of hitboxesRef.current) {
         if (hb.rowIndex === rowIdx && cx >= hb.x && cx <= hb.x + hb.width) {
           ctxRegRef.current = hb.token;
@@ -1066,30 +1252,32 @@ export default function TraceTable({
       }
     }
     const textSel = window.getSelection()?.toString();
-    if (textSel) {
+    if (textSel && !ctxRegRef.current) {
       // 文本选中模式：保存选中文本（点击菜单项时选区可能已被清除）
+      // 注意：命中寄存器 hitbox 时跳过此分支，显示完整菜单
       textSelectionRef.current = textSel;
       setCtxMenu({ x: e.clientX, y: e.clientY });
     } else if (multiSelect || ctrlSelect.size > 0) {
       // 多行选中模式：显示格式选择菜单
       setCtxMenu({ x: e.clientX, y: e.clientY });
-    } else if (selectedSeq != null) {
-      // 单行选中：右键点击在选中行上时显示格式选择菜单
+    } else if (selectedSeq != null || ctxRegRef.current) {
+      // 单行选中或命中寄存器：右键点击时显示完整菜单
       if (!container) return;
       const rect = container.getBoundingClientRect();
       const y = e.clientY - rect.top;
-      const rowIdx = Math.floor(y / ROW_HEIGHT);
-      const vi = currentRow + rowIdx;
+      const scrollFrac = (scrollPosRef.current % 1) * ROW_HEIGHT;
+      const rowIdx = Math.floor((y + scrollFrac) / ROW_HEIGHT);
+      const vi = Math.floor(scrollPosRef.current) + rowIdx;
       if (vi < finalVirtualTotalRows) {
         const resolved = finalResolveVirtualIndex(vi);
-        if (resolved.type === "line" && resolved.seq === selectedSeq) {
+        if (resolved.type === "line" && (resolved.seq === selectedSeq || ctxRegRef.current)) {
           // 临时设置单行 multiSelect 以复用 copyAs 逻辑
           setMultiSelect({ startVi: vi, endVi: vi });
           setCtxMenu({ x: e.clientX, y: e.clientY });
         }
       }
     }
-  }, [multiSelect, ctrlSelect, selectedSeq, currentRow, finalVirtualTotalRows, finalResolveVirtualIndex]);
+  }, [multiSelect, ctrlSelect, selectedSeq, finalVirtualTotalRows, finalResolveVirtualIndex]);
 
   // 点击外部自动保存并关闭注释编辑框
   useEffect(() => {
@@ -1239,6 +1427,12 @@ export default function TraceTable({
 
     ctx.font = FONT;
     ctx.textBaseline = "alphabetic";
+    // 等宽字体：所有字符宽度相同，只需测量一次，替代所有 measureText 调用（从 ~1000次/帧 → 1次/帧）
+    const charW = ctx.measureText("M").width;
+
+    // 亚像素平滑滚动：从 ref 读取精确位置，绕过 React 状态延迟
+    const renderStartRow = Math.floor(scrollPosRef.current);
+    const subPxOffset = -(scrollPosRef.current - renderStartRow) * ROW_HEIGHT;
 
     const colChanges = W - effectiveChangesWidth - RIGHT_GUTTER;
     const hitboxes: TokenHitbox[] = [];
@@ -1302,10 +1496,10 @@ export default function TraceTable({
     }
 
     for (let i = 0; i < visibleRows + 2; i++) {
-      const vi = currentRow + i;
+      const vi = renderStartRow + i;
       if (vi >= finalVirtualTotalRows) break;
       const resolved = finalResolveVirtualIndex(vi);
-      const baseY = i * ROW_HEIGHT;
+      const baseY = i * ROW_HEIGHT + subPxOffset;
 
       // 动画时计算 Y 偏移
       let y = baseY;
@@ -1379,7 +1573,13 @@ export default function TraceTable({
 
       // 切片高亮
       const lineSeq = resolved.type === "line" ? resolved.seq : -1;
-      const isTainted = sliceActive && lineSeq >= 0 && (sliceStatuses.get(lineSeq) ?? false);
+      // filter-only 模式下所有可见行都是污点行，无需查 map；
+      // highlight 模式下先查 React state，fallback 到预取缓存 ref
+      const isTainted = sliceActive && lineSeq >= 0 && (
+        taintFilterActive
+          ? true
+          : (sliceStatuses.get(lineSeq) ?? sliceStatusCacheRef.current.get(lineSeq) ?? false)
+      );
       const isSourceLine = sliceActive && lineSeq >= 0 && lineSeq === sliceSourceSeq;
       if (sliceActive && resolved.type === "line") {
         if (isTainted || isSourceLine) {
@@ -1405,7 +1605,7 @@ export default function TraceTable({
         ctx.fillStyle = COLORS.asmMnemonic;
         const funcLabel = `Func ${resolved.funcAddr}`;
         ctx.fillText(funcLabel, summaryX, textY);
-        const funcLabelW = ctx.measureText(funcLabel).width;
+        const funcLabelW = funcLabel.length * charW;
 
         ctx.font = FONT;
         ctx.fillStyle = COLORS.textSecondary;
@@ -1425,7 +1625,7 @@ export default function TraceTable({
 
       // --- 正常行 ---
       const seq = resolved.seq;
-      const line = visibleLines.get(seq);
+      const line = visibleLines.get(seq) ?? prefetchCacheRef.current.get(seq);
 
       // Fold 按钮（▼）
       const blNode = blLineMap.get(seq);
@@ -1435,18 +1635,31 @@ export default function TraceTable({
         ctx.fillText("\u25BC", COL_FOLD + 8, textY); // ▼
       }
 
+      // Seq（始终显示）
+      ctx.fillStyle = COLORS.textSecondary;
+      ctx.fillText(String(seq + 1), COL_SEQ, textY);
+
+      // 数据未加载时显示占位符，避免快速滚动时出现空白区域
+      if (!line) {
+        const prevAlpha = ctx.globalAlpha;
+        ctx.globalAlpha = prevAlpha * 0.2;
+        ctx.fillStyle = COLORS.textSecondary;
+        ctx.fillText("\u2500\u2500\u2500", COL_DISASM, textY);
+        // 恢复切片变灰的 alpha
+        if (sliceActive && !isTainted && !isSourceLine) ctx.globalAlpha = 1.0;
+        else ctx.globalAlpha = prevAlpha;
+        if (needClipRestore) ctx.restore();
+        continue;
+      }
+
       // MemRW
-      if (line?.mem_rw === "W" || line?.mem_rw === "R") {
+      if (line.mem_rw === "W" || line.mem_rw === "R") {
         ctx.fillStyle = COLORS.textSecondary;
         ctx.fillText(line.mem_rw, COL_MEMRW, textY);
       }
 
-      // Seq
-      ctx.fillStyle = COLORS.textSecondary;
-      ctx.fillText(String(seq + 1), COL_SEQ, textY);
-
       // Address
-      if (line?.address) {
+      if (line.address) {
         ctx.fillStyle = COLORS.textAddress;
         ctx.fillText(line.address, COL_ADDR, textY);
       }
@@ -1468,12 +1681,12 @@ export default function TraceTable({
             const gap = line.disasm.slice(lastIdx, match.index);
             ctx.fillStyle = COLORS.textPrimary;
             ctx.fillText(gap, curX, textY);
-            curX += ctx.measureText(gap).width;
+            curX += gap.length * charW;
           }
           const token = match[0];
           const color = canvasTokenColor(token, isFirst);
           const isReg = !isFirst && REG_RE.test(token);
-          const tokenW = ctx.measureText(token).width;
+          const tokenW = token.length * charW;
 
           ctx.fillStyle = color;
           ctx.fillText(token, curX, textY);
@@ -1501,7 +1714,7 @@ export default function TraceTable({
           const tail = line.disasm.slice(lastIdx);
           ctx.fillStyle = COLORS.textPrimary;
           ctx.fillText(tail, curX, textY);
-          curX += ctx.measureText(tail).width;
+          curX += tail.length * charW;
         }
       }
 
@@ -1560,23 +1773,23 @@ export default function TraceTable({
 
     if (arrowState) {
       const anchorVIdx = finalSeqToVirtualIndex(arrowState.anchorSeq);
-      const anchorLocalY = (anchorVIdx - currentRow) * ROW_HEIGHT + ROW_HEIGHT / 2;
+      const anchorLocalY = (anchorVIdx - renderStartRow) * ROW_HEIGHT + subPxOffset + ROW_HEIGHT / 2;
       const defStartY = anchorLocalY - ANCHOR_GAP;
       const useStartY = anchorLocalY + ANCHOR_GAP;
 
-      const firstVI = currentRow;
-      const lastVI = currentRow + visibleRows;
+      const firstVI = renderStartRow;
+      const lastVI = renderStartRow + visibleRows;
 
       // 辅助：虚拟索引 → 本地 y
-      const viToY = (vi: number) => (vi - currentRow) * ROW_HEIGHT + ROW_HEIGHT / 2;
+      const viToY = (vi: number) => (vi - renderStartRow) * ROW_HEIGHT + subPxOffset + ROW_HEIGHT / 2;
 
       // 圆点
       for (let i = 0; i < visibleRows + 1; i++) {
-        const vi = currentRow + i;
+        const vi = renderStartRow + i;
         if (vi >= finalVirtualTotalRows) break;
         const resolved2 = finalResolveVirtualIndex(vi);
         if (resolved2.type !== "line") continue;
-        const dotY = i * ROW_HEIGHT + ROW_HEIGHT / 2;
+        const dotY = i * ROW_HEIGHT + subPxOffset + ROW_HEIGHT / 2;
         const seq2 = resolved2.seq;
 
         let fill: string;
@@ -1787,12 +2000,16 @@ export default function TraceTable({
     arrowLabelHitboxesRef.current = arrowLabels;
 
     ctx.restore();
-  }, [canvasSize, currentRow, visibleRows, finalVirtualTotalRows, finalResolveVirtualIndex,
+  }, [canvasSize, visibleRows, finalVirtualTotalRows, finalResolveVirtualIndex,
       visibleLines, selectedSeq, arrowState, effectiveChangesWidth, fontReady,
       blLineMap, isFolded, finalSeqToVirtualIndex, toggleFold, multiSelect, ctrlSelect, highlights,
-      sliceActive, sliceStatuses, sliceSourceSeq]);
+      sliceActive, sliceStatuses, sliceSourceSeq, taintFilterActive]);
 
-  // === DOM 文本层同步（支持文本选择/复制） ===
+  // drawFrame 通过 ref 暴露给 RAF 循环，避免 RAF useEffect 因 drawFrame 重建而重启导致掉帧
+  const drawFrameRef = useRef(drawFrame);
+  drawFrameRef.current = drawFrame;
+
+  // === DOM 文本层同步（支持文本选择/复制，debouncedRow 驱动避免滚动卡顿） ===
   useEffect(() => {
     const overlay = textOverlayRef.current;
     if (!overlay) return;
@@ -1804,7 +2021,7 @@ export default function TraceTable({
     const gridCols = `${COL_FOLD}px ${COL_MEMRW - COL_FOLD}px ${COL_SEQ - COL_MEMRW}px ${COL_ADDR - COL_SEQ}px ${COL_DISASM - COL_ADDR}px 1fr ${effectiveChangesWidth}px`;
 
     for (let i = 0; i < visibleRows + 1; i++) {
-      const vi = currentRow + i;
+      const vi = debouncedRow + i;
       if (vi >= finalVirtualTotalRows) break;
       const resolved = finalResolveVirtualIndex(vi);
 
@@ -1856,7 +2073,7 @@ export default function TraceTable({
         const changesSpan = document.createElement("span");
         rowDiv.appendChild(changesSpan);
       } else {
-        const cols = lineToTextColumns(resolved.seq, visibleLines.get(resolved.seq));
+        const cols = lineToTextColumns(resolved.seq, visibleLines.get(resolved.seq) ?? prefetchCacheRef.current.get(resolved.seq));
 
         const memSpan = document.createElement("span");
         memSpan.textContent = cols.memRW;
@@ -1883,29 +2100,35 @@ export default function TraceTable({
 
       overlay.appendChild(rowDiv);
     }
-  }, [currentRow, visibleRows, finalVirtualTotalRows, finalResolveVirtualIndex, visibleLines, canvasSize.width, effectiveChangesWidth]);
+  }, [debouncedRow, visibleRows, finalVirtualTotalRows, finalResolveVirtualIndex, visibleLines, canvasSize.width, effectiveChangesWidth]);
 
-  // === 脏标记 ===
-  useEffect(() => { dirtyRef.current = true; }, [
+  // === 脏标记（useLayoutEffect 确保在 paint 前同步设置，配合 RAF 实现同帧渲染） ===
+  useLayoutEffect(() => { dirtyRef.current = true; }, [
     currentRow, selectedSeq, arrowState, canvasSize, effectiveChangesWidth,
     visibleLines, finalVirtualTotalRows, fontReady, highlights, ctrlSelect,
     sliceActive, sliceStatuses, sliceSourceSeq,
   ]);
 
-  // === rAF 渲染循环 ===
+  // === rAF 渲染循环（通过 drawFrameRef 解耦，循环永不重启，消除掉帧） ===
   useEffect(() => {
     let running = true;
     const loop = () => {
       if (!running) return;
       if (dirtyRef.current) {
         dirtyRef.current = false;
-        drawFrame();
+        drawFrameRef.current();
+        // 同步文本覆盖层的亚像素偏移，确保文本选择与 canvas 对齐
+        if (textOverlayRef.current) {
+          const subPx = -(scrollPosRef.current - Math.floor(scrollPosRef.current)) * ROW_HEIGHT;
+          textOverlayRef.current.style.transform = `translateY(${subPx}px)`;
+        }
       }
       rafIdRef.current = requestAnimationFrame(loop);
     };
     rafIdRef.current = requestAnimationFrame(loop);
     return () => { running = false; cancelAnimationFrame(rafIdRef.current); };
-  }, [drawFrame]);
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
   // === 空状态 ===
   if (!isLoaded) {
@@ -1961,7 +2184,7 @@ export default function TraceTable({
             top: 0,
             left: 0,
             width: canvasSize.width > 0 ? canvasSize.width - RIGHT_GUTTER : `calc(100% - ${RIGHT_GUTTER}px)`,
-            height: "100%",
+            height: `calc(100% + ${ROW_HEIGHT}px)`,
             zIndex: 1,
             color: "transparent",
             font: FONT,
@@ -2162,8 +2385,8 @@ export default function TraceTable({
             )}
           </ContextMenu>
         )}
-        {/* 注释悬浮预览 */}
-        {commentTooltip && !commentEditor && (
+        {/* 注释悬浮预览 — Portal 到 body，避免祖先 contain:paint 导致 fixed 定位失效 */}
+        {commentTooltip && !commentEditor && createPortal(
           <div
             style={{
               position: "fixed",
@@ -2186,10 +2409,11 @@ export default function TraceTable({
             }}
           >
             {commentTooltip.text}
-          </div>
+          </div>,
+          document.body,
         )}
-        {/* 注释编辑框 */}
-        {commentEditor && (
+        {/* 注释编辑框 — Portal 到 body，避免祖先 contain:paint 导致 fixed 定位失效 */}
+        {commentEditor && createPortal(
           <div
             ref={commentEditorRef}
             style={{
@@ -2253,7 +2477,8 @@ export default function TraceTable({
             />
             <div style={{ display: "flex", justifyContent: "center", gap: 8, marginTop: 6 }}>
               <button
-                onClick={() => {
+                onMouseDown={(e) => {
+                  e.preventDefault();
                   const val = commentTextareaRef.current?.value ?? "";
                   if (onSetComment) {
                     if (val.trim()) {
@@ -2276,7 +2501,7 @@ export default function TraceTable({
                 }}
               >Save</button>
               <button
-                onClick={() => closeCommentEditor()}
+                onMouseDown={(e) => { e.preventDefault(); closeCommentEditor(); }}
                 style={{
                   padding: "4px 16px",
                   fontSize: 11,
@@ -2288,7 +2513,8 @@ export default function TraceTable({
                 }}
               >Cancel</button>
             </div>
-          </div>
+          </div>,
+          document.body,
         )}
         <Minimap
           virtualTotalRows={finalVirtualTotalRows}

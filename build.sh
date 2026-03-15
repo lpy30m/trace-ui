@@ -134,6 +134,64 @@ build_rust() {
         err "构建产物未找到: $bin"
         exit 1
     fi
+
+    # macOS: 创建 .app Bundle 以避免启动时弹出终端
+    if [[ "$PLATFORM" == "macos" ]]; then
+        create_macos_app "$bin" "$mode"
+    fi
+}
+
+# ── macOS .app Bundle 生成 ──
+create_macos_app() {
+    local bin="$1"
+    local mode="$2"
+    local app_name="Trace UI.app"
+    local app_dir="target/$mode/$app_name"
+
+    info "创建 macOS App Bundle..."
+    mkdir -p "$app_dir/Contents/MacOS"
+    mkdir -p "$app_dir/Contents/Resources"
+
+    # 复制二进制文件
+    cp -f "$bin" "$app_dir/Contents/MacOS/trace-ui"
+
+    # 复制图标
+    if [[ -f "icons/icon.icns" ]]; then
+        cp -f "icons/icon.icns" "$app_dir/Contents/Resources/icon.icns"
+    fi
+
+    # 生成 Info.plist
+    cat > "$app_dir/Contents/Info.plist" << 'PLIST'
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>CFBundleExecutable</key>
+    <string>trace-ui</string>
+    <key>CFBundleIdentifier</key>
+    <string>com.ai-trace.trace-ui</string>
+    <key>CFBundleName</key>
+    <string>Trace UI</string>
+    <key>CFBundleDisplayName</key>
+    <string>Trace UI</string>
+    <key>CFBundleVersion</key>
+    <string>0.1.0</string>
+    <key>CFBundleShortVersionString</key>
+    <string>0.1.0</string>
+    <key>CFBundlePackageType</key>
+    <string>APPL</string>
+    <key>CFBundleIconFile</key>
+    <string>icon</string>
+    <key>LSMinimumSystemVersion</key>
+    <string>10.13</string>
+    <key>NSHighResolutionCapable</key>
+    <true/>
+</dict>
+</plist>
+PLIST
+
+    ok "App Bundle 创建完成 → $app_dir"
+    info "启动方式: open \"$app_dir\""
 }
 
 # ── Tauri 打包 ──

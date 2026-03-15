@@ -19,7 +19,7 @@ pub struct Phase2State {
 #[allow(dead_code)]
 pub struct SessionState {
     pub mmap: Arc<Mmap>,
-    pub line_index: LineIndex,
+    pub line_index: Option<LineIndex>,
     pub file_path: String,
     pub total_lines: u32,
     pub file_size: u64,

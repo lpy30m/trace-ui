@@ -416,6 +416,8 @@ mod tests {
             operands: ops.iter().cloned().collect(),
             mem_op: None,
             has_arrow: true,
+            arrow_pos: None,
+
             base_reg: None,
             writeback: false,
             lane_index: None,
@@ -431,6 +433,8 @@ mod tests {
             operands: ops.iter().cloned().collect(),
             mem_op: None,
             has_arrow: true,
+            arrow_pos: None,
+
             base_reg: Some(base),
             writeback: true,
             lane_index: None,
