@@ -13,7 +13,7 @@ interface Props {
   totalLines: number;
   defaultDefs?: string[];
   defaultMemAddr?: string;
-  onExecute: (fromSpecs: string[], startSeq?: number, endSeq?: number) => void;
+  onExecute: (fromSpecs: string[], startSeq?: number, endSeq?: number, dataOnly?: boolean) => void;
   onClose: () => void;
 }
 
@@ -117,6 +117,7 @@ export default function TaintConfigDialog({
   const nextIdRef = useRef(1);
   const [startSeq, setStartSeq] = useState("1");
   const [endSeq, setEndSeq] = useState(String(seq + 1));
+  const [controlDep, setControlDep] = useState(true);
   const [sources, setSources] = useState<TaintSource[]>(() =>
     createDefaultSources(nextIdRef, defaultDefs, defaultMemAddr)
   );
@@ -170,9 +171,9 @@ export default function TaintConfigDialog({
       const validEndSeq = parsedEndSeq && !isNaN(parsedEndSeq) && parsedEndSeq >= 1
         ? parsedEndSeq - 1
         : undefined;
-      onExecute(specs, validStartSeq, validEndSeq);
+      onExecute(specs, validStartSeq, validEndSeq, !controlDep);
     }
-  }, [seq, startSeq, endSeq, sources, onExecute]);
+  }, [seq, startSeq, endSeq, sources, controlDep, onExecute]);
 
   const handleKeyDown = useCallback((e: React.KeyboardEvent) => {
     if (e.key === "Escape") {
@@ -247,6 +248,26 @@ export default function TaintConfigDialog({
               style={fieldInputStyle}
             />
           </div>
+        </div>
+
+        {/* ── Dependency Options ── */}
+        <div style={{ ...cardStyle, marginBottom: 24, display: "flex", alignItems: "center", gap: 16 }}>
+          <div style={{ fontSize: 14, fontWeight: 600, color: "var(--text-primary)", flexShrink: 0 }}>
+            Dependencies
+          </div>
+          <label style={{ display: "flex", alignItems: "center", gap: 6, cursor: "pointer", fontSize: 13, color: "var(--text-primary)" }}>
+            <input type="checkbox" checked disabled style={{ accentColor: "var(--btn-primary)" }} />
+            Data
+          </label>
+          <label style={{ display: "flex", alignItems: "center", gap: 6, cursor: "pointer", fontSize: 13, color: "var(--text-primary)" }}>
+            <input
+              type="checkbox"
+              checked={controlDep}
+              onChange={(e) => setControlDep(e.target.checked)}
+              style={{ accentColor: "var(--btn-primary)" }}
+            />
+            Control
+          </label>
         </div>
 
         {/* ── Taint Sources Header ── */}

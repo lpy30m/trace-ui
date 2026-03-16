@@ -86,7 +86,7 @@ function App() {
 
   const [showGoto, setShowGoto] = useState(false);
 
-  const { recentFiles, addRecent, removeRecent } = useRecentFiles();
+  const { recentFiles, addRecent, removeRecent, clearRecent } = useRecentFiles();
   const { preferences, updatePreferences } = usePreferences();
   const { highlights, loadForFile, setHighlight, toggleStrikethrough, resetHighlight, toggleHidden, unhideGroup, setComment, deleteComment } = useHighlights();
 
@@ -355,6 +355,14 @@ function App() {
     [openTrace, addRecent]
   );
 
+  // 启动时应用保存的缓存目录配置
+  useEffect(() => {
+    const dir = preferences.cacheDir?.trim() || null;
+    if (dir) {
+      invoke("set_cache_dir", { path: dir }).catch(console.error);
+    }
+  }, []); // eslint-disable-line react-hooks/exhaustive-deps
+
   // 启动时恢复上次的会话
   const hasAutoOpened = useRef(false);
   // 待恢复的 taintConfig：filePath → TaintConfig
@@ -399,7 +407,7 @@ function App() {
     const config = pendingTaintConfigs.current.get(filePath);
     if (!config) return;
     pendingTaintConfigs.current.delete(filePath);
-    sliceRef.current.runSlice(config.fromSpecs, config.startSeq, config.endSeq, config.sourceSeq).then(() => {
+    sliceRef.current.runSlice(config.fromSpecs, config.startSeq, config.endSeq, config.sourceSeq, config.dataOnly).then(() => {
       if (config.filterMode) {
         sliceRef.current.setSliceFilterMode(config.filterMode);
       }
@@ -420,6 +428,7 @@ function App() {
             startSeq: sliceState.sliceStartSeq,
             endSeq: sliceState.sliceEndSeq,
             sourceSeq: sliceState.sliceSourceSeq,
+            dataOnly: sliceState.sliceDataOnly,
             filterMode: sliceState.sliceFilterMode,
           } : undefined,
         };
@@ -452,6 +461,7 @@ function App() {
         startSeq: sliceState.sliceStartSeq,
         endSeq: sliceState.sliceEndSeq,
         sourceSeq: sliceState.sliceSourceSeq,
+        dataOnly: sliceState.sliceDataOnly,
         filterMode: sliceState.sliceFilterMode,
       });
     }
@@ -838,6 +848,7 @@ function App() {
             setTaintDialogReg(undefined);
           }
         }}
+        onClearCache={clearRecent}
       />
       <Group orientation="horizontal" style={{ flex: 1 }} elementRef={hGroupRef}>
         <Panel defaultSize={20} minSize={15} panelRef={leftPanelRef}>
@@ -951,10 +962,10 @@ function App() {
           seq={taintDialogSeq}
           totalLines={totalLines}
           defaultDefs={taintDialogReg ? [taintDialogReg] : undefined}
-          onExecute={async (specs, startSeq, endSeq) => {
+          onExecute={async (specs, startSeq, endSeq, dataOnly) => {
             const sourceSeq = taintDialogSeq;
             setTaintDialogSeq(null);
-            await slice.runSlice(specs, startSeq, endSeq, sourceSeq);
+            await slice.runSlice(specs, startSeq, endSeq, sourceSeq, dataOnly);
             // 跳转到污点源行
             scrollAlignRef.current = "end";
             setScrollTrigger(c => c + 1);

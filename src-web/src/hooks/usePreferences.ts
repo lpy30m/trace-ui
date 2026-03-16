@@ -7,6 +7,7 @@ export interface Preferences {
   reopenLastFile: boolean;
   showAllHidden: boolean;
   showHiddenIndicators: boolean;
+  cacheDir: string; // empty string = use default path
 }
 
 export interface TaintConfig {
@@ -14,6 +15,7 @@ export interface TaintConfig {
   startSeq?: number;
   endSeq?: number;
   sourceSeq?: number;
+  dataOnly?: boolean;
   filterMode: "highlight" | "filter-only";
 }
 
@@ -32,6 +34,7 @@ const DEFAULTS: Preferences = {
   reopenLastFile: false,
   showAllHidden: false,
   showHiddenIndicators: true,
+  cacheDir: "",
 };
 
 function load(): Preferences {

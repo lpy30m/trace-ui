@@ -235,7 +235,7 @@ pub fn scan_unified(
         // Step 3c: Control dependencies (skip for pair — handled in 3d)
         if !is_pair && !data_only {
             if let Some(cb) = state.last_cond_branch {
-                state.deps.push_unique(cb);
+                state.deps.push_unique(cb | scanner::CONTROL_DEP_BIT);
             }
         }
 
@@ -286,7 +286,7 @@ pub fn scan_unified(
                 // shared: control dep
                 if !data_only {
                     if let Some(cb) = state.last_cond_branch {
-                        push_unique(&mut split.shared, cb);
+                        push_unique(&mut split.shared, cb | scanner::CONTROL_DEP_BIT);
                     }
                 }
 

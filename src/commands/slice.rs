@@ -121,8 +121,10 @@ pub fn run_slice(
     from_specs: Vec<String>,
     start_seq: Option<u32>,
     end_seq: Option<u32>,
+    data_only: Option<bool>,
     state: State<'_, AppState>,
 ) -> Result<SliceResult, String> {
+    let data_only = data_only.unwrap_or(false);
     // Phase 1: read lock - resolve specs and run BFS (read-only)
     let marked = {
         let sessions = state.sessions.read().map_err(|e| e.to_string())?;
@@ -137,7 +139,11 @@ pub fn run_slice(
             start_indices.push(idx);
         }
 
-        let mut marked = slicer::bfs_slice(scan_state, &start_indices);
+        let mut marked = if data_only {
+            slicer::bfs_slice_with_options(scan_state, &start_indices, true)
+        } else {
+            slicer::bfs_slice(scan_state, &start_indices)
+        };
 
         // Apply optional range filter
         if let Some(s) = start_seq {

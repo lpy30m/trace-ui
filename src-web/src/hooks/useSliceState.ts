@@ -13,6 +13,7 @@ interface SessionSliceState {
   sliceStartSeq?: number;
   sliceEndSeq?: number;
   sliceSourceSeq?: number;
+  sliceDataOnly?: boolean;
 }
 
 function defaultState(): SessionSliceState {
@@ -70,7 +71,7 @@ export function useSliceState(sessionId: string | null) {
     }
   }, []);
 
-  const runSlice = useCallback(async (fromSpecs: string[], startSeq?: number, endSeq?: number, sourceSeq?: number): Promise<SliceResult | undefined> => {
+  const runSlice = useCallback(async (fromSpecs: string[], startSeq?: number, endSeq?: number, sourceSeq?: number, dataOnly?: boolean): Promise<SliceResult | undefined> => {
     if (!sessionId || fromSpecs.length === 0) return undefined;
     setIsSlicing(true);
     try {
@@ -79,6 +80,7 @@ export function useSliceState(sessionId: string | null) {
         fromSpecs,
         startSeq: startSeq ?? null,
         endSeq: endSeq ?? null,
+        dataOnly: dataOnly ?? false,
       });
       getSliceCache(sessionId).clear();
       const seqs = await invoke<number[]>("get_tainted_seqs", { sessionId });
@@ -91,6 +93,7 @@ export function useSliceState(sessionId: string | null) {
         sliceStartSeq: startSeq,
         sliceEndSeq: endSeq,
         sliceSourceSeq: sourceSeq,
+        sliceDataOnly: dataOnly,
       });
       return result;
     } catch (e) {
@@ -168,6 +171,7 @@ export function useSliceState(sessionId: string | null) {
     sliceStartSeq: currentState.sliceStartSeq,
     sliceEndSeq: currentState.sliceEndSeq,
     sliceSourceSeq: currentState.sliceSourceSeq,
+    sliceDataOnly: currentState.sliceDataOnly,
     runSlice,
     clearSlice,
     getSliceStatus,

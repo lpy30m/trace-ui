@@ -40,5 +40,10 @@ export function useRecentFiles() {
     });
   }, []);
 
-  return { recentFiles, addRecent, removeRecent };
+  const clearRecent = useCallback(() => {
+    setRecentFiles([]);
+    saveRecent([]);
+  }, []);
+
+  return { recentFiles, addRecent, removeRecent, clearRecent };
 }

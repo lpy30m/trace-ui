@@ -77,7 +77,8 @@ impl RegLastDef {
 /// - 无标记: 到达 pair 指令的第一半区（half1 数据）
 pub const PAIR_HALF2_BIT: u32 = 0x80000000;
 pub const PAIR_SHARED_BIT: u32 = 0x40000000;
-pub const LINE_MASK: u32 = 0x3FFFFFFF;
+pub const CONTROL_DEP_BIT: u32 = 0x20000000;
+pub const LINE_MASK: u32 = 0x1FFFFFFF;
 
 /// Pair 指令（ldp/stp）的分半依赖。
 /// 将内存依赖和源寄存器依赖按半区拆分，以提高切片精度。
@@ -594,7 +595,7 @@ pub fn scan_pass1_bytes_with_progress(
         // Step 3c: Control dependencies (skip for pair — handled in 3d)
         if !is_pair && !data_only {
             if let Some(cb) = state.last_cond_branch {
-                state.deps.push_unique(cb);
+                state.deps.push_unique(cb | CONTROL_DEP_BIT);
             }
         }
 
@@ -645,7 +646,7 @@ pub fn scan_pass1_bytes_with_progress(
                 // shared: control dep
                 if !data_only {
                     if let Some(cb) = state.last_cond_branch {
-                        push_unique(&mut split.shared, cb);
+                        push_unique(&mut split.shared, cb | CONTROL_DEP_BIT);
                     }
                 }
 
@@ -921,10 +922,10 @@ mod tests {
         let state = scan_from_string(&trace, false).unwrap();
 
         // b.eq (line 1) is a conditional branch -> sets lastCondBranch
-        // mov x0 (line 2) should have control dep on b.eq (line 1)
+        // mov x0 (line 2) should have control dep on b.eq (line 1), tagged with CONTROL_DEP_BIT
         assert!(
-            state.deps.row(2).contains(&1),
-            "mov after b.eq should have control dep"
+            state.deps.row(2).contains(&(1 | CONTROL_DEP_BIT)),
+            "mov after b.eq should have control dep (tagged with CONTROL_DEP_BIT)"
         );
     }
 

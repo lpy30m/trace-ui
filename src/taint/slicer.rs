@@ -5,7 +5,7 @@ use anyhow::Result;
 use bitvec::prelude::*;
 use rustc_hash::FxHashMap;
 
-use crate::taint::scanner::{ScanState, PAIR_HALF2_BIT, PAIR_SHARED_BIT, LINE_MASK, PairSplitDeps};
+use crate::taint::scanner::{ScanState, PAIR_HALF2_BIT, PAIR_SHARED_BIT, CONTROL_DEP_BIT, LINE_MASK, PairSplitDeps};
 
 /// BFS backward slice: given starting line indices, mark all transitively
 /// reachable lines in the dependency graph.
@@ -17,6 +17,12 @@ use crate::taint::scanner::{ScanState, PAIR_HALF2_BIT, PAIR_SHARED_BIT, LINE_MAS
 ///
 /// Returns a bitvec where `marked[i] == true` means line `i` is in the slice.
 pub fn bfs_slice(state: &ScanState, start_indices: &[u32]) -> BitVec {
+    bfs_slice_with_options(state, start_indices, false)
+}
+
+/// BFS backward slice with options.
+/// When `data_only` is true, control dependency edges (tagged with CONTROL_DEP_BIT) are skipped.
+pub fn bfs_slice_with_options(state: &ScanState, start_indices: &[u32], data_only: bool) -> BitVec {
     let n = state.line_count as usize;
     let mut marked = bitvec![0; n];
     let mut queue: VecDeque<u32> = VecDeque::new();
@@ -37,11 +43,13 @@ pub fn bfs_slice(state: &ScanState, start_indices: &[u32]) -> BitVec {
             if (raw & PAIR_SHARED_BIT) != 0 {
                 // Shared arrival (via writeback base): follow only shared deps
                 for &dep in &split.shared {
+                    if data_only && (dep & CONTROL_DEP_BIT) != 0 { continue; }
                     enqueue_dep(dep, n, &mut queue, &mut marked, &mut pair_visited, &state.pair_split);
                 }
             } else {
                 // Data arrival: follow shared + relevant half deps
                 for &dep in &split.shared {
+                    if data_only && (dep & CONTROL_DEP_BIT) != 0 { continue; }
                     enqueue_dep(dep, n, &mut queue, &mut marked, &mut pair_visited, &state.pair_split);
                 }
                 let half_deps = if (raw & PAIR_HALF2_BIT) != 0 {
@@ -56,6 +64,7 @@ pub fn bfs_slice(state: &ScanState, start_indices: &[u32]) -> BitVec {
         } else {
             // Non-pair instruction: follow all deps (deps may carry tags)
             for &dep in state.deps.row(line as usize) {
+                if data_only && (dep & CONTROL_DEP_BIT) != 0 { continue; }
                 enqueue_dep(dep, n, &mut queue, &mut marked, &mut pair_visited, &state.pair_split);
             }
         }

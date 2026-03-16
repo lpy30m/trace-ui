@@ -1,5 +1,6 @@
 import { useState, useCallback, useEffect } from "react";
-import { openUrl } from "@tauri-apps/plugin-opener";
+import { openUrl, openPath } from "@tauri-apps/plugin-opener";
+import { invoke } from "@tauri-apps/api/core";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import WindowControls from "./WindowControls";
 import ConfirmDialog from "./ConfirmDialog";
@@ -39,9 +40,10 @@ interface Props {
   onTaintClear: () => void;
   onTaintGoToSource: () => void;
   onTaintReconfigure: () => void;
+  onClearCache?: () => void;
 }
 
-export default function TitleBar({ onOpenFile, onCloseFile, onRebuildIndex, onSearch, isLoaded, recentFiles, onRemoveRecent, onGoBack, onGoForward, preferences, onUpdatePreferences, onTaintAnalysis, onSaveTaintResults, onHighlight, onStrikethrough, onResetHighlight, onHide, sliceActive, sliceFilterMode, sliceInfo, onTaintFilterModeChange, onTaintClear, onTaintGoToSource, onTaintReconfigure }: Props) {
+export default function TitleBar({ onOpenFile, onCloseFile, onRebuildIndex, onSearch, isLoaded, recentFiles, onRemoveRecent, onGoBack, onGoForward, preferences, onUpdatePreferences, onTaintAnalysis, onSaveTaintResults, onHighlight, onStrikethrough, onResetHighlight, onHide, sliceActive, sliceFilterMode, sliceInfo, onTaintFilterModeChange, onTaintClear, onTaintGoToSource, onTaintReconfigure, onClearCache }: Props) {
   const hasSelectedSeq = useHasSelectedSeq();
   const canGoBack = useCanGoBack();
   const canGoForward = useCanGoForward();
@@ -66,6 +68,7 @@ export default function TitleBar({ onOpenFile, onCloseFile, onRebuildIndex, onSe
   const [showAbout, setShowAbout] = useState(false);
   const [showPrefs, setShowPrefs] = useState(false);
   const [showRebuildConfirm, setShowRebuildConfirm] = useState(false);
+  const [showClearCacheConfirm, setShowClearCacheConfirm] = useState(false);
   const [recentHover, setRecentHover] = useState(false);
   const [highlightHover, setHighlightHover] = useState(false);
   const [recentCtxMenu, setRecentCtxMenu] = useState<{ path: string; x: number; y: number } | null>(null);
@@ -271,8 +274,16 @@ export default function TitleBar({ onOpenFile, onCloseFile, onRebuildIndex, onSe
         </MenuDropdown>
 
         {/* Settings 下拉菜单 */}
-        <MenuDropdown label="Settings" minWidth={160}>
-          <MenuItem label="Preferences" onClick={() => setShowPrefs(true)} />
+        <MenuDropdown label="Settings" minWidth={200}>
+          <MenuItem label="Preferences..." onClick={() => setShowPrefs(true)} />
+          <MenuSeparator />
+          <MenuItem label="Open Cache Directory" onClick={async () => {
+            try {
+              const info = await invoke<{ path: string }>("get_cache_dir");
+              await openPath(info.path);
+            } catch (e) { console.error("open cache dir failed:", e); }
+          }} />
+          <MenuItem label="Clear Cache..." onClick={() => setShowClearCacheConfirm(true)} />
         </MenuDropdown>
 
         {/* About 按钮 */}
@@ -444,6 +455,20 @@ export default function TitleBar({ onOpenFile, onCloseFile, onRebuildIndex, onSe
         />
       )}
 
+      {/* Clear Cache 确认对话框 */}
+      {showClearCacheConfirm && (
+        <ConfirmDialog
+          title="Clear Cache"
+          message="Are you sure you want to clear all cache? This cannot be undone."
+          confirmText="Clear"
+          cancelText="Cancel"
+          confirmColor="var(--reg-changed)"
+          minWidth={360}
+          onConfirm={async () => { setShowClearCacheConfirm(false); try { await invoke("clear_all_cache"); onClearCache?.(); } catch (e) { console.error("clear cache failed:", e); } }}
+          onCancel={() => setShowClearCacheConfirm(false)}
+        />
+      )}
+
       {/* About 对话框 */}
       {showAbout && (
         <ConfirmDialog
@@ -488,6 +513,7 @@ export default function TitleBar({ onOpenFile, onCloseFile, onRebuildIndex, onSe
           preferences={preferences}
           onSave={(prefs) => onUpdatePreferences(prefs)}
           onClose={() => setShowPrefs(false)}
+          onClearCache={onClearCache}
         />
       )}
     </>
