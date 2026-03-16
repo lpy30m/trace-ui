@@ -179,19 +179,17 @@ export default function StringsPanel({ sessionId, isPhase2Ready, onJumpToSeq }: 
 
       {/* 表头 */}
       <div style={{
-        display: "grid",
-        gridTemplateColumns: "70px 110px 1fr 56px 44px 56px",
-        padding: "3px 8px",
-        borderBottom: "1px solid var(--border-color)",
+        display: "flex", padding: "4px 8px",
         background: "var(--bg-secondary)",
-        fontSize: 11, color: "var(--text-secondary)", flexShrink: 0,
+        borderBottom: "1px solid var(--border-color)",
+        fontSize: "var(--font-size-sm)", color: "var(--text-secondary)", flexShrink: 0,
       }}>
-        <span>Seq</span>
-        <span>Address</span>
-        <span>Content</span>
-        <span>Enc</span>
-        <span>Len</span>
-        <span>XRefs</span>
+        <span style={{ width: 70, flexShrink: 0 }}>Seq</span>
+        <span style={{ width: 110, flexShrink: 0 }}>Address</span>
+        <span style={{ flex: 1 }}>Content</span>
+        <span style={{ width: 56, flexShrink: 0 }}>Enc</span>
+        <span style={{ width: 44, flexShrink: 0 }}>Len</span>
+        <span style={{ width: 56, flexShrink: 0 }}>XRefs</span>
       </div>
 
       {/* 虚拟滚动列表 */}
@@ -209,32 +207,25 @@ export default function StringsPanel({ sessionId, isPhase2Ready, onJumpToSeq }: 
                 onClick={() => handleRowClick(record)}
                 onContextMenu={e => handleContextMenu(e, record)}
                 style={{
-                  position: "absolute",
-                  top: 0,
-                  left: 0,
-                  width: "100%",
-                  height: ROW_HEIGHT,
+                  position: "absolute", top: 0, left: 0, width: "100%", height: ROW_HEIGHT,
                   transform: `translateY(${virtualRow.start}px)`,
-                  display: "grid",
-                  gridTemplateColumns: "70px 110px 1fr 56px 44px 56px",
-                  padding: "0 8px",
-                  alignItems: "center",
-                  fontSize: 12,
-                  fontFamily: "var(--font-mono)",
-                  cursor: "pointer",
-                  background: isSelected ? "var(--selection-bg)" : "transparent",
-                  borderBottom: "1px solid var(--border-subtle)",
+                  display: "flex", alignItems: "center", padding: "0 8px",
+                  cursor: "pointer", fontSize: "var(--font-size-sm)",
+                  background: isSelected ? "var(--bg-selected)"
+                    : virtualRow.index % 2 === 0 ? "var(--bg-row-even)" : "var(--bg-row-odd)",
                 }}
+                onMouseEnter={(e) => { if (!isSelected) e.currentTarget.style.background = "rgba(255,255,255,0.04)"; }}
+                onMouseLeave={(e) => { if (!isSelected) e.currentTarget.style.background = virtualRow.index % 2 === 0 ? "var(--bg-row-even)" : "var(--bg-row-odd)"; }}
               >
-                <span style={{ color: "var(--syntax-number)" }}>{record.seq}</span>
-                <span style={{ color: "var(--syntax-literal)" }}>{record.addr}</span>
+                <span style={{ width: 70, flexShrink: 0, color: "var(--syntax-number)" }}>{record.seq}</span>
+                <span style={{ width: 110, flexShrink: 0, color: "var(--syntax-literal)" }}>{record.addr}</span>
                 <span style={{
-                  color: "var(--syntax-string)",
+                  flex: 1, color: "var(--syntax-string)",
                   overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap",
                 }}>"{record.content}"</span>
-                <span style={{ color: "var(--text-secondary)" }}>{record.encoding}</span>
-                <span>{record.byte_len}</span>
-                <span style={{ color: record.xref_count > 0 ? "var(--syntax-keyword)" : "var(--text-secondary)" }}>
+                <span style={{ width: 56, flexShrink: 0, color: "var(--text-secondary)" }}>{record.encoding}</span>
+                <span style={{ width: 44, flexShrink: 0 }}>{record.byte_len}</span>
+                <span style={{ width: 56, flexShrink: 0, color: record.xref_count > 0 ? "var(--syntax-keyword)" : "var(--text-secondary)" }}>
                   {record.xref_count}
                 </span>
               </div>
