@@ -354,7 +354,7 @@ export default function FunctionListPanel({ sessionId, isPhase2Ready, onJumpToSe
                   onMouseLeave={e => { if (selectedSeq !== row.seq) e.currentTarget.style.background = "transparent"; }}
                 >
                   <span style={{ color: "var(--text-address)", marginRight: 8, flexShrink: 0 }}>
-                    #{row.seq}
+                    #{row.seq + 1}
                   </span>
                   <span style={{
                     color: "var(--text-primary)",
