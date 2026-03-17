@@ -96,6 +96,7 @@ interface Props {
   taintedSeqs?: number[];
   sliceSourceSeq?: number;
   scrollTrigger?: number;
+  consumedSeqs?: number[];
 }
 
 interface ArrowState {
@@ -149,6 +150,7 @@ export default function TraceTable({
   taintedSeqs,
   sliceSourceSeq,
   scrollTrigger = 0,
+  consumedSeqs,
 }: Props) {
   const selectedSeqFromStore = useSelectedSeq();
   const selectedSeq = selectedSeqProp !== undefined ? selectedSeqProp : selectedSeqFromStore;
@@ -174,9 +176,74 @@ export default function TraceTable({
   const changesCol = useResizableColumn(Math.min(300, Math.round(window.innerWidth * 0.2)));
 
   const {
-    blLineMap, virtualTotalRows, resolveVirtualIndex,
-    seqToVirtualIndex, toggleFold, isFolded, ensureSeqVisible,
+    blLineMap, virtualTotalRows: foldVirtualTotalRows, resolveVirtualIndex: foldResolveVirtualIndex,
+    seqToVirtualIndex: foldSeqToVirtualIndex, toggleFold, isFolded, ensureSeqVisible,
   } = foldState;
+
+  // === Consumed seqs filtering layer (gumtrace special lines) ===
+  // Consumed seqs are completely invisible — no indicators, no way to unhide.
+  // Uses binary search on sorted consumedSeqs array for O(log n) per lookup.
+
+  const consumedFoldIndices = useMemo(() => {
+    if (!consumedSeqs || consumedSeqs.length === 0) return [];
+    const indices: number[] = [];
+    for (const seq of consumedSeqs) {
+      const fvi = foldSeqToVirtualIndex(seq);
+      const resolved = foldResolveVirtualIndex(fvi);
+      if (resolved.type === "line" && resolved.seq === seq) {
+        indices.push(fvi);
+      }
+    }
+    indices.sort((a, b) => a - b);
+    return indices;
+  }, [consumedSeqs, foldSeqToVirtualIndex, foldResolveVirtualIndex]);
+
+  const consumedFoldSet = useMemo(() => new Set(consumedFoldIndices), [consumedFoldIndices]);
+
+  const virtualTotalRows = useMemo(
+    () => foldVirtualTotalRows - consumedFoldIndices.length,
+    [foldVirtualTotalRows, consumedFoldIndices],
+  );
+
+  // Binary search: count of elements in sorted arr that are <= val
+  const upperBound = useCallback((arr: number[], val: number): number => {
+    let lo = 0, hi = arr.length;
+    while (lo < hi) {
+      const mid = (lo + hi) >>> 1;
+      if (arr[mid] <= val) lo = mid + 1;
+      else hi = mid;
+    }
+    return lo;
+  }, []);
+
+  const resolveVirtualIndex = useCallback(
+    (idx: number): ResolvedRow => {
+      if (consumedFoldIndices.length === 0) return foldResolveVirtualIndex(idx);
+      // Find the fold-space index such that (fvi - consumedBefore(fvi)) == idx
+      let lo = idx;
+      let hi = idx + consumedFoldIndices.length;
+      if (hi >= foldVirtualTotalRows) hi = foldVirtualTotalRows - 1;
+      while (lo < hi) {
+        const mid = (lo + hi) >>> 1;
+        const consumedBefore = upperBound(consumedFoldIndices, mid);
+        const rank = mid + 1 - consumedBefore;
+        if (rank <= idx) lo = mid + 1;
+        else hi = mid;
+      }
+      return foldResolveVirtualIndex(lo);
+    },
+    [consumedFoldIndices, foldResolveVirtualIndex, foldVirtualTotalRows, upperBound],
+  );
+
+  const seqToVirtualIndex = useCallback(
+    (seq: number): number => {
+      const fvi = foldSeqToVirtualIndex(seq);
+      if (consumedFoldIndices.length === 0) return fvi;
+      const consumedBefore = upperBound(consumedFoldIndices, fvi);
+      return fvi - consumedBefore;
+    },
+    [foldSeqToVirtualIndex, consumedFoldIndices, upperBound],
+  );
 
   // === Hidden rows wrapping layer ===
   interface HiddenVirtualRange {
