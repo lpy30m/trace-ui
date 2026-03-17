@@ -21,7 +21,7 @@ import { useSliceState } from "./hooks/useSliceState";
 import { useRecentFiles } from "./hooks/useRecentFiles";
 import { selectedSeqStore, useSelectedSeq } from "./stores/selectedSeqStore";
 import { navigationStore } from "./stores/navigationStore";
-import { isModKey } from "./utils/platform";
+import { isModKey, isMac } from "./utils/platform";
 import { useFoldState } from "./hooks/useFoldState";
 import { useFuncRenameStore } from "./hooks/useFuncRenameStore";
 import { usePreferences, saveSessionSnapshot, loadSessionSnapshot } from "./hooks/usePreferences";
@@ -737,13 +737,17 @@ function App() {
     }
   }, [isLoaded, totalLines, filePath, activeSessionId, floatedPanels.size]);
 
-  // 全局快捷键：Ctrl+Alt+← 后退，Ctrl+Alt+→ 前进，Ctrl+F 搜索浮窗
+  // 全局快捷键：macOS: Ctrl+⌘+← 后退 / Ctrl+⌘+→ 前进，Windows: Ctrl+Alt+← / Ctrl+Alt+→
   useEffect(() => {
     const handler = (e: KeyboardEvent) => {
-      if (isModKey(e) && e.altKey && e.key === "ArrowLeft") {
+      // macOS: Ctrl+⌘ 或 Option+⌘，Windows: Ctrl+Alt
+      const isNavMod = isMac
+        ? (e.metaKey && (e.ctrlKey || e.altKey))
+        : (e.ctrlKey && e.altKey);
+      if (isNavMod && (e.key === "ArrowLeft" || e.code === "ArrowLeft")) {
         e.preventDefault();
         handleGoBack();
-      } else if (isModKey(e) && e.altKey && e.key === "ArrowRight") {
+      } else if (isNavMod && (e.key === "ArrowRight" || e.code === "ArrowRight")) {
         e.preventDefault();
         handleGoForward();
       } else if (isModKey(e) && !e.altKey && !e.shiftKey && e.key === "o") {
@@ -934,7 +938,16 @@ function App() {
         hasStringIndex={hasStringIndexMap.get(activeSessionId ?? "") ?? false}
         stringsScanning={stringsScanningSessionId === activeSessionId}
         isPhase2Ready={isPhase2Ready}
-        onClearCache={clearRecent}
+        onClearCache={() => {
+          clearRecent();
+          // 同时清理 localStorage 中的函数重命名数据
+          const keysToRemove: string[] = [];
+          for (let i = 0; i < localStorage.length; i++) {
+            const key = localStorage.key(i);
+            if (key?.startsWith("func-rename:")) keysToRemove.push(key);
+          }
+          keysToRemove.forEach(k => localStorage.removeItem(k));
+        }}
         regSelected={selectedRegInfo !== null}
       />
       <Group orientation="horizontal" style={{ flex: 1 }} elementRef={hGroupRef}>

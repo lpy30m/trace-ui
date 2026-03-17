@@ -153,7 +153,7 @@ export default function SearchResultList({
                       <span style={{
                         marginLeft: 8,
                         fontStyle: "italic",
-                        color: match.call_info.is_jni ? "var(--asm-immediate)" : "var(--text-secondary)",
+                        color: match.call_info.is_jni ? "#d16d9e" : "#e06c75",
                       }}
                         title={match.call_info.tooltip}
                       >

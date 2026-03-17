@@ -43,6 +43,11 @@ impl CallTreeBuilder {
         }
     }
 
+    /// 设置根节点的地址（用 trace 第一行的实际指令地址）
+    pub fn set_root_addr(&mut self, addr: u64) {
+        self.nodes[0].func_addr = addr;
+    }
+
     pub fn on_call(&mut self, seq: u32, target_addr: u64) {
         let child_id = self.next_id;
         self.next_id += 1;

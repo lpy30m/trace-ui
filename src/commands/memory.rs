@@ -1,6 +1,23 @@
 use serde::Serialize;
 use tauri::State;
 use crate::state::AppState;
+use crate::line_index::LineIndex;
+use crate::phase2::extract_insn_offset;
+
+/// 从 trace 行提取偏移地址，回退到绝对地址
+fn resolve_offset(seq: u32, abs_addr: u64, line_index: Option<&LineIndex>, data: &[u8]) -> String {
+    if let Some(li) = line_index {
+        if let Some(line_bytes) = li.get_line(data, seq) {
+            if let Ok(line_str) = std::str::from_utf8(line_bytes) {
+                let offset = extract_insn_offset(line_str);
+                if offset != 0 {
+                    return format!("0x{:x}", offset);
+                }
+            }
+        }
+    }
+    format!("0x{:x}", abs_addr)
+}
 #[derive(Serialize)]
 pub struct MemorySnapshot {
     pub base_addr: String,
@@ -121,10 +138,11 @@ pub fn get_mem_history(
     use crate::taint::mem_access::MemRw;
     use crate::commands::browse::parse_trace_line;
     let line_index = session.line_index.as_ref().ok_or_else(|| "索引尚未构建完成".to_string())?;
+    let data: &[u8] = &session.mmap;
     let result: Vec<MemHistoryRecord> = records
         .iter()
         .map(|rec| {
-            let disasm = line_index.get_line(&session.mmap, rec.seq)
+            let disasm = line_index.get_line(data, rec.seq)
                 .and_then(|raw| parse_trace_line(rec.seq, raw))
                 .map(|parsed| parsed.disasm)
                 .unwrap_or_default();
@@ -136,7 +154,7 @@ pub fn get_mem_history(
                 },
                 data: format!("0x{:x}", rec.data),
                 size: rec.size,
-                insn_addr: format!("0x{:x}", rec.insn_addr),
+                insn_addr: resolve_offset(rec.seq, rec.insn_addr, Some(line_index), data),
                 disasm,
             }
         })

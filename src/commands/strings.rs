@@ -3,6 +3,7 @@ use tauri::State;
 use crate::state::AppState;
 use crate::taint::mem_access::MemRw;
 use crate::taint::strings::StringEncoding;
+use crate::phase2::extract_insn_offset;
 
 #[derive(Serialize)]
 pub struct StringRecordDto {
@@ -117,10 +118,17 @@ pub fn get_string_xrefs(
                                 .map(|t| t.disasm)
                         })
                         .unwrap_or_default();
+                    let insn_addr_str = line_index.get_line(mmap, rec.seq)
+                        .and_then(|raw| std::str::from_utf8(raw).ok())
+                        .map(|line_str| {
+                            let offset = extract_insn_offset(line_str);
+                            if offset != 0 { format!("0x{:x}", offset) } else { format!("0x{:x}", rec.insn_addr) }
+                        })
+                        .unwrap_or_else(|| format!("0x{:x}", rec.insn_addr));
                     xrefs.push(StringXRef {
                         seq: rec.seq,
                         rw: rw_str.to_string(),
-                        insn_addr: format!("0x{:x}", rec.insn_addr),
+                        insn_addr: insn_addr_str,
                         disasm,
                     });
                 }

@@ -229,7 +229,7 @@ export default function FunctionTree({
       {ctxMenu && (
         <ContextMenu x={ctxMenu.x} y={ctxMenu.y} onClose={() => setCtxMenu(null)}>
           <ContextMenuItem
-            label="重命名"
+            label="Rename"
             onClick={() => {
               const row = ctxMenu.row;
               setRenameTarget({
@@ -241,7 +241,7 @@ export default function FunctionTree({
           />
           {funcRename.getName(ctxMenu.row.func_addr) && (
             <ContextMenuItem
-              label="恢复原始地址"
+              label="Restore Original Address"
               onClick={() => {
                 funcRename.removeName(ctxMenu.row.func_addr);
                 setCtxMenu(null);
@@ -250,7 +250,7 @@ export default function FunctionTree({
           )}
           <ContextMenuSeparator />
           <ContextMenuItem
-            label="复制函数地址"
+            label="Copy Function Address"
             onClick={() => {
               navigator.clipboard.writeText(ctxMenu.row.func_addr);
               setCtxMenu(null);
@@ -258,7 +258,7 @@ export default function FunctionTree({
           />
           {funcRename.getName(ctxMenu.row.func_addr) && (
             <ContextMenuItem
-              label="复制函数名称"
+              label="Copy Function Name"
               onClick={() => {
                 const name = funcRename.getName(ctxMenu.row.func_addr);
                 if (name) navigator.clipboard.writeText(name);
@@ -293,7 +293,7 @@ export default function FunctionTree({
               ref={renameInputRef}
               autoFocus
               defaultValue={renameTarget.currentName}
-              placeholder="输入函数名称"
+              placeholder="Enter function name"
               style={{
                 width: "100%", padding: "6px 8px", fontSize: 13,
                 background: "var(--bg-primary)", color: "var(--text-primary)",
@@ -324,7 +324,7 @@ export default function FunctionTree({
                   border: "1px solid var(--border-color)", borderRadius: 4,
                 }}
               >
-                取消
+                Cancel
               </button>
               <button
                 onMouseDown={(e) => {
@@ -343,7 +343,7 @@ export default function FunctionTree({
                   border: "none", borderRadius: 4,
                 }}
               >
-                确定
+                OK
               </button>
             </div>
           </div>

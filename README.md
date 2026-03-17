@@ -94,7 +94,7 @@ Let's build it together.
 
 基于 mmap 内存映射 + 虚拟滚动实现，仅渲染可见区域的数十行，无论 trace 文件有多大，内存占用和渲染性能保持恒定。首次打开 2400 万行 trace 索引构建约 15 秒，构建完成后自动缓存，再次打开同一文件秒级加载。
 
-支持文本搜索和正则表达式搜索（`/pattern/` 语法），搜索结果列表可点击跳转，支持 Ctrl+Alt+←/→ 导航历史前进/后退。
+支持文本搜索和正则表达式搜索（`/pattern/` 语法），搜索结果列表可点击跳转，支持导航历史前进/后退（macOS: `Ctrl+⌘+←/→`，Windows: `Ctrl+Alt+←/→`）。
 
 右侧 Minimap 缩略图可快速拖动定位。
 
@@ -249,8 +249,8 @@ Let's build it together.
 | `Ctrl+F` | 打开/聚焦搜索面板 |
 | `Ctrl+C` | 复制选中行 |
 | `Ctrl+/` | 隐藏选中行 |
-| `Ctrl+Alt+←` | 导航后退 |
-| `Ctrl+Alt+→` | 导航前进 |
+| `Ctrl+⌘+←` / `Ctrl+Alt+←` | 导航后退（macOS / Windows） |
+| `Ctrl+⌘+→` / `Ctrl+Alt+→` | 导航前进（macOS / Windows） |
 | `Ctrl+Enter` | 保存注释 / 确认对话框 |
 | `G` | 跳转到指定行号/内存地址 |
 | `;` | 为当前行添加注释 |

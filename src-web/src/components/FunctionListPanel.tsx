@@ -2,6 +2,7 @@ import { useState, useEffect, useMemo, useRef, useCallback } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { useVirtualizerNoSync } from "../hooks/useVirtualizerNoSync";
 import type { FunctionCallEntry, FunctionCallsResult } from "../types/trace";
+import ContextMenu, { ContextMenuItem } from "./ContextMenu";
 
 type FilterType = "all" | "syscall" | "jni";
 
@@ -35,6 +36,7 @@ export default function FunctionListPanel({ sessionId, isPhase2Ready, onJumpToSe
   const [expanded, setExpanded] = useState<Set<string>>(new Set());
   const [selectedSeq, setSelectedSeq] = useState<number | null>(null);
   const parentRef = useRef<HTMLDivElement>(null);
+  const [ctxMenu, setCtxMenu] = useState<{ x: number; y: number; funcName: string } | null>(null);
   const searchTimerRef = useRef<ReturnType<typeof setTimeout>>(undefined);
 
   // Search history
@@ -305,6 +307,7 @@ export default function FunctionListPanel({ sessionId, isPhase2Ready, onJumpToSe
                     userSelect: "none",
                   }}
                   onClick={() => toggleExpand(entry.func_name)}
+                  onContextMenu={e => { e.preventDefault(); e.stopPropagation(); setCtxMenu({ x: e.clientX, y: e.clientY, funcName: entry.func_name }); }}
                   onMouseEnter={e => (e.currentTarget.style.background = "var(--bg-row-odd)")}
                   onMouseLeave={e => (e.currentTarget.style.background = "transparent")}
                 >
@@ -312,7 +315,7 @@ export default function FunctionListPanel({ sessionId, isPhase2Ready, onJumpToSe
                     {isExpanded ? "\u25BC" : "\u25B6"}
                   </span>
                   <span style={{
-                    color: entry.is_jni ? "var(--asm-immediate)" : "var(--asm-mnemonic)",
+                    color: entry.is_jni ? "#d16d9e" : "#e06c75",
                     fontWeight: 500,
                     overflow: "hidden",
                     textOverflow: "ellipsis",
@@ -370,6 +373,15 @@ export default function FunctionListPanel({ sessionId, isPhase2Ready, onJumpToSe
           })}
         </div>
       </div>
+
+      {ctxMenu && (
+        <ContextMenu x={ctxMenu.x} y={ctxMenu.y} onClose={() => setCtxMenu(null)}>
+          <ContextMenuItem
+            label="Copy Function Name"
+            onClick={() => { navigator.clipboard.writeText(ctxMenu.funcName); setCtxMenu(null); }}
+          />
+        </ContextMenu>
+      )}
 
     </div>
   );

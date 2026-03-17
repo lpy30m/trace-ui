@@ -33,7 +33,10 @@ pub struct SearchResult {
 }
 
 enum SearchMode {
-    Text(Vec<u8>),
+    /// 单个关键词子串匹配（不区分大小写）
+    Text(String),
+    /// 多个关键词模糊匹配（空格分隔，全部命中才算匹配，不区分大小写）
+    FuzzyText(Vec<String>),
     Regex(regex::bytes::Regex),
 }
 
@@ -44,8 +47,25 @@ fn parse_search_mode(query: &str) -> Result<SearchMode, String> {
             .map_err(|e| format!("正则表达式错误: {}", e))?;
         Ok(SearchMode::Regex(re))
     } else {
-        Ok(SearchMode::Text(query.as_bytes().to_vec()))
+        let tokens: Vec<String> = query.split_whitespace()
+            .map(|s| s.to_lowercase())
+            .collect();
+        if tokens.len() > 1 {
+            Ok(SearchMode::FuzzyText(tokens))
+        } else {
+            Ok(SearchMode::Text(query.to_lowercase()))
+        }
     }
+}
+
+fn case_insensitive_match(line: &[u8], needle: &str) -> bool {
+    let line_lower = String::from_utf8_lossy(line).to_lowercase();
+    line_lower.contains(needle)
+}
+
+fn fuzzy_match_bytes(line: &[u8], tokens: &[String]) -> bool {
+    let line_lower = String::from_utf8_lossy(line).to_lowercase();
+    tokens.iter().all(|t| line_lower.contains(t.as_str()))
 }
 
 #[tauri::command]
@@ -108,14 +128,16 @@ pub async fn search_trace(
             }
 
             let is_match = match &mode {
-                SearchMode::Text(needle) => memchr::memmem::find(line, needle).is_some(),
+                SearchMode::Text(needle) => case_insensitive_match(line, needle),
+                SearchMode::FuzzyText(tokens) => fuzzy_match_bytes(line, tokens),
                 SearchMode::Regex(re) => re.is_match(line),
             };
             // 未命中原始行时，检查该行关联的 call_annotation
             let is_match = is_match || (!is_match && call_search_texts.get(&seq).map_or(false, |text| {
                 let text_bytes = text.as_bytes();
                 match &mode {
-                    SearchMode::Text(needle) => memchr::memmem::find(text_bytes, needle).is_some(),
+                    SearchMode::Text(needle) => case_insensitive_match(text_bytes, needle),
+                    SearchMode::FuzzyText(tokens) => fuzzy_match_bytes(text_bytes, tokens),
                     SearchMode::Regex(re) => re.is_match(text_bytes),
                 }
             }));

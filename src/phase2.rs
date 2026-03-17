@@ -27,6 +27,7 @@ pub fn build_phase2(data: &[u8], progress_fn: Option<Box<dyn Fn(usize, usize) + 
     let mut seq: u32 = 0;
     // BLR 后需要检测：如果下一行地址 = BLR的PC+4，说明是 unidbg 拦截调用（无函数体）
     let mut blr_pending_pc: Option<u64> = None; // Some(BLR指令的PC地址)
+    let mut root_addr_set = false;
 
     while pos < data.len() {
         // 找行尾
@@ -36,6 +37,15 @@ pub fn build_phase2(data: &[u8], progress_fn: Option<Box<dyn Fn(usize, usize) + 
         let line_bytes = &data[pos..end];
 
         if let Ok(line_str) = std::str::from_utf8(line_bytes) {
+            // 用第一条有效指令的地址作为根节点地址
+            if !root_addr_set {
+                let addr = extract_insn_addr(line_str);
+                if addr != 0 {
+                    ct_builder.set_root_addr(addr);
+                    root_addr_set = true;
+                }
+            }
+
             // BLR 后处理：必须在 parse_line 之外，避免被不可解析的中间行（日志等）阻断
             if let Some(blr_pc) = blr_pending_pc.take() {
                 let next_addr = extract_insn_addr(line_str);
@@ -177,6 +187,40 @@ pub fn extract_insn_addr(line: &str) -> u64 {
         if let Some(colon) = rest.find(':') {
             if let Ok(addr) = u64::from_str_radix(&rest[..colon], 16) {
                 return addr;
+            }
+        }
+    }
+    0
+}
+
+/// 从 trace 行提取偏移地址
+/// gumtrace: `0xADDR!0xOFFSET` → OFFSET
+/// unidbg:   `[libtiny.so 0x174250]` → 0x174250
+pub fn extract_insn_offset(line: &str) -> u64 {
+    // gumtrace: ...] 0xADDR!0xOFFSET ...
+    if let Some(bracket_end) = line.find("] 0x") {
+        let rest = &line[bracket_end + 4..];
+        if let Some(bang) = rest.find('!') {
+            let after = &rest[bang + 3..]; // skip "!0x"
+            let end = after.find(|c: char| !c.is_ascii_hexdigit()).unwrap_or(after.len());
+            if end > 0 {
+                if let Ok(v) = u64::from_str_radix(&after[..end], 16) {
+                    return v;
+                }
+            }
+        }
+    }
+    // unidbg: [timestamp][libtiny.so 0x174250] [encoding] ...
+    if let Some(pos) = line.find("] [") {
+        let before = &line[..pos];
+        if let Some(bracket_start) = before.rfind('[') {
+            let module_info = &line[bracket_start + 1..pos];
+            // module_info = "libtiny.so 0x174250"
+            if let Some(space_pos) = module_info.rfind(" 0x") {
+                let hex_str = &module_info[space_pos + 3..];
+                if let Ok(v) = u64::from_str_radix(hex_str, 16) {
+                    return v;
+                }
             }
         }
     }

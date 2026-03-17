@@ -540,7 +540,7 @@ export default function MemoryPanel({ selectedSeq: selectedSeqProp, isPhase2Read
           ) : (<>
             <div style={{ flexShrink: 0, display: "flex", alignItems: "center", padding: "4px 8px", borderBottom: "1px solid var(--border-color)" }}>{toolbar}</div>
             <div style={{ flexShrink: 0, display: "flex", lineHeight: "20px", whiteSpace: "pre", color: "var(--text-secondary)", padding: "0 8px" }}>
-              <span style={{ width: 80, flexShrink: 0 }}>{"  Address".padEnd(10)}</span>
+              <span style={{ width: 120, flexShrink: 0 }}>{"Address"}</span>
               {[0,1,2,3,4,5,6,7].map(i => (
                 <span key={i}>{i.toString(16).toUpperCase().padStart(2, "0")}{" "}</span>
               ))}
@@ -566,8 +566,8 @@ export default function MemoryPanel({ selectedSeq: selectedSeqProp, isPhase2Read
                     ref={isHighlightLine && lineStartOffset <= highlightStart ? highlightLineRef : undefined}
                     style={{ display: "flex", lineHeight: "20px", whiteSpace: "pre" }}
                   >
-                    <span style={{ color: "var(--text-address)", width: 80, flexShrink: 0 }}>
-                      {line.addr.padStart(10, " ")}
+                    <span style={{ color: "var(--text-address)", width: 120, flexShrink: 0 }}>
+                      {line.addr}
                     </span>
                     {line.bytes.slice(0, 8).map((b, i) => {
                       const globalOffset = lineIdx * BYTES_PER_LINE + i;
