@@ -21,10 +21,11 @@ type FlatRow = {
 
 interface Props {
   sessionId: string | null;
+  isPhase2Ready: boolean;
   onJumpToSeq: (seq: number) => void;
 }
 
-export default function FunctionListPanel({ sessionId, onJumpToSeq }: Props) {
+export default function FunctionListPanel({ sessionId, isPhase2Ready, onJumpToSeq }: Props) {
   const [data, setData] = useState<FunctionCallsResult | null>(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -43,9 +44,9 @@ export default function FunctionListPanel({ sessionId, onJumpToSeq }: Props) {
   const [showHistory, setShowHistory] = useState(false);
   const searchWrapperRef = useRef<HTMLDivElement>(null);
 
-  // Fetch data when sessionId changes
+  // Fetch data when sessionId changes or phase2 becomes ready
   useEffect(() => {
-    if (!sessionId) { setData(null); return; }
+    if (!sessionId || !isPhase2Ready) { setData(null); return; }
     setLoading(true);
     setError(null);
     invoke<FunctionCallsResult>("get_function_calls", { sessionId })
@@ -55,7 +56,7 @@ export default function FunctionListPanel({ sessionId, onJumpToSeq }: Props) {
       })
       .catch((e) => setError(String(e)))
       .finally(() => setLoading(false));
-  }, [sessionId]);
+  }, [sessionId, isPhase2Ready]);
 
   // Search debounce + history recording
   useEffect(() => {

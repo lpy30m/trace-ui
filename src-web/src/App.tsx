@@ -987,6 +987,7 @@ function App() {
                   ) : (
                     <FunctionListPanel
                       sessionId={activeSessionId}
+                      isPhase2Ready={isPhase2Ready}
                       onJumpToSeq={handleJumpToSeq}
                     />
                   )}
