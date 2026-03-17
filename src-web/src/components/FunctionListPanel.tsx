@@ -5,6 +5,9 @@ import type { FunctionCallEntry, FunctionCallsResult } from "../types/trace";
 
 type FilterType = "all" | "syscall" | "jni";
 
+const HISTORY_KEY = "func-list-search-history";
+const MAX_HISTORY = 20;
+
 type FlatRow = {
   type: "group";
   entry: FunctionCallEntry;
@@ -27,8 +30,17 @@ export default function FunctionListPanel({ sessionId, onJumpToSeq }: Props) {
   const [error, setError] = useState<string | null>(null);
   const [filter, setFilter] = useState<FilterType>("all");
   const [search, setSearch] = useState("");
+  const [searchInput, setSearchInput] = useState("");
   const [expanded, setExpanded] = useState<Set<string>>(new Set());
   const parentRef = useRef<HTMLDivElement>(null);
+  const searchTimerRef = useRef<ReturnType<typeof setTimeout>>(undefined);
+
+  // Search history
+  const [searchHistory, setSearchHistory] = useState<string[]>(() => {
+    try { return JSON.parse(localStorage.getItem(HISTORY_KEY) || "[]"); } catch { return []; }
+  });
+  const [showHistory, setShowHistory] = useState(false);
+  const searchWrapperRef = useRef<HTMLDivElement>(null);
 
   // Fetch data when sessionId changes
   useEffect(() => {
@@ -43,6 +55,52 @@ export default function FunctionListPanel({ sessionId, onJumpToSeq }: Props) {
       .catch((e) => setError(String(e)))
       .finally(() => setLoading(false));
   }, [sessionId]);
+
+  // Search debounce + history recording
+  useEffect(() => {
+    clearTimeout(searchTimerRef.current);
+    searchTimerRef.current = setTimeout(() => {
+      setSearch(searchInput);
+      if (searchInput.trim()) {
+        setSearchHistory(prev => {
+          const next = [searchInput.trim(), ...prev.filter(h => h !== searchInput.trim())].slice(0, MAX_HISTORY);
+          localStorage.setItem(HISTORY_KEY, JSON.stringify(next));
+          return next;
+        });
+      }
+    }, 300);
+    return () => clearTimeout(searchTimerRef.current);
+  }, [searchInput]);
+
+  // Click outside to close history dropdown
+  useEffect(() => {
+    if (!showHistory) return;
+    const handler = (e: MouseEvent) => {
+      if (searchWrapperRef.current && !searchWrapperRef.current.contains(e.target as Node)) {
+        setShowHistory(false);
+      }
+    };
+    document.addEventListener("mousedown", handler);
+    return () => document.removeEventListener("mousedown", handler);
+  }, [showHistory]);
+
+  const removeHistoryItem = useCallback((item: string) => {
+    setSearchHistory(prev => {
+      const next = prev.filter(h => h !== item);
+      localStorage.setItem(HISTORY_KEY, JSON.stringify(next));
+      return next;
+    });
+  }, []);
+
+  const clearAllHistory = useCallback(() => {
+    setSearchHistory([]);
+    localStorage.removeItem(HISTORY_KEY);
+    setShowHistory(false);
+  }, []);
+
+  const filteredHistory = searchInput.trim()
+    ? searchHistory.filter(h => h !== searchInput.trim() && h.toLowerCase().includes(searchInput.toLowerCase()))
+    : searchHistory;
 
   // Filter + search
   const filtered = useMemo(() => {
@@ -111,23 +169,82 @@ export default function FunctionListPanel({ sessionId, onJumpToSeq }: Props) {
     <div style={{ height: "100%", display: "flex", flexDirection: "column", background: "var(--bg-primary)" }}>
       {/* Search box */}
       <div style={{ padding: "4px 6px", borderBottom: "1px solid var(--border-color)", flexShrink: 0 }}>
-        <input
-          type="text"
-          placeholder="Search functions..."
-          value={search}
-          onChange={e => setSearch(e.target.value)}
-          style={{
-            width: "100%",
-            padding: "3px 6px",
-            background: "var(--bg-input)",
-            border: "1px solid var(--border-color)",
-            borderRadius: 3,
-            color: "var(--text-primary)",
-            fontSize: "var(--font-size-sm)",
-            fontFamily: "var(--font-mono)",
-            outline: "none",
-          }}
-        />
+        <div ref={searchWrapperRef} style={{ position: "relative" }}>
+          <input
+            type="text"
+            placeholder="Search functions..."
+            value={searchInput}
+            onChange={e => setSearchInput(e.target.value)}
+            onFocus={() => setShowHistory(true)}
+            style={{
+              width: "100%",
+              padding: "3px 24px 3px 6px",
+              background: "var(--bg-input)",
+              border: "1px solid var(--border-color)",
+              borderRadius: 3,
+              color: "var(--text-primary)",
+              fontSize: "var(--font-size-sm)",
+              fontFamily: "var(--font-mono)",
+              outline: "none",
+              boxSizing: "border-box",
+            }}
+          />
+          {searchInput && (
+            <span
+              onClick={() => { setSearchInput(""); setShowHistory(false); }}
+              style={{
+                position: "absolute", right: 4, top: "50%", transform: "translateY(-50%)",
+                cursor: "pointer", color: "var(--text-secondary)", fontSize: 14, lineHeight: 1,
+                width: 16, height: 16, display: "flex", alignItems: "center", justifyContent: "center",
+                borderRadius: "50%",
+              }}
+              onMouseEnter={e => (e.currentTarget.style.color = "var(--text-primary)")}
+              onMouseLeave={e => (e.currentTarget.style.color = "var(--text-secondary)")}
+            >×</span>
+          )}
+          {showHistory && filteredHistory.length > 0 && (
+            <div style={{
+              position: "absolute", top: "100%", left: 0, width: "100%", marginTop: 2,
+              background: "var(--bg-dialog)", border: "1px solid var(--border-color)",
+              borderRadius: 4, zIndex: 100, maxHeight: 200, overflowY: "auto",
+              boxShadow: "0 4px 12px rgba(0,0,0,0.4)",
+            }}>
+              {filteredHistory.map(item => (
+                <div
+                  key={item}
+                  style={{
+                    display: "flex", alignItems: "center", padding: "4px 8px", fontSize: 12,
+                    cursor: "pointer", color: "var(--text-primary)",
+                  }}
+                  onMouseEnter={e => (e.currentTarget.style.background = "var(--bg-selected)")}
+                  onMouseLeave={e => (e.currentTarget.style.background = "transparent")}
+                  onClick={() => { setSearchInput(item); setShowHistory(false); }}
+                >
+                  <span style={{ flex: 1, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{item}</span>
+                  <span
+                    onClick={e => { e.stopPropagation(); removeHistoryItem(item); }}
+                    style={{
+                      marginLeft: 4, color: "var(--text-secondary)", fontSize: 13, lineHeight: 1,
+                      width: 16, height: 16, display: "flex", alignItems: "center", justifyContent: "center",
+                      borderRadius: "50%", flexShrink: 0, cursor: "pointer",
+                    }}
+                    onMouseEnter={e => (e.currentTarget.style.color = "var(--text-primary)")}
+                    onMouseLeave={e => (e.currentTarget.style.color = "var(--text-secondary)")}
+                  >×</span>
+                </div>
+              ))}
+              <div
+                style={{
+                  padding: "4px 8px", fontSize: 11, color: "var(--text-secondary)",
+                  borderTop: "1px solid var(--border-color)", cursor: "pointer", textAlign: "center",
+                }}
+                onMouseEnter={e => { e.currentTarget.style.background = "var(--bg-selected)"; e.currentTarget.style.color = "var(--text-primary)"; }}
+                onMouseLeave={e => { e.currentTarget.style.background = "transparent"; e.currentTarget.style.color = "var(--text-secondary)"; }}
+                onClick={clearAllHistory}
+              >Clear All</div>
+            </div>
+          )}
+        </div>
       </div>
 
       {/* Filter buttons */}
