@@ -3,11 +3,19 @@ use tauri::State;
 use crate::taint::def_use::determine_def_use;
 use crate::taint::insn_class;
 use crate::taint::parser;
-use crate::taint::types::parse_reg;
+use crate::taint::gumtrace_parser;
+use crate::taint::types::{parse_reg, TraceFormat, ParsedLine};
 use crate::state::AppState;
 
 /// 单次扫描最大行数（避免 24M 行全扫描卡顿）
 const MAX_SCAN_RANGE: u32 = 50000;
+
+fn parse_line_for_format(line: &str, format: TraceFormat) -> Option<ParsedLine> {
+    match format {
+        TraceFormat::Unidbg => parser::parse_line(line),
+        TraceFormat::Gumtrace => gumtrace_parser::parse_line_gumtrace(line),
+    }
+}
 
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -32,6 +40,7 @@ pub fn get_reg_def_use_chain(
         .ok_or_else(|| format!("未知寄存器: {}", reg_name))?;
 
     let total = session.total_lines;
+    let format = session.trace_format;
     let line_index = session.line_index.as_ref().ok_or_else(|| "索引尚未构建完成".to_string())?;
 
     // === 分析 anchor 行：判断 target_reg 在当前行是 DEF 还是 USE ===
@@ -39,7 +48,7 @@ pub fn get_reg_def_use_chain(
     let mut anchor_is_def = false;
     if let Some(raw) = line_index.get_line(&session.mmap, seq) {
         if let Ok(line_str) = std::str::from_utf8(raw) {
-            if let Some(parsed) = parser::parse_line(line_str) {
+            if let Some(parsed) = parse_line_for_format(line_str, format) {
                 let first_reg = parsed.operands.first().and_then(|op| op.as_reg());
                 let cls = insn_class::classify(parsed.mnemonic.as_str(), first_reg);
                 let (defs, uses) = determine_def_use(cls, &parsed);
@@ -56,7 +65,7 @@ pub fn get_reg_def_use_chain(
         for s in (scan_start..seq).rev() {
             if let Some(raw) = line_index.get_line(&session.mmap, s) {
                 if let Ok(line_str) = std::str::from_utf8(raw) {
-                    if let Some(parsed) = parser::parse_line(line_str) {
+                    if let Some(parsed) = parse_line_for_format(line_str, format) {
                         let first_reg = parsed.operands.first().and_then(|op| op.as_reg());
                         let cls = insn_class::classify(parsed.mnemonic.as_str(), first_reg);
                         let (defs, _) = determine_def_use(cls, &parsed);
@@ -78,7 +87,7 @@ pub fn get_reg_def_use_chain(
         for s in (seq + 1)..scan_end {
             if let Some(raw) = line_index.get_line(&session.mmap, s) {
                 if let Ok(line_str) = std::str::from_utf8(raw) {
-                    if let Some(parsed) = parser::parse_line(line_str) {
+                    if let Some(parsed) = parse_line_for_format(line_str, format) {
                         let first_reg = parsed.operands.first().and_then(|op| op.as_reg());
                         let cls = insn_class::classify(parsed.mnemonic.as_str(), first_reg);
                         let (defs, uses) = determine_def_use(cls, &parsed);
