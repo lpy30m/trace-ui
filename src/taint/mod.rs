@@ -480,6 +480,12 @@ pub fn scan_unified(
                     pending_call_seq = Some(i);
                 }
             }
+            InsnClass::BranchReg => {
+                // br: gumtrace 中可能是 PLT 跳转或尾调用，后面可能跟 call func:
+                if format == types::TraceFormat::Gumtrace {
+                    pending_call_seq = Some(i);
+                }
+            }
             InsnClass::Return => {
                 ct_builder.on_ret(i);
             }
