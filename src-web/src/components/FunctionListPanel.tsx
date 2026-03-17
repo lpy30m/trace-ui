@@ -235,7 +235,7 @@ export default function FunctionListPanel({ sessionId, onJumpToSeq }: Props) {
                     textOverflow: "ellipsis",
                     whiteSpace: "nowrap",
                   }}>
-                    {row.summary}
+                    {row.summary.startsWith(row.func_name) ? row.summary.slice(row.func_name.length) : row.summary}
                   </span>
                 </div>
               );
