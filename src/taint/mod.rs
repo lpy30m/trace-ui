@@ -177,7 +177,7 @@ pub fn scan_unified(
                             call_annotations.insert(bl_seq, ann);
                         }
                     }
-                    gumtrace_parser::SpecialLine::HexDump(_) => {
+                    gumtrace_parser::SpecialLine::HexDump => {
                         // consumed_seqs already pushed above
                         if let Some((_, ref mut ann)) = current_annotation {
                             ann.raw_lines.push(raw_line.to_string());

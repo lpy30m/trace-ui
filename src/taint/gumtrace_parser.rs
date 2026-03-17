@@ -93,14 +93,13 @@ pub enum SpecialLine {
     CallFunc {
         name: String,
         is_jni: bool,
-        args: Vec<String>,
     },
     /// `args<N>: value`
     Arg { index: String, value: String },
     /// `ret: value`
     Ret { value: String },
     /// `hexdump at address 0x... with length 0x...:` or hex dump data lines
-    HexDump(String),
+    HexDump,
 }
 
 /// Parse a special (non-instruction) line into a SpecialLine variant.
@@ -138,7 +137,7 @@ pub fn parse_special_line(raw: &str) -> Option<SpecialLine> {
 
     // hexdump lines or hex data lines
     if raw.starts_with("hexdump ") || raw.chars().next().map_or(false, |c| c.is_ascii_hexdigit()) {
-        return Some(SpecialLine::HexDump(raw.to_string()));
+        return Some(SpecialLine::HexDump);
     }
 
     None
@@ -147,13 +146,7 @@ pub fn parse_special_line(raw: &str) -> Option<SpecialLine> {
 fn parse_call_func(rest: &str, is_jni: bool) -> Option<SpecialLine> {
     let paren_pos = rest.find('(')?;
     let name = rest[..paren_pos].to_string();
-    let args_str = rest[paren_pos + 1..].trim_end_matches(')');
-    let args = if args_str.is_empty() {
-        Vec::new()
-    } else {
-        args_str.split(", ").map(|s| s.to_string()).collect()
-    };
-    Some(SpecialLine::CallFunc { name, is_jni, args })
+    Some(SpecialLine::CallFunc { name, is_jni })
 }
 
 /// Parse a gumtrace line (lightweight mode — skips arrow register extraction).
