@@ -179,9 +179,10 @@ export default function TraceTable({
   const seqCol = useResizableColumn(DEFAULT_SEQ_WIDTH, "right", 50);
   const addrCol = useResizableColumn(DEFAULT_ADDR_WIDTH, "right", 50);
 
-  // 动态列位置
-  const COL_ADDR = COL_SEQ + seqCol.width;
-  const COL_DISASM = COL_ADDR + addrCol.width;
+  // 动态列位置（每个拖动手柄占 8px）
+  const HANDLE_W = 8;
+  const COL_ADDR = COL_SEQ + seqCol.width + HANDLE_W;
+  const COL_DISASM = COL_ADDR + addrCol.width + HANDLE_W;
   const COL_COMMENT = COL_DISASM + COMMENT_OFFSET;
 
   const {
@@ -398,6 +399,15 @@ export default function TraceTable({
   const rafIdRef = useRef(0);
   const mouseDownPosRef = useRef({ x: 0, y: 0 });
   const hoverRowRef = useRef(-1);
+
+  // 列宽变化时触发 Canvas 重绘
+  const prevSeqW = useRef(seqCol.width);
+  const prevAddrW = useRef(addrCol.width);
+  if (seqCol.width !== prevSeqW.current || addrCol.width !== prevAddrW.current) {
+    prevSeqW.current = seqCol.width;
+    prevAddrW.current = addrCol.width;
+    dirtyRef.current = true;
+  }
 
   // === 多行选择 ===
   const [multiSelect, setMultiSelect] = useState<{ startVi: number; endVi: number } | null>(null);
@@ -2194,7 +2204,8 @@ export default function TraceTable({
   }, [canvasSize, visibleRows, finalVirtualTotalRows, finalResolveVirtualIndex,
       visibleLines, selectedSeq, arrowState, effectiveChangesWidth, fontReady,
       blLineMap, isFolded, finalSeqToVirtualIndex, toggleFold, multiSelect, ctrlSelect, highlights,
-      sliceActive, sliceStatuses, sliceSourceSeq, taintFilterActive]);
+      sliceActive, sliceStatuses, sliceSourceSeq, taintFilterActive,
+      COL_ADDR, COL_DISASM]);
 
   // drawFrame 通过 ref 暴露给 RAF 循环，避免 RAF useEffect 因 drawFrame 重建而重启导致掉帧
   const drawFrameRef = useRef(drawFrame);
