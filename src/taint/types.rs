@@ -1,6 +1,19 @@
 use smallvec::SmallVec;
 use std::fmt;
 
+/// Trace 日志格式
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub enum TraceFormat {
+    Unidbg,
+    Gumtrace,
+}
+
+impl Default for TraceFormat {
+    fn default() -> Self {
+        TraceFormat::Unidbg
+    }
+}
+
 /// ARM64 寄存器标识符。
 ///
 /// 使用 `u8` 编码：x0-x28=0-28, x29(fp)=29, x30(lr)=30, sp=31, xzr=32,
@@ -113,6 +126,12 @@ pub fn parse_reg(name: &str) -> Option<RegId> {
         2 => {
             if bytes == b"sp" {
                 return Some(RegId::SP);
+            }
+            if bytes == b"fp" {
+                return Some(RegId::X29);
+            }
+            if bytes == b"lr" {
+                return Some(RegId::X30);
             }
         }
         3 => match (bytes[0], bytes[1], bytes[2]) {
@@ -333,6 +352,12 @@ mod tests {
         assert_eq!(parse_reg("xzr"), Some(RegId::XZR));
         assert_eq!(parse_reg("wzr"), Some(RegId::XZR));
         assert_eq!(parse_reg("nzcv"), Some(RegId::NZCV));
+    }
+
+    #[test]
+    fn test_parse_reg_fp_lr_alias() {
+        assert_eq!(parse_reg("fp"), Some(RegId::X29));
+        assert_eq!(parse_reg("lr"), Some(RegId::X30));
     }
 
     #[test]
