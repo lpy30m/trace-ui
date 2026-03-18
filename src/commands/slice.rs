@@ -1,5 +1,5 @@
 use serde::{Deserialize, Serialize};
-use tauri::State;
+use tauri::{AppHandle, Manager, State};
 use crate::state::AppState;
 use crate::taint::types::{parse_reg, TraceFormat};
 use crate::taint::def_use::determine_def_use;
@@ -127,27 +127,25 @@ fn resolve_mem_store(
     Err(format!("在 {} 行范围内未找到地址 0x{:x} 的 STORE", MAX_RESOLVE_SCAN, target_addr))
 }
 
-#[tauri::command]
-pub fn run_slice(
-    session_id: String,
-    from_specs: Vec<String>,
+fn run_slice_inner(
+    session_id: &str,
+    from_specs: &[String],
     start_seq: Option<u32>,
     end_seq: Option<u32>,
-    data_only: Option<bool>,
-    state: State<'_, AppState>,
+    data_only: bool,
+    state: &AppState,
 ) -> Result<SliceResult, String> {
-    let data_only = data_only.unwrap_or(false);
     // Phase 1: read lock - resolve specs and run BFS (read-only)
     let marked = {
         let sessions = state.sessions.read().map_err(|e| e.to_string())?;
-        let session = sessions.get(&session_id)
+        let session = sessions.get(session_id)
             .ok_or_else(|| format!("Session {} 不存在", session_id))?;
         let scan_state = session.scan_state.as_ref()
             .ok_or("索引尚未构建完成，请等待构建完成后再执行切片")?;
 
         let format = session.trace_format;
         let mut start_indices = Vec::new();
-        for spec in &from_specs {
+        for spec in from_specs {
             let idx = resolve_start_index(spec, scan_state, &session.mmap, session.line_index.as_ref().ok_or_else(|| "索引尚未构建完成".to_string())?, format)?;
             start_indices.push(idx);
         }
@@ -182,12 +180,30 @@ pub fn run_slice(
     // Phase 2: write lock - store result
     {
         let mut sessions = state.sessions.write().map_err(|e| e.to_string())?;
-        if let Some(session) = sessions.get_mut(&session_id) {
+        if let Some(session) = sessions.get_mut(session_id) {
             session.slice_result = Some(marked);
         }
     }
 
     Ok(SliceResult { marked_count, total_lines, percentage })
+}
+
+#[tauri::command]
+pub async fn run_slice(
+    session_id: String,
+    from_specs: Vec<String>,
+    start_seq: Option<u32>,
+    end_seq: Option<u32>,
+    data_only: Option<bool>,
+    app: AppHandle,
+) -> Result<SliceResult, String> {
+    let data_only = data_only.unwrap_or(false);
+    tauri::async_runtime::spawn_blocking(move || {
+        let state = app.state::<AppState>();
+        run_slice_inner(&session_id, &from_specs, start_seq, end_seq, data_only, &state)
+    })
+    .await
+    .map_err(|e| format!("任务执行失败: {}", e))?
 }
 
 #[tauri::command]
