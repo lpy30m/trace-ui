@@ -739,25 +739,28 @@ pub fn merge_all_chunks(
         (HashMap::new(), Vec::new())
     };
 
-    if let Some(ref cb) = progress_fn { cb(0.80); }
+    if let Some(ref cb) = progress_fn { cb(0.73); }
 
     // consumed_seqs
     all_consumed_seqs.extend(extra_consumed);
     all_consumed_seqs.sort_unstable();
 
-    // MemAccessIndex — 逐 chunk 合并（每合并完一个就释放，避免内存翻倍）
-    // 此时 chunk_deps 已释放（~6GB），有足够内存空间
+    // MemAccessIndex — 逐 chunk 合并（0.75-0.85，每 chunk 报告进度）
+    let total_mem_chunks = chunk_mem_indices.len();
     let mem_accesses = {
         let mut merged = MemAccessIndex::new();
-        for chunk_idx in chunk_mem_indices.into_iter() {
-            // chunk_idx 被 move 进循环，iter_all 借用它，循环结束时 drop 释放
+        for (ci, chunk_idx) in chunk_mem_indices.into_iter().enumerate() {
             for (addr, record) in chunk_idx.iter_all() {
                 merged.add(addr, record.clone());
             }
-            // chunk_idx 在这里被 drop，内存立即回收
+            if let Some(ref cb) = progress_fn {
+                cb(0.75 + 0.10 * (ci + 1) as f64 / total_mem_chunks as f64);
+            }
         }
         merged
     };
+
+    if let Some(ref cb) = progress_fn { cb(0.85); }
 
     // RegCheckpoints: merge all snapshots
     let merged_ckpts = {
@@ -771,7 +774,7 @@ pub fn merge_all_chunks(
         }
     };
 
-    // StringIndex — 用路径 1 从 MemAccessIndex 精确构建（无跨 chunk 边界精度丢失）
+    // StringIndex — 用路径 1 从 MemAccessIndex 精确构建（0.85-0.98，带细粒度进度）
     let string_index = if !skip_strings {
         use crate::taint::mem_access::MemRw;
         let mut writes: Vec<(u64, u64, u8, u32)> = Vec::new();
@@ -781,10 +784,23 @@ pub fn merge_all_chunks(
             }
         }
         writes.sort_unstable_by_key(|w| w.3);
+
+        if let Some(ref cb) = progress_fn { cb(0.87); }
+
+        let total_writes = writes.len();
+        let report_interval = (total_writes / 100).max(1);
         let mut sb = crate::taint::strings::StringBuilder::new();
-        for &(addr, data, size, seq) in &writes {
+        for (i, &(addr, data, size, seq)) in writes.iter().enumerate() {
             sb.process_write(addr, data, size, seq);
+            if i % report_interval == 0 {
+                if let Some(ref cb) = progress_fn {
+                    cb(0.87 + 0.10 * (i as f64 / total_writes as f64));
+                }
+            }
         }
+
+        if let Some(ref cb) = progress_fn { cb(0.97); }
+
         let mut si = sb.finish();
         crate::taint::strings::StringBuilder::fill_xref_counts(&mut si, &mem_accesses);
         si
@@ -801,7 +817,7 @@ pub fn merge_all_chunks(
     // pair_split
     let pair_split = merge_pair_splits(chunk_pair_splits, all_pair_fixups);
 
-    if let Some(ref cb) = progress_fn { cb(0.95); }
+    if let Some(ref cb) = progress_fn { cb(0.98); }
 
     // Build ScanState — use pre-compacted sorted Vec (already freed HashMap in Pass 1)
     let mem_last_def_map = MemLastDef::Sorted(global_mem_sorted);
