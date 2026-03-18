@@ -114,8 +114,11 @@ pub fn get_string_xrefs(
                     };
                     let disasm = line_index.get_line(mmap, rec.seq)
                         .and_then(|raw| {
-                            crate::commands::browse::parse_trace_line(rec.seq, raw)
-                                .map(|t| t.disasm)
+                            match session.trace_format {
+                                crate::taint::types::TraceFormat::Unidbg => crate::commands::browse::parse_trace_line(rec.seq, raw),
+                                crate::taint::types::TraceFormat::Gumtrace => crate::commands::browse::parse_trace_line_gumtrace(rec.seq, raw),
+                            }
+                            .map(|t| t.disasm)
                         })
                         .unwrap_or_default();
                     let insn_addr_str = line_index.get_line(mmap, rec.seq)
