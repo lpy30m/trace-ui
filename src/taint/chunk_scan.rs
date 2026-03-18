@@ -80,6 +80,9 @@ pub fn scan_chunk(
         reg_ckpts.save_checkpoint(&reg_values);
     }
 
+    // ── String writes (for precise string scanning in merge phase) ──
+    let mut string_writes: Vec<(u64, u64, u8, u32)> = Vec::new();
+
     // ── Unresolved tracking ──
     let mut unresolved_loads: Vec<UnresolvedLoad> = Vec::new();
     let mut partial_unresolved_loads: Vec<PartialUnresolvedLoad> = Vec::new();
@@ -645,6 +648,13 @@ pub fn scan_chunk(
                 },
             );
 
+            // ── 记录 write 操作（merge 阶段用于精确字符串构建） ──
+            if mem_op.is_write && mem_op.elem_width <= 8 {
+                if let Some(value) = mem_op.value {
+                    string_writes.push((mem_op.abs, value, mem_op.elem_width, i));
+                }
+            }
+
             // ── Phase2: String extraction ──
             if let Some(ref mut sb) = string_builder {
                 if mem_op.is_write && mem_op.elem_width <= 8 {
@@ -706,6 +716,7 @@ pub fn scan_chunk(
         mem_access_index: mem_idx,
         reg_checkpoints: reg_ckpts,
         string_index,
+        string_writes,
 
         unresolved_loads,
         partial_unresolved_loads,

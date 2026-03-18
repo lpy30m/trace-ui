@@ -132,6 +132,9 @@ pub struct ChunkResult {
     pub mem_access_index: MemAccessIndex,
     pub reg_checkpoints: RegCheckpoints,
     pub string_index: StringIndex,
+    /// Write 操作记录 (addr, value, size, seq)，按 seq 顺序（扫描顺序）。
+    /// 用于 merge 阶段精确构建字符串索引，避免遍历 MemAccessIndex HashMap。
+    pub string_writes: Vec<(u64, u64, u8, u32)>,
 
     // Unresolved items
     pub unresolved_loads: Vec<UnresolvedLoad>,

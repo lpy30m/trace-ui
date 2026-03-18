@@ -650,9 +650,9 @@ pub fn merge_all_chunks(
     let mut chunk_inits = Vec::with_capacity(num_chunks);
     let mut chunk_pair_splits = Vec::with_capacity(num_chunks);
     let mut chunk_reg_ckpts = Vec::with_capacity(num_chunks);
-    let mut chunk_string_indices = Vec::with_capacity(num_chunks);
     let mut chunk_line_indices = Vec::with_capacity(num_chunks);
     let mut chunk_mem_indices = Vec::with_capacity(num_chunks);
+    let mut chunk_string_writes: Vec<Vec<(u64, u64, u8, u32)>> = Vec::with_capacity(num_chunks);
     let mut all_consumed_seqs = Vec::new();
     let mut chunk_start_lines = Vec::with_capacity(num_chunks);
     let mut total_parsed_count = 0u32;
@@ -665,9 +665,9 @@ pub fn merge_all_chunks(
         chunk_deps.push(chunk.deps);
         chunk_inits.push(chunk.init_mem_loads);
         chunk_pair_splits.push(chunk.pair_split);
-        chunk_string_indices.push(chunk.string_index);
         chunk_line_indices.push(chunk.line_index);
         chunk_mem_indices.push(chunk.mem_access_index);
+        chunk_string_writes.push(chunk.string_writes);
         all_consumed_seqs.extend(chunk.consumed_seqs);
 
         // Move events (not clone) — saves ~20GB for large files
@@ -774,29 +774,26 @@ pub fn merge_all_chunks(
         }
     };
 
-    // StringIndex — 用路径 1 从 MemAccessIndex 精确构建（0.85-0.98，带细粒度进度）
+    // StringIndex — 从 scan_chunk 收集的 string_writes 精确构建（0.85-0.97）
+    // writes 已按 chunk 顺序排列（每个 chunk 内部是 seq 顺序），直接逐 chunk 处理
+    // = 全局 seq 顺序，无需遍历 HashMap，无需排序，100% 正确
     let string_index = if !skip_strings {
-        use crate::taint::mem_access::MemRw;
-        let mut writes: Vec<(u64, u64, u8, u32)> = Vec::new();
-        for (addr, rec) in mem_accesses.iter_all() {
-            if rec.rw == MemRw::Write && rec.size <= 8 {
-                writes.push((addr, rec.data, rec.size, rec.seq));
-            }
-        }
-        writes.sort_unstable_by_key(|w| w.3);
-
-        if let Some(ref cb) = progress_fn { cb(0.87); }
-
-        let total_writes = writes.len();
+        let total_writes: usize = chunk_string_writes.iter().map(|w| w.len()).sum();
         let report_interval = (total_writes / 100).max(1);
+        let mut processed = 0usize;
+
         let mut sb = crate::taint::strings::StringBuilder::new();
-        for (i, &(addr, data, size, seq)) in writes.iter().enumerate() {
-            sb.process_write(addr, data, size, seq);
-            if i % report_interval == 0 {
-                if let Some(ref cb) = progress_fn {
-                    cb(0.87 + 0.10 * (i as f64 / total_writes as f64));
+        for chunk_writes in chunk_string_writes.into_iter() {
+            for &(addr, data, size, seq) in &chunk_writes {
+                sb.process_write(addr, data, size, seq);
+                processed += 1;
+                if processed % report_interval == 0 {
+                    if let Some(ref cb) = progress_fn {
+                        cb(0.85 + 0.12 * (processed as f64 / total_writes as f64));
+                    }
                 }
             }
+            // chunk_writes 在这里 drop，释放内存
         }
 
         if let Some(ref cb) = progress_fn { cb(0.97); }
