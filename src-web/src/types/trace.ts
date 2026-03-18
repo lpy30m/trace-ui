@@ -49,6 +49,7 @@ export interface SearchMatch {
   changes: string;
   mem_rw: string | null;
   call_info: CallInfoDto | null;
+  hidden_content: string | null;
 }
 
 export interface SearchResult {

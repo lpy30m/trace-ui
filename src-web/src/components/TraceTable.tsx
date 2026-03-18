@@ -99,6 +99,7 @@ interface Props {
   sliceSourceSeq?: number;
   scrollTrigger?: number;
   consumedSeqs?: number[];
+  autoExpandCallInfoRequest?: { seq: number; nonce: number } | null;
 }
 
 interface ArrowState {
@@ -153,6 +154,7 @@ export default function TraceTable({
   sliceSourceSeq,
   scrollTrigger = 0,
   consumedSeqs,
+  autoExpandCallInfoRequest = null,
 }: Props) {
   const selectedSeqFromStore = useSelectedSeq();
   const selectedSeq = selectedSeqProp !== undefined ? selectedSeqProp : selectedSeqFromStore;
@@ -651,6 +653,51 @@ export default function TraceTable({
       scrollToSeq(selectedSeq, align);
     }
   }, [selectedSeq, isLoaded, scrollAlignRef, scrollToSeq, scrollTrigger]);
+
+  const pendingAutoExpandCallInfoRef = useRef<{ seq: number; nonce: number } | null>(null);
+  const lastAutoExpandCallInfoNonceRef = useRef<number | null>(null);
+  useEffect(() => {
+    if (!autoExpandCallInfoRequest) return;
+    if (lastAutoExpandCallInfoNonceRef.current === autoExpandCallInfoRequest.nonce) return;
+    lastAutoExpandCallInfoNonceRef.current = autoExpandCallInfoRequest.nonce;
+    pendingAutoExpandCallInfoRef.current = autoExpandCallInfoRequest;
+  }, [autoExpandCallInfoRequest]);
+
+  useEffect(() => {
+    const pending = pendingAutoExpandCallInfoRef.current;
+    if (!pending || !isLoaded || selectedSeq !== pending.seq) return;
+    const line = visibleLines.get(pending.seq) ?? prefetchCacheRef.current.get(pending.seq);
+    if (!line?.call_info) {
+      return;
+    }
+
+    const rect = containerRef.current?.getBoundingClientRect();
+    if (!rect) return;
+
+    const rowIdx = finalSeqToVirtualIndex(pending.seq) - currentRow;
+    if (rowIdx < 0 || rowIdx > visibleRows) return;
+
+    if (callInfoClearTimerRef.current) {
+      clearTimeout(callInfoClearTimerRef.current);
+      callInfoClearTimerRef.current = null;
+    }
+
+    const tooltipWidth = 620;
+    const tooltipHeight = 300;
+    const preferredX = rect.left + COL_DISASM + 24;
+    const preferredY = rect.top + rowIdx * ROW_HEIGHT + 10;
+    const x = Math.max(12, Math.min(preferredX, window.innerWidth - tooltipWidth - 12));
+    const y = Math.max(12, Math.min(preferredY, window.innerHeight - tooltipHeight - 12));
+
+    callInfoHoveredRef.current = false;
+    setCallInfoTooltip({
+      x,
+      y,
+      text: line.call_info.tooltip,
+      isJni: line.call_info.is_jni,
+    });
+    pendingAutoExpandCallInfoRef.current = null;
+  }, [currentRow, finalSeqToVirtualIndex, isLoaded, selectedSeq, visibleLines, visibleRows]);
 
   // === 数据预取（debouncedRow 驱动，滚动期间不触发 IPC） ===
   useEffect(() => {

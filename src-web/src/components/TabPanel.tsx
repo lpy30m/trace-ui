@@ -25,6 +25,7 @@ interface Props {
   searchStatus: string;
   searchTotalMatches: number;
   onJumpToSeq: (seq: number) => void;
+  onJumpToSearchMatch: (match: SearchMatch) => void;
   isPhase2Ready: boolean;
   floatedPanels: Set<string>;
   onFloat: (panel: string, position?: { x: number; y: number }) => void;
@@ -36,7 +37,7 @@ interface Props {
 }
 
 export default function TabPanel({
-  searchResults, searchQuery, isSearching, searchStatus, searchTotalMatches, onJumpToSeq,
+  searchResults, searchQuery, isSearching, searchStatus, searchTotalMatches, onJumpToSeq, onJumpToSearchMatch,
   isPhase2Ready,
   floatedPanels, onFloat, sessionId,
   sliceActive, sliceInfo, sliceFromSpecs,
@@ -156,6 +157,7 @@ export default function TabPanel({
             <SearchResultList
               results={searchResults}
               onJumpToSeq={onJumpToSeq}
+              onJumpToMatch={onJumpToSearchMatch}
               changesWidth={changesCol.width}
               onResizeChanges={changesCol.onMouseDown}
             />

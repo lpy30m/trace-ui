@@ -98,6 +98,7 @@ function App() {
   const [showGoto, setShowGoto] = useState(false);
   const [stringsScanningSessionId, setStringsScanningSessionId] = useState<string | null>(null);
   const [leftTab, setLeftTab] = useState<"tree" | "list">("tree");
+  const [callInfoExpandRequest, setCallInfoExpandRequest] = useState<{ seq: number; nonce: number } | null>(null);
 
   const { recentFiles, addRecent, removeRecent, clearRecent } = useRecentFiles();
   const { highlights, loadForFile, setHighlight, toggleStrikethrough, resetHighlight, toggleHidden, unhideGroup, setComment, deleteComment } = useHighlights();
@@ -511,6 +512,16 @@ function App() {
     navigationStore.navigate(seq);
   }, [foldState.ensureSeqVisible]);
 
+  const callInfoExpandNonceRef = useRef(0);
+  const handleJumpToSearchMatch = useCallback((match: SearchMatch) => {
+    if (match.call_info) {
+      callInfoExpandNonceRef.current += 1;
+      setCallInfoExpandRequest({ seq: match.seq, nonce: callInfoExpandNonceRef.current });
+    }
+    foldState.ensureSeqVisible(match.seq);
+    navigationStore.navigate(match.seq);
+  }, [foldState.ensureSeqVisible]);
+
   // 搜索路由：Search 已浮动时转发，否则本地搜索
   const handleSearch = useCallback((query: string) => {
     if (floatedPanels.has("search")) {
@@ -684,6 +695,15 @@ function App() {
     // 浮动窗口请求跳转
     unlisteners.push(listen<{ seq: number }>("action:jump-to-seq", (e) => {
       handleJumpToSeqRef.current(e.payload.seq);
+    }));
+
+    unlisteners.push(listen<{ seq: number }>("action:jump-to-search-match", (e) => {
+      const match = searchResultsRef.current.find((item) => item.seq === e.payload.seq);
+      if (match) {
+        handleJumpToSearchMatch(match);
+      } else {
+        handleJumpToSeqRef.current(e.payload.seq);
+      }
     }));
 
     // View in Memory：跳转到对应 seq（确定内存时间点）
@@ -1061,6 +1081,7 @@ function App() {
                     sliceSourceSeq={slice.sliceSourceSeq}
                     scrollTrigger={scrollTrigger}
                     consumedSeqs={consumedSeqs}
+                    autoExpandCallInfoRequest={callInfoExpandRequest}
                   />
                 </div>
               </div>
@@ -1074,6 +1095,7 @@ function App() {
                 searchStatus={searchStatus}
                 searchTotalMatches={searchTotalMatches}
                 onJumpToSeq={handleJumpToSeq}
+                onJumpToSearchMatch={handleJumpToSearchMatch}
                 isPhase2Ready={isPhase2Ready}
                 floatedPanels={floatedPanels}
                 onFloat={handleFloat}

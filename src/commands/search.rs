@@ -22,6 +22,7 @@ pub struct SearchMatch {
     pub changes: String,
     pub mem_rw: Option<String>,
     pub call_info: Option<CallInfoDto>,
+    pub hidden_content: Option<String>,
 }
 
 #[derive(Serialize)]
@@ -66,6 +67,44 @@ fn case_insensitive_match(line: &[u8], needle: &str) -> bool {
 fn fuzzy_match_bytes(line: &[u8], tokens: &[String]) -> bool {
     let line_lower = String::from_utf8_lossy(line).to_lowercase();
     tokens.iter().all(|t| line_lower.contains(t.as_str()))
+}
+
+fn matches_mode_bytes(mode: &SearchMode, text: &[u8]) -> bool {
+    match mode {
+        SearchMode::Text(needle) => case_insensitive_match(text, needle),
+        SearchMode::FuzzyText(tokens) => fuzzy_match_bytes(text, tokens),
+        SearchMode::Regex(re) => re.is_match(text),
+    }
+}
+
+fn matches_mode_str(mode: &SearchMode, text: &str) -> bool {
+    matches_mode_bytes(mode, text.as_bytes())
+}
+
+fn rendered_search_text(
+    address: &str,
+    disasm: &str,
+    changes: &str,
+    mem_rw: Option<&str>,
+    call_summary: Option<&str>,
+) -> String {
+    let mut parts = Vec::with_capacity(5);
+    if let Some(rw) = mem_rw.filter(|rw| !rw.is_empty()) {
+        parts.push(rw);
+    }
+    if !address.is_empty() {
+        parts.push(address);
+    }
+    if !disasm.is_empty() {
+        parts.push(disasm);
+    }
+    if let Some(summary) = call_summary.filter(|summary| !summary.is_empty()) {
+        parts.push(summary);
+    }
+    if !changes.is_empty() {
+        parts.push(changes);
+    }
+    parts.join("\n")
 }
 
 #[tauri::command]
@@ -127,34 +166,43 @@ pub async fn search_trace(
                 continue;
             }
 
-            let is_match = match &mode {
-                SearchMode::Text(needle) => case_insensitive_match(line, needle),
-                SearchMode::FuzzyText(tokens) => fuzzy_match_bytes(line, tokens),
-                SearchMode::Regex(re) => re.is_match(line),
-            };
-            // 未命中原始行时，检查该行关联的 call_annotation
-            let is_match = is_match || (!is_match && call_search_texts.get(&seq).map_or(false, |text| {
-                let text_bytes = text.as_bytes();
-                match &mode {
-                    SearchMode::Text(needle) => case_insensitive_match(text_bytes, needle),
-                    SearchMode::FuzzyText(tokens) => fuzzy_match_bytes(text_bytes, tokens),
-                    SearchMode::Regex(re) => re.is_match(text_bytes),
-                }
-            }));
+            let raw_match = matches_mode_bytes(&mode, line);
+            let annotation_match = call_search_texts
+                .get(&seq)
+                .map_or(false, |text| matches_mode_str(&mode, text));
+            let is_match = raw_match || annotation_match;
 
             if is_match {
                 total_matches += 1;
                 if matches.len() < max_results as usize {
                     let parsed = match trace_format {
-                    crate::taint::types::TraceFormat::Unidbg => crate::commands::browse::parse_trace_line(seq, line),
-                    crate::taint::types::TraceFormat::Gumtrace => crate::commands::browse::parse_trace_line_gumtrace(seq, line),
-                };
-                if let Some(parsed) = parsed {
-                        let call_info = call_annotations.get(&seq).map(|ann| CallInfoDto {
-                            func_name: ann.func_name.clone(),
-                            is_jni: ann.is_jni,
-                            summary: ann.summary(),
-                            tooltip: ann.tooltip(),
+                        crate::taint::types::TraceFormat::Unidbg => crate::commands::browse::parse_trace_line(seq, line),
+                        crate::taint::types::TraceFormat::Gumtrace => crate::commands::browse::parse_trace_line_gumtrace(seq, line),
+                    };
+                    if let Some(parsed) = parsed {
+                        let mut hidden_content = None;
+                        let call_info = call_annotations.get(&seq).map(|ann| {
+                            let summary = ann.summary();
+                            let tooltip = ann.tooltip();
+                            let rendered_text = rendered_search_text(
+                                &parsed.address,
+                                &parsed.disasm,
+                                &parsed.changes,
+                                parsed.mem_rw.as_deref(),
+                                Some(summary.as_str()),
+                            );
+                            if annotation_match
+                                && !matches_mode_str(&mode, &rendered_text)
+                                && !tooltip.is_empty()
+                            {
+                                hidden_content = Some(tooltip.clone());
+                            }
+                            CallInfoDto {
+                                func_name: ann.func_name.clone(),
+                                is_jni: ann.is_jni,
+                                summary,
+                                tooltip,
+                            }
                         });
                         matches.push(SearchMatch {
                             seq: parsed.seq,
@@ -163,6 +211,7 @@ pub async fn search_trace(
                             changes: parsed.changes,
                             mem_rw: parsed.mem_rw,
                             call_info,
+                            hidden_content,
                         });
                     }
                 }
