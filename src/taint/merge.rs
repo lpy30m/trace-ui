@@ -227,6 +227,7 @@ pub fn rebuild_compact_deps(
     chunk_deps: &[CompactDeps],
     chunk_start_lines: &[u32],
     patch_edges: &[(u32, u32)],
+    progress_fn: Option<&dyn Fn(f64)>,
 ) -> CompactDeps {
     // Group patch_edges by source line for efficient lookup
     let mut patches: FxHashMap<u32, Vec<u32>> = FxHashMap::default();
@@ -240,6 +241,9 @@ pub fn rebuild_compact_deps(
         chunk_deps.iter().map(|c| c.data.len()).sum::<usize>() + patch_edges.len();
 
     let mut merged = CompactDeps::with_capacity(total_lines, total_deps);
+
+    let report_interval = (total_lines / 100).max(1);
+    let mut rows_processed = 0usize;
 
     for (chunk_id, chunk) in chunk_deps.iter().enumerate() {
         let num_rows = chunk.offsets.len();
@@ -256,6 +260,13 @@ pub fn rebuild_compact_deps(
             if let Some(extras) = patches.get(&global_line) {
                 for &dep in extras {
                     merged.push_unique(dep);
+                }
+            }
+
+            rows_processed += 1;
+            if let Some(ref cb) = progress_fn {
+                if rows_processed % report_interval == 0 {
+                    cb(rows_processed as f64 / total_lines as f64);
                 }
             }
         }
@@ -494,6 +505,8 @@ pub fn merge_all_chunks(
     }
     let mut deferred_pair_deps: Vec<DeferredPairDep> = Vec::new();
 
+    let num_chunks_f64 = num_chunks as f64;
+
     // Pass 1: Forward propagation + fixup (borrow chunk_results)
     for (i, chunk) in chunk_results.iter().enumerate() {
         if i > 0 {
@@ -607,6 +620,11 @@ pub fn merge_all_chunks(
         if chunk.boundary.final_last_cond_branch.is_some() {
             global_last_cond_branch = chunk.boundary.final_last_cond_branch;
         }
+
+        // Report Pass 1 progress: maps to 0.0-0.10
+        if let Some(ref cb) = progress_fn {
+            cb(0.10 * (i + 1) as f64 / num_chunks_f64);
+        }
     }
 
     // === Compact global_mem_last_def immediately after Pass 1 ===
@@ -619,11 +637,12 @@ pub fn merge_all_chunks(
             .map(|(addr, (line, val))| (addr, line, val))
             .collect();
         drop(global_mem_last_def); // 立即释放 HashMap 桶数组
+        if let Some(ref cb) = progress_fn { cb(0.12); }
         sorted.sort_unstable_by_key(|(addr, _, _)| *addr);
         sorted
     };
 
-    if let Some(ref cb) = progress_fn { cb(0.2); }
+    if let Some(ref cb) = progress_fn { cb(0.15); }
 
     // === Pass 2: Decompose chunk_results (move out data) ===
     let mut chunk_deps = Vec::with_capacity(num_chunks);
@@ -678,7 +697,7 @@ pub fn merge_all_chunks(
         }
     }
 
-    if let Some(ref cb) = progress_fn { cb(0.4); }
+    if let Some(ref cb) = progress_fn { cb(0.20); }
 
     // === Rebuild unified data structures ===
 
@@ -686,12 +705,26 @@ pub fn merge_all_chunks(
     let total_lines = chunk_start_lines.last().copied().unwrap_or(0)
         + chunk_deps.last().map(|d| d.offsets.len() as u32).unwrap_or(0);
 
-    // CompactDeps
-    let merged_deps = rebuild_compact_deps(&chunk_deps, &chunk_start_lines, &all_patch_edges);
+    // CompactDeps — maps to 0.20-0.70 range (the slowest operation)
+    let rebuild_progress: Option<Box<dyn Fn(f64)>> = progress_fn.as_ref().map(|cb| {
+        let cb = cb as *const dyn Fn(f64);
+        // SAFETY: cb lives for the duration of merge_all_chunks; rebuild_compact_deps
+        // is called synchronously within this scope.
+        Box::new(move |frac: f64| {
+            unsafe { (&*cb)(0.20 + frac * 0.50); }
+        }) as Box<dyn Fn(f64)>
+    });
+    let merged_deps = rebuild_compact_deps(
+        &chunk_deps,
+        &chunk_start_lines,
+        &all_patch_edges,
+        rebuild_progress.as_deref(),
+    );
+    drop(rebuild_progress);
     drop(chunk_deps); // Free ~6GB immediately
     drop(all_patch_edges); // Free patch edges
 
-    if let Some(ref cb) = progress_fn { cb(0.6); }
+    if let Some(ref cb) = progress_fn { cb(0.70); }
 
     // CallTree
     let call_tree = replay_call_tree_events(&all_call_events, total_lines);
@@ -703,14 +736,11 @@ pub fn merge_all_chunks(
         (HashMap::new(), Vec::new())
     };
 
-    if let Some(ref cb) = progress_fn { cb(0.8); }
-
-    eprintln!("[merge] 0.8 done, starting final assembly...");
+    if let Some(ref cb) = progress_fn { cb(0.80); }
 
     // consumed_seqs
     all_consumed_seqs.extend(extra_consumed);
     all_consumed_seqs.sort_unstable();
-    eprintln!("[merge] consumed_seqs sorted ({})", all_consumed_seqs.len());
 
     // MemAccessIndex — built lazily on demand, not during initial scan
     let mem_accesses = MemAccessIndex::new();
@@ -721,7 +751,6 @@ pub fn merge_all_chunks(
         for ckpt in chunk_reg_ckpts {
             all_snapshots.extend(ckpt.snapshots);
         }
-        eprintln!("[merge] RegCheckpoints merged ({} snapshots)", all_snapshots.len());
         RegCheckpoints {
             interval: 1000,
             snapshots: all_snapshots,
@@ -730,25 +759,21 @@ pub fn merge_all_chunks(
 
     // StringIndex
     let string_index = merge_string_indices(chunk_string_indices);
-    eprintln!("[merge] StringIndex merged ({} strings)", string_index.strings.len());
 
     // LineIndex
     let line_index = merge_line_indices(chunk_line_indices);
-    eprintln!("[merge] LineIndex merged ({} lines)", line_index.total_lines());
 
     // init_mem_loads
     let init_mem_loads = merge_init_mem_loads(chunk_inits, &init_corrections);
-    eprintln!("[merge] init_mem_loads merged ({} bits)", init_mem_loads.len());
 
     // pair_split
     let pair_split = merge_pair_splits(chunk_pair_splits, all_pair_fixups);
-    eprintln!("[merge] pair_split merged ({} entries)", pair_split.len());
+
+    if let Some(ref cb) = progress_fn { cb(0.95); }
 
     // Build ScanState — use pre-compacted sorted Vec (already freed HashMap in Pass 1)
-    eprintln!("[merge] global_mem_sorted: {} entries", global_mem_sorted.len());
     let mem_last_def_map = MemLastDef::Sorted(global_mem_sorted);
 
-    eprintln!("[merge] building ScanState...");
     let scan_state = ScanState {
         reg_last_def: global_reg_last_def,
         mem_last_def: mem_last_def_map,
@@ -762,7 +787,6 @@ pub fn merge_all_chunks(
         init_mem_loads,
         pair_split,
     };
-    eprintln!("[merge] ScanState built OK");
 
     let phase2 = Phase2State {
         call_tree,
@@ -989,7 +1013,7 @@ mod tests {
             (3u32, 2u32), // line 3 depends on line 2 (cross-chunk)
         ];
 
-        let merged = rebuild_compact_deps(&[c0, c1], &[0, 3], &patch_edges);
+        let merged = rebuild_compact_deps(&[c0, c1], &[0, 3], &patch_edges, None);
 
         // Verify
         assert_eq!(merged.row(0).len(), 0); // line 0: no deps
@@ -1013,7 +1037,7 @@ mod tests {
         // Patch also adds line 1 → 0 (duplicate)
         let patch_edges = vec![(1u32, 0u32)];
 
-        let merged = rebuild_compact_deps(&[c0], &[0], &patch_edges);
+        let merged = rebuild_compact_deps(&[c0], &[0], &patch_edges, None);
         assert_eq!(merged.row(1).len(), 1); // deduped to single entry
         assert_eq!(merged.row(1), &[0]);
     }

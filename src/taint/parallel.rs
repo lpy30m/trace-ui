@@ -39,6 +39,11 @@ pub fn scan_unified_parallel(
         cb(0, data.len());
     }
 
+    // Phase 0 complete — report 2% so user sees progress after line counting
+    if let Some(ref cb) = progress_fn {
+        cb(data.len() / 50, data.len());
+    }
+
     // Phase 1: Parallel chunk scanning with progress reporting
     use std::sync::atomic::{AtomicUsize, Ordering};
     use std::sync::Arc;
