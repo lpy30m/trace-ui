@@ -73,16 +73,31 @@ pub async fn build_index(
                 }).await;
 
                 if let Ok(mem_idx) = build_result {
+                    // 用路径 1 从 MemAccessIndex 精确构建字符串索引（无跨 chunk 边界精度丢失）
+                    let string_index = {
+                        use crate::taint::mem_access::MemRw;
+                        let mut writes: Vec<(u64, u64, u8, u32)> = Vec::new();
+                        for (addr, rec) in mem_idx.iter_all() {
+                            if rec.rw == MemRw::Write && rec.size <= 8 {
+                                writes.push((addr, rec.data, rec.size, rec.seq));
+                            }
+                        }
+                        writes.sort_unstable_by_key(|w| w.3);
+                        let mut sb = crate::taint::strings::StringBuilder::new();
+                        for &(addr, data, size, seq) in &writes {
+                            sb.process_write(addr, data, size, seq);
+                        }
+                        let mut si = sb.finish();
+                        crate::taint::strings::StringBuilder::fill_xref_counts(&mut si, &mem_idx);
+                        si
+                    };
+
                     let state = app2.state::<AppState>();
                     if let Ok(mut sessions) = state.sessions.write() {
                         if let Some(session) = sessions.get_mut(&*sid) {
                             if let Some(ref mut phase2) = session.phase2 {
-                                crate::taint::strings::StringBuilder::fill_xref_counts(
-                                    &mut phase2.string_index,
-                                    &mem_idx,
-                                );
+                                phase2.string_index = string_index;
                                 phase2.mem_accesses = mem_idx;
-                                eprintln!("[index] background MemAccessIndex build complete for session {}", sid);
                             }
                         }
                     }

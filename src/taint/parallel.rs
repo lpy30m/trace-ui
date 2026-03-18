@@ -77,7 +77,7 @@ pub fn scan_unified_parallel(
                 format,
                 data_only,
                 no_prune,
-                skip_strings,
+                true, // 并行扫描始终跳过字符串：跨 chunk 边界会断裂，改由 MemAccessIndex 构建后用路径 1 精确构建
                 chunk_cb,
             )
         })
