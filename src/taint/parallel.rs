@@ -330,11 +330,17 @@ mod tests {
         );
 
         // Compare deps (set comparison — order within row may differ)
+        // For Chunked storage, combine base row + patch_row to get full deps.
         for i in 0..baseline.scan_state.line_count as usize {
             let mut b: Vec<u32> = baseline.scan_state.deps.row(i).to_vec();
+            b.extend_from_slice(baseline.scan_state.deps.patch_row(i));
             let mut p: Vec<u32> = parallel.scan_state.deps.row(i).to_vec();
+            p.extend_from_slice(parallel.scan_state.deps.patch_row(i));
             b.sort();
             p.sort();
+            // Dedup since Single variant has inherent dedup while Chunked groups are deduped separately
+            b.dedup();
+            p.dedup();
             assert_eq!(b, p, "{}: deps mismatch at line {}", label, i);
         }
 

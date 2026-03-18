@@ -91,7 +91,7 @@ pub fn scan_unified(
         reg_last_def: RegLastDef::new(),
         mem_last_def: scanner::MemLastDef::default(),
         last_cond_branch: None,
-        deps: scanner::CompactDeps::with_capacity(line_count_est, line_count_est * 2),
+        deps: scanner::DepsStorage::single(scanner::CompactDeps::with_capacity(line_count_est, line_count_est * 2)),
         line_count: 0,
         parsed_count: 0,
         mem_op_count: 0,

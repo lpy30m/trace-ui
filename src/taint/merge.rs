@@ -710,26 +710,29 @@ pub fn merge_all_chunks(
     let total_lines = chunk_start_lines.last().copied().unwrap_or(0)
         + chunk_deps.last().map(|d| d.offsets.len() as u32).unwrap_or(0);
 
-    // CompactDeps — maps to 0.20-0.70 range (the slowest operation)
-    let rebuild_progress: Option<Box<dyn Fn(f64)>> = progress_fn.as_ref().map(|cb| {
-        let cb = cb as *const dyn Fn(f64);
-        // SAFETY: cb lives for the duration of merge_all_chunks; rebuild_compact_deps
-        // is called synchronously within this scope.
-        Box::new(move |frac: f64| {
-            unsafe { (&*cb)(0.20 + frac * 0.50); }
-        }) as Box<dyn Fn(f64)>
-    });
-    let merged_deps = rebuild_compact_deps(
-        &chunk_deps,
-        &chunk_start_lines,
-        &all_patch_edges,
-        rebuild_progress.as_deref(),
-    );
-    drop(rebuild_progress);
-    drop(chunk_deps); // Free ~6GB immediately
+    // Build DepsStorage::Chunked — avoids the expensive O(n) rebuild_compact_deps.
+    // Group patch_edges by source line (sorted) for efficient binary-search lookup.
+    use rustc_hash::FxHashMap as PatchMap;
+    let mut patch_map: PatchMap<u32, Vec<u32>> = PatchMap::default();
+    for &(from, to) in &all_patch_edges {
+        patch_map.entry(from).or_default().push(to);
+    }
+    // Dedup within each group (same logic as rebuild_compact_deps used push_unique)
+    for deps in patch_map.values_mut() {
+        deps.sort_unstable();
+        deps.dedup();
+    }
+    let mut patch_groups: Vec<(u32, Vec<u32>)> = patch_map.into_iter().collect();
+    patch_groups.sort_unstable_by_key(|&(line, _)| line);
+
+    let merged_deps = crate::taint::scanner::DepsStorage::Chunked {
+        chunks: chunk_deps,
+        chunk_start_lines: chunk_start_lines.clone(),
+        patch_groups,
+    };
     drop(all_patch_edges); // Free patch edges
 
-    eprintln!("[perf] rebuild_compact_deps: {:?}", phase2_timer.elapsed());
+    eprintln!("[perf] DepsStorage::Chunked built (skipped rebuild_compact_deps): {:?}", phase2_timer.elapsed());
 
     if let Some(ref cb) = progress_fn { cb(0.70); }
 

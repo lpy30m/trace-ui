@@ -63,7 +63,7 @@ pub fn bfs_slice_with_options(state: &ScanState, start_indices: &[u32], data_onl
             }
         } else {
             // Non-pair instruction: follow all deps (deps may carry tags)
-            for &dep in state.deps.row(line as usize) {
+            for &dep in state.deps.row(line as usize).iter().chain(state.deps.patch_row(line as usize).iter()) {
                 if data_only && (dep & CONTROL_DEP_BIT) != 0 { continue; }
                 enqueue_dep(dep, n, &mut queue, &mut marked, &mut pair_visited, &state.pair_split);
             }
