@@ -43,14 +43,28 @@ pub fn scan_unified_parallel(
     use std::sync::atomic::{AtomicUsize, Ordering};
     use std::sync::Arc;
 
-    let processed_bytes = AtomicUsize::new(0);
+    let global_bytes_done = Arc::new(AtomicUsize::new(0));
     let data_len = data.len();
-    let progress_fn_arc = progress_fn.map(|f| Arc::new(f));
+    let progress_fn_arc: Option<Arc<dyn Fn(usize, usize) + Send + Sync>> =
+        progress_fn.map(|f| Arc::new(f) as Arc<dyn Fn(usize, usize) + Send + Sync>);
 
     let chunk_results: Vec<_> = chunks_meta
         .par_iter()
         .map(|meta| {
-            let result = chunk_scan::scan_chunk(
+            // Build a per-chunk progress callback that reports byte deltas
+            let chunk_cb: Option<Arc<dyn Fn(usize) + Send + Sync>> =
+                progress_fn_arc.as_ref().map(|pfn| {
+                    let gbd = global_bytes_done.clone();
+                    let pfn = pfn.clone();
+                    let dl = data_len;
+                    Arc::new(move |bytes_delta: usize| {
+                        let total = gbd.fetch_add(bytes_delta, Ordering::Relaxed) + bytes_delta;
+                        let progress = total * 2 / 3; // Phase 1 = first 67%
+                        pfn(progress, dl);
+                    }) as Arc<dyn Fn(usize) + Send + Sync>
+                });
+
+            chunk_scan::scan_chunk(
                 data,
                 meta.start_byte,
                 meta.end_byte,
@@ -59,15 +73,8 @@ pub fn scan_unified_parallel(
                 data_only,
                 no_prune,
                 skip_strings,
-            );
-            // Report progress: Phase 1 maps to 0%-67% of total progress
-            let done = processed_bytes.fetch_add(meta.end_byte - meta.start_byte, Ordering::Relaxed)
-                + (meta.end_byte - meta.start_byte);
-            if let Some(ref cb) = progress_fn_arc {
-                let progress = done * 2 / 3; // Phase 1 = first 67%
-                cb(progress, data_len);
-            }
-            result
+                chunk_cb,
+            )
         })
         .collect();
 
@@ -277,6 +284,7 @@ mod tests {
                     data_only,
                     no_prune,
                     skip_strings,
+                    None,
                 )
             })
             .collect();

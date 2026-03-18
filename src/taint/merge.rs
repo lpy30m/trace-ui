@@ -616,7 +616,6 @@ pub fn merge_all_chunks(
     let mut chunk_deps = Vec::with_capacity(num_chunks);
     let mut chunk_inits = Vec::with_capacity(num_chunks);
     let mut chunk_pair_splits = Vec::with_capacity(num_chunks);
-    let mut chunk_mem_indices = Vec::with_capacity(num_chunks);
     let mut chunk_reg_ckpts = Vec::with_capacity(num_chunks);
     let mut chunk_string_indices = Vec::with_capacity(num_chunks);
     let mut chunk_line_indices = Vec::with_capacity(num_chunks);
@@ -632,7 +631,6 @@ pub fn merge_all_chunks(
         chunk_deps.push(chunk.deps);
         chunk_inits.push(chunk.init_mem_loads);
         chunk_pair_splits.push(chunk.pair_split);
-        chunk_mem_indices.push(chunk.mem_access_index);
         chunk_string_indices.push(chunk.string_index);
         chunk_line_indices.push(chunk.line_index);
         all_consumed_seqs.extend(chunk.consumed_seqs);
@@ -688,8 +686,8 @@ pub fn merge_all_chunks(
     all_consumed_seqs.extend(extra_consumed);
     all_consumed_seqs.sort_unstable();
 
-    // MemAccessIndex
-    let mem_accesses = merge_mem_access_indices(chunk_mem_indices);
+    // MemAccessIndex — built lazily on demand, not during initial scan
+    let mem_accesses = MemAccessIndex::new();
 
     // RegCheckpoints: merge all snapshots
     let merged_ckpts = {

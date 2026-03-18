@@ -10,12 +10,13 @@ use bitvec::prelude::BitVec;
 use memchr::memchr;
 use rustc_hash::FxHashMap;
 use smallvec::SmallVec;
+use std::sync::Arc;
 
 use crate::line_index::LineIndexBuilder;
 use crate::phase2;
 use crate::taint::gumtrace_parser;
 use crate::taint::insn_class::{self, InsnClass};
-use crate::taint::mem_access::{MemAccessIndex, MemAccessRecord, MemRw};
+use crate::taint::mem_access::MemAccessIndex;
 use crate::taint::parallel_types::*;
 use crate::taint::parser;
 use crate::taint::reg_checkpoint::RegCheckpoints;
@@ -46,6 +47,7 @@ pub fn scan_chunk(
     data_only: bool,
     no_prune: bool,
     skip_strings: bool,
+    progress_cb: Option<Arc<dyn Fn(usize) + Send + Sync>>,
 ) -> ChunkResult {
     // ── Estimate line count for this chunk ──
     let chunk_len = end_byte - start_byte;
@@ -64,7 +66,8 @@ pub fn scan_chunk(
     let mut pair_split: FxHashMap<u32, PairSplitDeps> = FxHashMap::default();
 
     // ── Phase2 data ──
-    let mut mem_idx = MemAccessIndex::new();
+    // NOTE: MemAccessIndex is NOT built during scan (saves ~18GB memory for large files).
+    // It will be built lazily on demand when memory queries are first issued.
     let mut string_builder = if skip_strings {
         None
     } else {
@@ -100,6 +103,11 @@ pub fn scan_chunk(
     // Track whether we've emitted SetRootAddr
     let mut root_addr_set = false;
 
+    // ── Progress tracking ──
+    let chunk_total = end_byte - start_byte;
+    let progress_interval = chunk_total / 100 + 1;
+    let mut bytes_since_report = 0usize;
+
     // ── Main loop ──
     let mut pos = start_byte;
 
@@ -131,11 +139,22 @@ pub fn scan_chunk(
         // LineIndex: record line offset
         li_builder.add_line(pos as u64);
 
+        let prev_pos = pos;
         pos = if line_end < search_end {
             line_end + 1
         } else {
             search_end
         };
+
+        // ── Progress reporting ──
+        let line_bytes = pos - prev_pos;
+        bytes_since_report += line_bytes;
+        if let Some(ref cb) = progress_cb {
+            if bytes_since_report >= progress_interval {
+                cb(bytes_since_report);
+                bytes_since_report = 0;
+            }
+        }
 
         // ── Gumtrace special line early interception ──
         if format == TraceFormat::Gumtrace && gumtrace_parser::is_special_line(raw_line) {
@@ -597,25 +616,9 @@ pub fn scan_chunk(
             _ => {}
         }
 
-        // ── Phase2: MemAccess ──
+        // ── Phase2: MemAccess (count only — index built lazily) ──
         if let Some(ref mem_op) = line.mem_op {
             mem_op_count += 1;
-            let rw = if mem_op.is_write {
-                MemRw::Write
-            } else {
-                MemRw::Read
-            };
-            let insn_addr = phase2::extract_insn_addr(raw_line);
-            mem_idx.add(
-                mem_op.abs,
-                MemAccessRecord {
-                    seq: i,
-                    insn_addr,
-                    rw,
-                    data: mem_op.value.unwrap_or(0),
-                    size: mem_op.elem_width,
-                },
-            );
 
             // ── Phase2: String extraction ──
             if let Some(ref mut sb) = string_builder {
@@ -643,13 +646,16 @@ pub fn scan_chunk(
 
     // ── Finalize ──
 
-    // Build string index
-    let string_index = match string_builder {
-        Some(sb) => {
-            let mut si = sb.finish();
-            StringBuilder::fill_xref_counts(&mut si, &mem_idx);
-            si
+    // Report any remaining progress bytes
+    if let Some(ref cb) = progress_cb {
+        if bytes_since_report > 0 {
+            cb(bytes_since_report);
         }
+    }
+
+    // Build string index (xref counts left at 0 — MemAccessIndex not built yet)
+    let string_index = match string_builder {
+        Some(sb) => sb.finish(),
         None => Default::default(),
     };
 
@@ -672,7 +678,7 @@ pub fn scan_chunk(
         init_mem_loads,
         pair_split,
         line_index,
-        mem_access_index: mem_idx,
+        mem_access_index: MemAccessIndex::new(),
         reg_checkpoints: reg_ckpts,
         string_index,
 
@@ -747,7 +753,7 @@ mod tests {
         let trace = lines.join("\n");
         let data = trace.as_bytes();
 
-        let result = scan_chunk(data, 0, data.len(), 0, TraceFormat::Unidbg, false, false, true);
+        let result = scan_chunk(data, 0, data.len(), 0, TraceFormat::Unidbg, false, false, true, None);
 
         // Basic counts
         assert_eq!(result.end_line, 3);
@@ -773,7 +779,7 @@ mod tests {
         let trace = lines.join("\n");
         let data = trace.as_bytes();
 
-        let result = scan_chunk(data, 0, data.len(), 0, TraceFormat::Unidbg, true, false, true);
+        let result = scan_chunk(data, 0, data.len(), 0, TraceFormat::Unidbg, true, false, true, None);
 
         // ldr (line 2) should depend on str (line 1) via memory
         let row2 = result.deps.row(2);
@@ -793,7 +799,7 @@ mod tests {
         let trace = lines.join("\n");
         let data = trace.as_bytes();
 
-        let result = scan_chunk(data, 0, data.len(), 0, TraceFormat::Unidbg, true, false, true);
+        let result = scan_chunk(data, 0, data.len(), 0, TraceFormat::Unidbg, true, false, true, None);
 
         // x8 and x9 have no local def → should be unresolved
         assert!(
@@ -812,7 +818,7 @@ mod tests {
         let trace = lines.join("\n");
         let data = trace.as_bytes();
 
-        let result = scan_chunk(data, 0, data.len(), 0, TraceFormat::Unidbg, true, false, true);
+        let result = scan_chunk(data, 0, data.len(), 0, TraceFormat::Unidbg, true, false, true, None);
 
         // Fully unresolved load
         assert_eq!(
@@ -833,7 +839,7 @@ mod tests {
         let trace = lines.join("\n");
         let data = trace.as_bytes();
 
-        let result = scan_chunk(data, 0, data.len(), 100, TraceFormat::Unidbg, false, false, true);
+        let result = scan_chunk(data, 0, data.len(), 100, TraceFormat::Unidbg, false, false, true, None);
 
         assert_eq!(result.start_line, 100);
         assert_eq!(result.end_line, 102);
@@ -858,7 +864,7 @@ mod tests {
         let trace = lines.join("\n");
         let data = trace.as_bytes();
 
-        let result = scan_chunk(data, 0, data.len(), 0, TraceFormat::Unidbg, false, false, true);
+        let result = scan_chunk(data, 0, data.len(), 0, TraceFormat::Unidbg, false, false, true, None);
 
         // Should have CallTreeEvent::SetRootAddr, LineAddr, and Call
         let has_root = result.call_tree_events.iter().any(|e| matches!(e, CallTreeEvent::SetRootAddr { .. }));
@@ -877,7 +883,7 @@ mod tests {
         let trace = lines.join("\n");
         let data = trace.as_bytes();
 
-        let result = scan_chunk(data, 0, data.len(), 0, TraceFormat::Unidbg, false, false, true);
+        let result = scan_chunk(data, 0, data.len(), 0, TraceFormat::Unidbg, false, false, true, None);
 
         // b.eq sets first_local_cond_branch
         assert_eq!(result.first_local_cond_branch, Some(1));
@@ -893,7 +899,7 @@ mod tests {
     #[test]
     fn test_scan_chunk_empty_trace() {
         let data = b"";
-        let result = scan_chunk(data, 0, 0, 0, TraceFormat::Unidbg, false, false, true);
+        let result = scan_chunk(data, 0, 0, 0, TraceFormat::Unidbg, false, false, true, None);
         assert_eq!(result.start_line, 0);
         assert_eq!(result.end_line, 0);
         assert!(result.deps.is_empty());
