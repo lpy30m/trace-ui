@@ -14,7 +14,7 @@ use crate::taint::types::*;
 ///
 /// Uses `u32::MAX` as sentinel for "no definition seen". Provides the same
 /// `.get()` / `.insert()` API as HashMap for drop-in replacement.
-/// 66 entries × 4 bytes = 264 bytes — fits in a few cache lines.
+/// 98 entries × 4 bytes = 392 bytes — fits in a few cache lines.
 #[derive(Clone, serde::Serialize, serde::Deserialize)]
 pub struct RegLastDef(#[serde(with = "big_array")] [u32; RegId::COUNT]);
 
