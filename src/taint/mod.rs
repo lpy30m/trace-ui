@@ -425,14 +425,20 @@ pub fn scan_unified(
 
         // Step 4: Update regLastDef
         if class == InsnClass::LoadPair {
-            // LoadPair: tag half1 (no tag), half2 (PAIR_HALF2_BIT), writeback base (PAIR_SHARED_BIT)
-            if defs.len() >= 2 {
-                state.reg_last_def.insert(defs[0], i);
-                state.reg_last_def.insert(defs[1], i | PAIR_HALF2_BIT);
+            // After SIMD expansion, defs may be [rt1_lo, rt1_hi, rt2_lo, rt2_hi, base?]
+            // or [rt1, rt2, base?] for scalar. Split data defs at midpoint.
+            let has_base_wb = line.writeback && line.base_reg.is_some();
+            let data_defs = if has_base_wb { &defs[..defs.len() - 1] } else { &defs[..] };
+            let mid = data_defs.len() / 2;
+
+            for r in &data_defs[..mid] {
+                state.reg_last_def.insert(*r, i); // half1: no tag
             }
-            // writeback base is the 3rd DEF (if present)
-            if defs.len() >= 3 {
-                state.reg_last_def.insert(defs[2], i | PAIR_SHARED_BIT);
+            for r in &data_defs[mid..] {
+                state.reg_last_def.insert(*r, i | PAIR_HALF2_BIT); // half2
+            }
+            if has_base_wb {
+                state.reg_last_def.insert(*defs.last().unwrap(), i | PAIR_SHARED_BIT);
             }
         } else if class == InsnClass::StorePair {
             // StorePair: writeback base is the only DEF (if present)
