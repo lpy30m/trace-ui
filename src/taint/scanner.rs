@@ -59,6 +59,18 @@ impl RegLastDef {
     pub fn insert(&mut self, reg: RegId, line: u32) {
         self.0[reg.0 as usize] = line;
     }
+
+    /// Get raw inner array (for merge phase).
+    #[allow(dead_code)]
+    pub(crate) fn inner(&self) -> &[u32; RegId::COUNT] {
+        &self.0
+    }
+
+    /// Get mutable raw inner array (for merge phase).
+    #[allow(dead_code)]
+    pub(crate) fn inner_mut(&mut self) -> &mut [u32; RegId::COUNT] {
+        &mut self.0
+    }
 }
 
 /// State accumulated during Pass 1 forward scan.
@@ -157,8 +169,8 @@ impl MemLastDef {
 /// - `offsets` 长度 = 行数 + 1（末尾哨兵）
 #[derive(Clone, serde::Serialize, serde::Deserialize)]
 pub struct CompactDeps {
-    offsets: Vec<u32>,
-    data: Vec<u32>,
+    pub(crate) offsets: Vec<u32>,
+    pub(crate) data: Vec<u32>,
 }
 
 impl CompactDeps {
@@ -238,6 +250,24 @@ impl CompactDeps {
     #[allow(dead_code)]
     pub fn row_contains(&self, i: usize, val: &u32) -> bool {
         self.row(i).contains(val)
+    }
+
+    /// Create from raw parts (for merge phase).
+    #[allow(dead_code)]
+    pub(crate) fn from_raw(offsets: Vec<u32>, data: Vec<u32>) -> Self {
+        Self { offsets, data }
+    }
+
+    /// Number of dependency edges for row i.
+    #[allow(dead_code)]
+    pub(crate) fn row_len(&self, i: usize) -> usize {
+        let start = self.offsets[i] as usize;
+        let end = if i + 1 < self.offsets.len() {
+            self.offsets[i + 1] as usize
+        } else {
+            self.data.len()
+        };
+        end - start
     }
 }
 
