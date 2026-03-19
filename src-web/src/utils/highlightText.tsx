@@ -38,6 +38,7 @@ export function highlightText(
   query: string,
   caseSensitive: boolean = false,
   fuzzy: boolean = false,
+  useRegex: boolean = false,
 ): React.ReactNode {
   if (!text || !query) return text;
 
@@ -45,9 +46,12 @@ export function highlightText(
   let regex: RegExp;
   try {
     if (query.startsWith("/") && query.endsWith("/") && query.length > 2) {
-      // /regex/ 模式
+      // /regex/ 包裹模式
       const pattern = query.slice(1, -1);
       regex = new RegExp(pattern, caseSensitive ? "g" : "gi");
+    } else if (useRegex) {
+      // 正则 toggle 开启：query 直接作为正则
+      regex = new RegExp(query, caseSensitive ? "g" : "gi");
     } else if (fuzzy && query.includes(" ")) {
       // 模糊匹配：空格分隔多关键词，每个独立高亮
       const tokens = query.split(/\s+/).filter(Boolean);

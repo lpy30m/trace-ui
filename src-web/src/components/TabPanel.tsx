@@ -253,6 +253,7 @@ export default function TabPanel({
               searchQuery={searchQuery}
               caseSensitive={searchOptions.caseSensitive}
               fuzzy={searchOptions.fuzzyMatch}
+              useRegex={searchOptions.useRegex}
             />
             {searchStatus && (
               <div style={{

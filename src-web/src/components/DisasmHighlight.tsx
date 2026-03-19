@@ -18,9 +18,10 @@ interface Props {
   highlightQuery?: string;
   caseSensitive?: boolean;
   fuzzy?: boolean;
+  useRegex?: boolean;
 }
 
-function DisasmHighlight({ text, onRegClick, activeReg, highlightQuery, caseSensitive, fuzzy }: Props) {
+function DisasmHighlight({ text, onRegClick, activeReg, highlightQuery, caseSensitive, fuzzy, useRegex }: Props) {
   if (!text) return null;
 
   const parts: { text: string; color?: string; isReg: boolean }[] = [];
@@ -63,13 +64,13 @@ function DisasmHighlight({ text, onRegClick, activeReg, highlightQuery, caseSens
                 if (!isActive) (e.currentTarget as HTMLElement).style.textDecoration = "none";
               }}
             >
-              {highlightQuery ? highlightText(p.text, highlightQuery, caseSensitive ?? false, fuzzy ?? false) : p.text}
+              {highlightQuery ? highlightText(p.text, highlightQuery, caseSensitive ?? false, fuzzy ?? false, useRegex ?? false) : p.text}
             </span>
           );
         }
         return p.color
-          ? <span key={i} style={{ color: p.color }}>{highlightQuery ? highlightText(p.text, highlightQuery, caseSensitive ?? false, fuzzy ?? false) : p.text}</span>
-          : <span key={i}>{highlightQuery ? highlightText(p.text, highlightQuery, caseSensitive ?? false, fuzzy ?? false) : p.text}</span>;
+          ? <span key={i} style={{ color: p.color }}>{highlightQuery ? highlightText(p.text, highlightQuery, caseSensitive ?? false, fuzzy ?? false, useRegex ?? false) : p.text}</span>
+          : <span key={i}>{highlightQuery ? highlightText(p.text, highlightQuery, caseSensitive ?? false, fuzzy ?? false, useRegex ?? false) : p.text}</span>;
       })}
     </>
   );

@@ -250,11 +250,13 @@ function FloatingSearchContent({
   const currentOptionsRef = useRef<SearchOptions>({ caseSensitive: false, wholeWord: false, useRegex: false, fuzzyMatch: false });
   const [caseSensitiveState, setCaseSensitiveState] = useState(false);
   const [fuzzyState, setFuzzyState] = useState(false);
+  const [useRegexState, setUseRegexState] = useState(false);
 
   const handleOptionsChange = useCallback((opts: SearchOptions) => {
     currentOptionsRef.current = opts;
     setCaseSensitiveState(opts.caseSensitive);
     setFuzzyState(opts.fuzzyMatch);
+    setUseRegexState(opts.useRegex);
   }, []);
 
   useEffect(() => {
@@ -335,6 +337,7 @@ function FloatingSearchContent({
             searchQuery={searchQuery}
             caseSensitive={caseSensitiveState}
             fuzzy={fuzzyState}
+            useRegex={useRegexState}
           />
         </div>
       )}
