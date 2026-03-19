@@ -1,6 +1,6 @@
 # Trace UI
 
-[![License: GPL-3.0](https://img.shields.io/badge/License-GPL--3.0-blue.svg)](LICENSE)
+[![License: Personal Use](https://img.shields.io/badge/License-Personal%20Use-red.svg)](LICENSE)
 [![Platform](https://img.shields.io/badge/Platform-Windows%20|%20macOS%20|%20Linux-green.svg)]()
 [![Built with Tauri](https://img.shields.io/badge/Built%20with-Tauri%202-orange.svg)](https://tauri.app)
 
@@ -404,4 +404,6 @@ xattr -cr "/Applications/Trace UI.app"
 
 ## 许可证
 
-[GPL-3.0](LICENSE)
+[Personal Use License](LICENSE)
+
+> **协议变更说明**：本项目自 v0.5.4 版本起（2026-03-20）从 GPL-3.0 变更为 Personal Use License。v0.5.4 之前的版本仍适用 GPL-3.0 协议。新协议仅允许个人学习和研究使用，商业使用需获得作者书面授权，详见 [LICENSE](LICENSE)。
