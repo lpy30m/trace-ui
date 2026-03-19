@@ -87,7 +87,7 @@ interface SearchBarProps {
 ### 数据同步
 
 - 搜索结果：复用现有 `sync:search-results-back` 事件
-- 搜索选项：新增 `sync:search-options` 事件双向同步 toggle 状态（caseSensitive、wholeWord、useRegex）
+- 搜索选项：新增 `sync:search-options` 事件同步 toggle 状态（caseSensitive、wholeWord、useRegex），仅浮窗→主窗口方向（ESC 还原时）；浮窗打开时继承主窗口当前 toggle 状态（通过 init-data 传入）
 
 ## 4. 后端搜索能力适配
 
@@ -110,7 +110,7 @@ fn search(query: String, max_results: Option<usize>,
 | Toggle | 实现方式 |
 |--------|---------|
 | caseSensitive | 后端新增参数控制，true 时使用精确大小写匹配 |
-| wholeWord | 前端在查询文本前后加 `\b`，配合 useRegex 或自动转为 regex |
+| wholeWord | 前端先对 query 做 regex escape，再前后加 `\b`，自动转为 regex 模式 |
 | useRegex | 后端新增参数，true 时将 query 作为正则表达式（不再依赖 `/` 包裹语法，但兼容保留） |
 
 ### 兼容性
@@ -126,6 +126,7 @@ fn search(query: String, max_results: Option<usize>,
 - ↑ 按钮 / Shift+Enter：`selectedIndex = (selectedIndex - 1 + results.length) % results.length`
 - 循环到头/尾时自动绕回
 - SearchResultList 自动滚动到选中项可见位置
+- 搜索结果更新时（重新搜索或 toggle 变化），`selectedIndex` 重置为 0
 
 ### matchInfo 显示
 
