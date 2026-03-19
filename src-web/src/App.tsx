@@ -526,9 +526,11 @@ function App() {
 
   const callInfoExpandNonceRef = useRef(0);
   const handleJumpToSearchMatch = useCallback((match: SearchMatch) => {
+    callInfoExpandNonceRef.current += 1;
     if (match.call_info) {
-      callInfoExpandNonceRef.current += 1;
       setCallInfoExpandRequest({ seq: match.seq, nonce: callInfoExpandNonceRef.current });
+    } else {
+      setCallInfoExpandRequest({ seq: -1, nonce: callInfoExpandNonceRef.current });
     }
     foldState.ensureSeqVisible(match.seq);
     navigationStore.navigate(match.seq);

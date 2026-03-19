@@ -47,6 +47,8 @@ export function getTraceTableColors() {
     commentInline: t.commentInline,
     callInfoNormal: t.callInfoNormal,
     callInfoJni: t.callInfoJni,
+    taintSourceMark: t.taintSourceMark,
+    taintMark: t.taintMark,
   };
 }
 
@@ -59,6 +61,8 @@ export function getMinimapColors() {
     viewportHover: t.minimapViewportHover,
     viewportDrag: t.minimapViewportDrag,
     viewportBorder: t.minimapViewportBorder,
+    summaryBg: t.minimapSummaryBg,
+    hiddenBg: t.minimapHiddenBg,
   };
 }
 

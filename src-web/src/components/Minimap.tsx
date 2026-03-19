@@ -145,13 +145,13 @@ export default function Minimap({
         const y = i * MINIMAP_ROW_HEIGHT;
 
         if (resolved.type === "summary") {
-          ctx.fillStyle = "rgba(198, 120, 221, 0.15)";
+          ctx.fillStyle = MM_COLORS.summaryBg;
           ctx.fillRect(MINIMAP_COL_START, y, MINIMAP_WIDTH - MINIMAP_COL_START - 4, MINIMAP_ROW_HEIGHT);
           continue;
         }
 
         if (resolved.type === "hidden-summary") {
-          ctx.fillStyle = "rgba(136, 136, 136, 0.10)";
+          ctx.fillStyle = MM_COLORS.hiddenBg;
           ctx.fillRect(MINIMAP_COL_START, y, MINIMAP_WIDTH - MINIMAP_COL_START - 4, MINIMAP_ROW_HEIGHT);
           continue;
         }

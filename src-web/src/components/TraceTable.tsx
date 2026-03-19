@@ -664,6 +664,12 @@ export default function TraceTable({
     if (!autoExpandCallInfoRequest) return;
     if (lastAutoExpandCallInfoNonceRef.current === autoExpandCallInfoRequest.nonce) return;
     lastAutoExpandCallInfoNonceRef.current = autoExpandCallInfoRequest.nonce;
+    if (autoExpandCallInfoRequest.seq < 0) {
+      // 无 call_info 的行被点击，关闭已有弹框
+      pendingAutoExpandCallInfoRef.current = null;
+      setCallInfoTooltip(null);
+      return;
+    }
     pendingAutoExpandCallInfoRef.current = autoExpandCallInfoRequest;
   }, [autoExpandCallInfoRequest]);
 
@@ -1817,7 +1823,7 @@ export default function TraceTable({
       if (sliceActive && resolved.type === "line") {
         if (isTainted || isSourceLine) {
           // 左侧竖条：污点源行始终橙色，普通污点行绿色
-          ctx.fillStyle = isSourceLine ? "#fab387" : "#a6e3a1";
+          ctx.fillStyle = isSourceLine ? COLORS.taintSourceMark : COLORS.taintMark;
           ctx.fillRect(0, y, 3, ROW_HEIGHT);
         } else {
           // 未标记行变灰

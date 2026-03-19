@@ -59,6 +59,10 @@ function applyToDOM(id: ThemeId, colors: ThemeColors) {
   style.setProperty("--bg-hover", colors.bgHover);
   style.setProperty("--border-color", colors.borderColor);
 
+  style.setProperty("--text-error", colors.textError);
+  style.setProperty("--call-info-normal", colors.callInfoNormal);
+  style.setProperty("--call-info-jni", colors.callInfoJni);
+
   style.setProperty("--scrollbar-thumb", colors.scrollbarThumb);
   style.setProperty("--scrollbar-thumb-hover", colors.scrollbarThumbHover);
 }

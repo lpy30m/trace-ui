@@ -381,7 +381,7 @@ export default function TitleBar({ onOpenFile, onCloseFile, onRebuildIndex, onSe
         {/* 中间：导航按钮 + 搜索框 */}
         {/* Taint 按钮/菜单 */}
         {sliceActive ? (
-          <MenuDropdown label="Taint" minWidth={200} labelStyle={{ background: "#ff9800", color: "#fff" }}>
+          <MenuDropdown label="Taint" minWidth={200} labelStyle={{ background: "var(--btn-taint)", color: "#fff" }}>
             <MenuItem
               label="Tainted Only"
               checked={sliceFilterMode === "filter-only"}
@@ -403,7 +403,7 @@ export default function TitleBar({ onOpenFile, onCloseFile, onRebuildIndex, onSe
             onClick={onTaintReconfigure}
             style={{
               padding: "4px 10px",
-              background: "#4caf50",
+              background: "var(--btn-primary)",
               color: "#fff",
               border: "none",
               borderRadius: 4,

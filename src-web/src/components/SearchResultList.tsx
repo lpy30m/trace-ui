@@ -278,7 +278,7 @@ export default function SearchResultList({
                           style={{
                             marginLeft: 8,
                             fontStyle: "italic",
-                            color: match.call_info.is_jni ? "#d16d9e" : "#e06c75",
+                            color: match.call_info.is_jni ? "var(--call-info-jni)" : "var(--call-info-normal)",
                           }}
                           title={match.call_info.tooltip}
                         >

@@ -61,8 +61,8 @@ export default function ToastContainer({ toasts }: { toasts: ToastItem[] }) {
           <div key={t.id} style={{
             display: "flex",
             alignItems: "center",
-            background: "#2b2d30",
-            color: "#fff",
+            background: "var(--bg-dialog)",
+            color: "var(--text-primary)",
             padding: "8px 16px 8px 0",
             borderRadius: 6,
             fontSize: 13,

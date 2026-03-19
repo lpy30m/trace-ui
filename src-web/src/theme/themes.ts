@@ -63,9 +63,14 @@ export interface ThemeColors {
   commentInline: string;
   callInfoNormal: string;
   callInfoJni: string;
+  taintSourceMark: string;
+  taintMark: string;
+  textError: string;
 
   // Minimap
   minimapSelected: string;
+  minimapSummaryBg: string;
+  minimapHiddenBg: string;
   minimapViewportBg: string;
   minimapViewportHover: string;
   minimapViewportDrag: string;
@@ -88,6 +93,11 @@ const DARK_CANVAS_DEFAULTS = {
   minimapViewportHover: "rgba(255,255,255,0.15)",
   minimapViewportDrag: "rgba(255,255,255,0.20)",
   minimapViewportBorder: "rgba(255,255,255,0.2)",
+  minimapSummaryBg: "rgba(198, 120, 221, 0.15)",
+  minimapHiddenBg: "rgba(136, 136, 136, 0.10)",
+  taintSourceMark: "#fab387",
+  taintMark: "#a6e3a1",
+  textError: "#e06c75",
 };
 
 const LIGHT_CANVAS_DEFAULTS = {
@@ -98,6 +108,11 @@ const LIGHT_CANVAS_DEFAULTS = {
   minimapViewportHover: "rgba(0,0,0,0.12)",
   minimapViewportDrag: "rgba(0,0,0,0.18)",
   minimapViewportBorder: "rgba(0,0,0,0.2)",
+  minimapSummaryBg: "rgba(136, 56, 188, 0.12)",
+  minimapHiddenBg: "rgba(100, 100, 100, 0.10)",
+  taintSourceMark: "#d75f00",
+  taintMark: "#2e8b57",
+  textError: "#e45649",
 };
 
 /* ═══════════════════════════════════════════════════════════

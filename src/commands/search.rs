@@ -141,11 +141,31 @@ fn search_chunk(
                     crate::taint::types::TraceFormat::Gumtrace => crate::commands::browse::parse_trace_line_gumtrace(seq, line),
                 };
                 if let Some(parsed) = parsed {
-                    let call_info = call_annotations.get(&seq).map(|ann| CallInfoDto {
-                        func_name: ann.func_name.clone(),
-                        is_jni: ann.is_jni,
-                        summary: ann.summary(),
-                        tooltip: ann.tooltip(),
+                    let mut hidden_content = None;
+                    let call_info = call_annotations.get(&seq).map(|ann| {
+                        let summary = ann.summary();
+                        let tooltip = ann.tooltip();
+                        let rendered_text = rendered_search_text(
+                            &parsed.address,
+                            &parsed.disasm,
+                            &parsed.changes,
+                            parsed.mem_rw.as_deref(),
+                            Some(summary.as_str()),
+                        );
+                        let annotation_match = call_search_texts.get(&seq)
+                            .map_or(false, |text| matches_mode_str(mode, text));
+                        if annotation_match
+                            && !matches_mode_str(mode, &rendered_text)
+                            && !tooltip.is_empty()
+                        {
+                            hidden_content = Some(tooltip.clone());
+                        }
+                        CallInfoDto {
+                            func_name: ann.func_name.clone(),
+                            is_jni: ann.is_jni,
+                            summary,
+                            tooltip,
+                        }
                     });
                     matches.push(SearchMatch {
                         seq: parsed.seq,
@@ -154,6 +174,7 @@ fn search_chunk(
                         changes: parsed.changes,
                         mem_rw: parsed.mem_rw,
                         call_info,
+                        hidden_content,
                     });
                 }
             }
@@ -168,8 +189,8 @@ fn search_chunk(
 
 fn matches_mode_bytes(mode: &SearchMode, text: &[u8]) -> bool {
     match mode {
-        SearchMode::Text(needle) => case_insensitive_match(text, needle),
-        SearchMode::FuzzyText(tokens) => fuzzy_match_bytes(text, tokens),
+        SearchMode::Text(needle) => ascii_contains(text, needle),
+        SearchMode::FuzzyText(tokens) => ascii_fuzzy_match(text, tokens),
         SearchMode::Regex(re) => re.is_match(text),
     }
 }

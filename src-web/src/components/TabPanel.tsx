@@ -199,7 +199,7 @@ export default function TabPanel({
             <span style={{ color: "var(--text-secondary)", fontSize: 12 }}>Analyzing...</span>
           </div>
         ) : sliceError ? (
-          <div style={{ color: "#e06c75", fontSize: 12, lineHeight: 1.6 }}>
+          <div style={{ color: "var(--text-error)", fontSize: 12, lineHeight: 1.6 }}>
             Analysis failed: {sliceError}
           </div>
         ) : sliceActive && sliceInfo ? (
