@@ -1,15 +1,35 @@
 import React from "react";
 
 const MARK_STYLE: React.CSSProperties = {
-  background: "rgba(255,210,0,0.45)",
-  color: "inherit",
-  borderRadius: 2,
+  background: "transparent",
+  color: "rgba(255,210,0,1)",
+  borderRadius: 0,
   padding: 0,
 };
 
 /**
- * 将文本中匹配 query 的子串用 <mark> 高亮包裹。
- * 支持普通文本、FuzzyText（空格分隔多关键词）和 /regex/ 模式。
+ * 将匹配片段中的非空格字符用 <mark> 高亮，空格保持原样。
+ */
+function highlightNonSpaces(matched: string, keyStart: number): React.ReactNode[] {
+  const result: React.ReactNode[] = [];
+  let k = keyStart;
+  // 按空格/非空格交替拆分
+  const segments = matched.split(/( +)/);
+  for (const seg of segments) {
+    if (!seg) continue;
+    if (/^ +$/.test(seg)) {
+      result.push(seg);
+    } else {
+      result.push(<mark key={k++} style={MARK_STYLE}>{seg}</mark>);
+    }
+  }
+  return result;
+}
+
+/**
+ * 将文本中匹配 query 的子串高亮（字体颜色变黄）。
+ * 含空格的 query 作为整体匹配，但空格本身不高亮。
+ * 支持普通文本和 /regex/ 模式。
  * 无匹配时返回原始字符串。
  */
 export function highlightText(
@@ -26,14 +46,8 @@ export function highlightText(
       // /regex/ 模式
       const pattern = query.slice(1, -1);
       regex = new RegExp(pattern, caseSensitive ? "g" : "gi");
-    } else if (!caseSensitive && query.includes(" ")) {
-      // FuzzyText：空格分隔多关键词，每个独立高亮
-      const tokens = query.split(/\s+/).filter(Boolean);
-      if (tokens.length === 0) return text;
-      const escaped = tokens.map(t => t.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"));
-      regex = new RegExp(`(${escaped.join("|")})`, "gi");
     } else {
-      // 普通文本匹配
+      // 普通文本匹配（含空格时作为整体匹配）
       const escaped = query.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
       regex = new RegExp(escaped, caseSensitive ? "g" : "gi");
     }
@@ -56,9 +70,10 @@ export function highlightText(
     if (match.index > lastIndex) {
       parts.push(text.slice(lastIndex, match.index));
     }
-    parts.push(
-      <mark key={key++} style={MARK_STYLE}>{match[0]}</mark>
-    );
+    // 高亮匹配部分，但跳过空格
+    const highlighted = highlightNonSpaces(match[0], key);
+    key += highlighted.filter(n => typeof n !== "string").length;
+    parts.push(...highlighted);
     lastIndex = regex.lastIndex;
   }
 
