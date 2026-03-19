@@ -247,9 +247,11 @@ function FloatingSearchContent({
   const [selectedIdx, setSelectedIdx] = useState(0);
   const inputRef = useRef<HTMLInputElement>(null);
   const currentOptionsRef = useRef<SearchOptions>({ caseSensitive: false, wholeWord: false, useRegex: false });
+  const [caseSensitiveState, setCaseSensitiveState] = useState(false);
 
   const handleOptionsChange = useCallback((opts: SearchOptions) => {
     currentOptionsRef.current = opts;
+    setCaseSensitiveState(opts.caseSensitive);
   }, []);
 
   useEffect(() => {
@@ -327,6 +329,8 @@ function FloatingSearchContent({
             selectedSeq={searchResults[selectedIdx]?.seq ?? null}
             onJumpToSeq={onJumpToSeq}
             onJumpToMatch={onJumpToMatch}
+            searchQuery={searchQuery}
+            caseSensitive={caseSensitiveState}
           />
         </div>
       )}

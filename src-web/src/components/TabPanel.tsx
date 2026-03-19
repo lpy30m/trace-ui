@@ -250,6 +250,8 @@ export default function TabPanel({
               selectedSeq={searchResults[selectedSearchIdx]?.seq ?? null}
               onJumpToSeq={onJumpToSeq}
               onJumpToMatch={onJumpToSearchMatch}
+              searchQuery={searchQuery}
+              caseSensitive={searchOptions.caseSensitive}
             />
             {searchStatus && (
               <div style={{
