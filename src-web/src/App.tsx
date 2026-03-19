@@ -29,6 +29,7 @@ import { usePreferences, saveSessionSnapshot, loadSessionSnapshot } from "./hook
 import { useHighlights } from "./hooks/useHighlights";
 import type { SessionSnapshot } from "./hooks/usePreferences";
 import type { CallTreeNodeDto, SearchMatch } from "./types/trace";
+import type { SearchOptions } from "./components/SearchBar";
 
 const PANEL_SIZES: Record<string, { width: number; height: number }> = {
   memory: { width: 1100, height: 390 },
@@ -537,11 +538,18 @@ function App() {
   }, [foldState.ensureSeqVisible]);
 
   // 搜索路由：Search 已浮动时转发，否则本地搜索
-  const handleSearch = useCallback(async (query: string) => {
+  const handleSearch = useCallback(async (query: string, options?: SearchOptions) => {
     if (floatedPanels.has("search")) {
-      emit("action:trigger-search", { query });
+      emit("action:trigger-search", { query, options });
     } else {
-      const count = await searchTrace(query);
+      let finalQuery = query;
+      let finalUseRegex = options?.useRegex ?? false;
+      if (options?.wholeWord && query.trim()) {
+        const escaped = finalUseRegex ? query : query.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+        finalQuery = `\\b${escaped}\\b`;
+        finalUseRegex = true;
+      }
+      const count = await searchTrace(finalQuery, options?.caseSensitive ?? false, finalUseRegex);
       if (query.trim() && count === 0) {
         showToast(`No results found for "${query}"`, { type: "info" });
       }
@@ -823,21 +831,9 @@ function App() {
           }
           setTimeout(() => emitTo("panel-search", "search:focus-input"), 100);
         } else {
-          // 搜索浮窗未打开，按主窗口 60% 比例居中弹出
-          const mainWin = getCurrentWindow();
-          Promise.all([mainWin.outerPosition(), mainWin.outerSize(), mainWin.scaleFactor()]).then(([pos, size, scale]) => {
-            // 物理像素 → 逻辑像素
-            const lx = pos.x / scale;
-            const ly = pos.y / scale;
-            const lw = size.width / scale;
-            const lh = size.height / scale;
-            // 浮窗尺寸：宽 30%、高 26%
-            const pw = Math.max(380, Math.round(lw * 0.30));
-            const ph = Math.max(220, Math.round(lh * 0.26));
-            const x = Math.round(lx + (lw - pw) / 2);
-            const y = Math.round(ly + (lh - ph) / 2);
-            handleFloat("search", { x, y }, { width: pw, height: ph });
-          });
+          // 搜索浮窗未打开 → 切换到 Search tab 并聚焦搜索框
+          emit("action:activate-search-tab");
+          setTimeout(() => emit("search:focus-input"), 100);
         }
       } else if (e.key === "g" && !e.ctrlKey && !e.altKey && !e.shiftKey && !e.metaKey) {
         // G 键：跳转覆盖层（排除输入框焦点）
@@ -1124,6 +1120,7 @@ function App() {
                 sliceDuration={slice.sliceDuration}
                 sliceError={slice.sliceError}
                 stringsScanning={stringsScanningSessionId === activeSessionId}
+                onSearch={handleSearch}
               />
             </Panel>
           </Group>

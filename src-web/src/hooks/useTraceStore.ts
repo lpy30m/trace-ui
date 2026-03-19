@@ -297,7 +297,11 @@ export function useTraceStore(skipStrings: boolean = false) {
     });
   }, [updateSession]);
 
-  const searchTrace = useCallback(async (query: string): Promise<number> => {
+  const searchTrace = useCallback(async (
+    query: string,
+    caseSensitive: boolean = false,
+    useRegex: boolean = false,
+  ): Promise<number> => {
     const sid = activeSessionIdRef.current;
     if (!sid || !query.trim()) {
       setSearchResults([]);
@@ -311,7 +315,7 @@ export function useTraceStore(skipStrings: boolean = false) {
     try {
       const result = await invoke<SearchResult>("search_trace", {
         sessionId: sid,
-        request: { query, max_results: 10000 },
+        request: { query, max_results: 10000, case_sensitive: caseSensitive, use_regex: useRegex },
       });
       setSearchResults(result.matches);
       setSearchTotalMatches(result.total_matches);
