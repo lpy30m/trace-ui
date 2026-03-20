@@ -996,9 +996,9 @@ function App() {
         }}
         onScanStrings={scanStrings}
         hasStringIndex={hasStringIndexMap.get(activeSessionId ?? "") ?? false}
-        stringsScanning={stringsScanningSessionId === activeSessionId}
+        stringsScanning={stringsScanningSessionId != null && stringsScanningSessionId === activeSessionId}
         onScanCrypto={scanCrypto}
-        cryptoScanning={cryptoScanningSessionId === activeSessionId}
+        cryptoScanning={cryptoScanningSessionId != null && cryptoScanningSessionId === activeSessionId}
         isPhase2Ready={isPhase2Ready}
         onClearCache={() => {
           clearRecent();
@@ -1150,9 +1150,9 @@ function App() {
                 isSlicing={slice.isSlicing}
                 sliceDuration={slice.sliceDuration}
                 sliceError={slice.sliceError}
-                stringsScanning={stringsScanningSessionId === activeSessionId}
+                stringsScanning={stringsScanningSessionId != null && stringsScanningSessionId === activeSessionId}
                 cryptoResults={cryptoResults}
-                cryptoScanning={cryptoScanningSessionId === activeSessionId}
+                cryptoScanning={cryptoScanningSessionId != null && cryptoScanningSessionId === activeSessionId}
                 onSearch={handleSearch}
                 showSoName={preferences.showSoName}
                 showAbsAddress={preferences.showAbsAddress}

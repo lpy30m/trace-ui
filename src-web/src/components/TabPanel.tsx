@@ -112,11 +112,15 @@ export default function TabPanel({
     }
   }, [isSlicing, sliceActive, floatedPanels]);
 
-  // Crypto 扫描完成后自动切换
+  // Crypto 扫描开始和完成时自动切换到 Crypto tab
   const prevCryptoScanningRef = useRef(false);
   useEffect(() => {
-    if (prevCryptoScanningRef.current && !cryptoScanning && cryptoResults && !floatedPanels.has("crypto")) {
-      setActive("Crypto");
+    if (!floatedPanels.has("crypto")) {
+      const scanStarted = !prevCryptoScanningRef.current && cryptoScanning;
+      const scanFinished = prevCryptoScanningRef.current && !cryptoScanning && cryptoResults;
+      if (scanStarted || scanFinished) {
+        setActive("Crypto");
+      }
     }
     prevCryptoScanningRef.current = cryptoScanning;
   }, [cryptoScanning, cryptoResults, floatedPanels]);

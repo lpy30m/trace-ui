@@ -97,7 +97,7 @@ const DARK_CANVAS_DEFAULTS = {
   minimapViewportBorder: "rgba(255,255,255,0.2)",
   minimapSummaryBg: "rgba(198, 120, 221, 0.15)",
   minimapHiddenBg: "rgba(136, 136, 136, 0.10)",
-  taintSourceMark: "#fab387",
+  taintSourceMark: "#e8811a",
   taintMark: "#a6e3a1",
   textError: "#e06c75",
 };
@@ -143,7 +143,7 @@ const dark: ThemeColors = {
   textHexHighlight: "#e5c07b",
 
   btnPrimary: "#528bff",
-  btnTaint: "#d19a66",
+  btnTaint: "#e8811a",
 
   regChanged: "#e06c75",
   regRead: "#61afef",

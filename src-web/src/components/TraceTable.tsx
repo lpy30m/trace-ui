@@ -414,7 +414,11 @@ export default function TraceTable({
     ? taintedSeqs!.length
     : wrappedVirtualTotalRows;
 
-  const finalResolveVirtualIndex = useCallback(
+  // === Seq 排序 ===
+  const [sortOrder, setSortOrder] = useState<"asc" | "desc">("asc");
+  const toggleSortOrder = useCallback(() => setSortOrder(prev => prev === "asc" ? "desc" : "asc"), []);
+
+  const unsortedResolveVirtualIndex = useCallback(
     (idx: number): ResolvedRow => {
       if (taintFilterActive) {
         const seq = taintedSeqs![idx];
@@ -425,7 +429,7 @@ export default function TraceTable({
     [taintFilterActive, taintedSeqs, wrappedResolveVirtualIndex],
   );
 
-  const finalSeqToVirtualIndex = useCallback(
+  const unsortedSeqToVirtualIndex = useCallback(
     (seq: number): number => {
       if (taintFilterActive) {
         let lo = 0, hi = taintedSeqs!.length - 1;
@@ -440,6 +444,27 @@ export default function TraceTable({
       return wrappedSeqToVirtualIndex(seq);
     },
     [taintFilterActive, taintedSeqs, wrappedSeqToVirtualIndex],
+  );
+
+  const finalResolveVirtualIndex = useCallback(
+    (idx: number): ResolvedRow => {
+      if (sortOrder === "desc") {
+        return unsortedResolveVirtualIndex(finalVirtualTotalRows - 1 - idx);
+      }
+      return unsortedResolveVirtualIndex(idx);
+    },
+    [sortOrder, unsortedResolveVirtualIndex, finalVirtualTotalRows],
+  );
+
+  const finalSeqToVirtualIndex = useCallback(
+    (seq: number): number => {
+      const vi = unsortedSeqToVirtualIndex(seq);
+      if (sortOrder === "desc") {
+        return finalVirtualTotalRows - 1 - vi;
+      }
+      return vi;
+    },
+    [sortOrder, unsortedSeqToVirtualIndex, finalVirtualTotalRows],
   );
 
   // === Canvas 核心状态 ===
@@ -2550,7 +2575,7 @@ export default function TraceTable({
           background: "var(--bg-primary)",
         }}
       >
-        <TableHeader disasmWidth={effectiveDisasmWidth} regBeforeWidth={effectiveBeforeWidth} seqWidth={seqCol.width} addrWidth={addrCol.width} onDisasmResizeMouseDown={disasmCol.onMouseDown} onRegBeforeResizeMouseDown={regBeforeCol.onMouseDown} onSeqResizeMouseDown={seqCol.onMouseDown} onAddrResizeMouseDown={addrCol.onMouseDown} showSoName={preferences.showSoName} showAbsAddress={preferences.showAbsAddress} addrColorHighlight={preferences.addrColorHighlight} onToggleSoName={handleToggleSoName} onToggleAbsAddress={handleToggleAbsAddress} onToggleAddrColor={handleToggleAddrColor} />
+        <TableHeader disasmWidth={effectiveDisasmWidth} regBeforeWidth={effectiveBeforeWidth} seqWidth={seqCol.width} addrWidth={addrCol.width} onDisasmResizeMouseDown={disasmCol.onMouseDown} onRegBeforeResizeMouseDown={regBeforeCol.onMouseDown} onSeqResizeMouseDown={seqCol.onMouseDown} onAddrResizeMouseDown={addrCol.onMouseDown} showSoName={preferences.showSoName} showAbsAddress={preferences.showAbsAddress} addrColorHighlight={preferences.addrColorHighlight} onToggleSoName={handleToggleSoName} onToggleAbsAddress={handleToggleAbsAddress} onToggleAddrColor={handleToggleAddrColor} sortOrder={sortOrder} onToggleSortOrder={toggleSortOrder} />
         <div
           style={{
             flex: 1,
@@ -2569,7 +2594,7 @@ export default function TraceTable({
 
   return (
     <div style={{ height: "100%", display: "flex", flexDirection: "column", background: "var(--bg-primary)" }}>
-      <TableHeader disasmWidth={effectiveDisasmWidth} regBeforeWidth={effectiveBeforeWidth} seqWidth={seqCol.width} addrWidth={addrCol.width} onDisasmResizeMouseDown={disasmCol.onMouseDown} onRegBeforeResizeMouseDown={regBeforeCol.onMouseDown} onSeqResizeMouseDown={seqCol.onMouseDown} onAddrResizeMouseDown={addrCol.onMouseDown} showSoName={preferences.showSoName} showAbsAddress={preferences.showAbsAddress} addrColorHighlight={preferences.addrColorHighlight} onToggleSoName={handleToggleSoName} onToggleAbsAddress={handleToggleAbsAddress} onToggleAddrColor={handleToggleAddrColor} />
+      <TableHeader disasmWidth={effectiveDisasmWidth} regBeforeWidth={effectiveBeforeWidth} seqWidth={seqCol.width} addrWidth={addrCol.width} onDisasmResizeMouseDown={disasmCol.onMouseDown} onRegBeforeResizeMouseDown={regBeforeCol.onMouseDown} onSeqResizeMouseDown={seqCol.onMouseDown} onAddrResizeMouseDown={addrCol.onMouseDown} showSoName={preferences.showSoName} showAbsAddress={preferences.showAbsAddress} addrColorHighlight={preferences.addrColorHighlight} onToggleSoName={handleToggleSoName} onToggleAbsAddress={handleToggleAbsAddress} onToggleAddrColor={handleToggleAddrColor} sortOrder={sortOrder} onToggleSortOrder={toggleSortOrder} />
       <div
         ref={containerRef}
         tabIndex={0}
@@ -3034,6 +3059,8 @@ interface TableHeaderProps {
   onToggleSoName: () => void;
   onToggleAbsAddress: () => void;
   onToggleAddrColor: () => void;
+  sortOrder: "asc" | "desc";
+  onToggleSortOrder: () => void;
 }
 
 function ResizeHandle({ onMouseDown }: { onMouseDown: (e: React.MouseEvent) => void }) {
@@ -3050,7 +3077,7 @@ function ResizeHandle({ onMouseDown }: { onMouseDown: (e: React.MouseEvent) => v
   );
 }
 
-function TableHeader({ disasmWidth, regBeforeWidth, seqWidth, addrWidth, onDisasmResizeMouseDown, onRegBeforeResizeMouseDown, onSeqResizeMouseDown, onAddrResizeMouseDown, showSoName, showAbsAddress, addrColorHighlight, onToggleSoName, onToggleAbsAddress, onToggleAddrColor }: TableHeaderProps) {
+function TableHeader({ disasmWidth, regBeforeWidth, seqWidth, addrWidth, onDisasmResizeMouseDown, onRegBeforeResizeMouseDown, onSeqResizeMouseDown, onAddrResizeMouseDown, showSoName, showAbsAddress, addrColorHighlight, onToggleSoName, onToggleAbsAddress, onToggleAddrColor, sortOrder, onToggleSortOrder }: TableHeaderProps) {
   return (
     <div
       style={{
@@ -3066,37 +3093,51 @@ function TableHeader({ disasmWidth, regBeforeWidth, seqWidth, addrWidth, onDisas
       <span style={{ width: COL_FOLD - COL_ARROW, flexShrink: 0 }}></span>
       <span style={{ width: COL_MEMRW - COL_FOLD, flexShrink: 0 }}></span>
       <span style={{ width: COL_SEQ - COL_MEMRW, flexShrink: 0 }}></span>
-      <span style={{ width: seqWidth, flexShrink: 0 }}>Seq</span>
+      <span
+        onClick={onToggleSortOrder}
+        style={{ width: seqWidth, flexShrink: 0, cursor: "pointer", display: "flex", alignItems: "center", gap: 4, userSelect: "none" }}
+      >
+        Seq
+        <span style={{ fontSize: 10, lineHeight: 1 }}>
+          {sortOrder === "asc" ? "▲" : "▼"}
+        </span>
+      </span>
       <ResizeHandle onMouseDown={onSeqResizeMouseDown} />
       <span style={{ width: addrWidth, flexShrink: 0 }}>
-        <MenuDropdown
-          label="Address"
-          minWidth={160}
-          closeOnSelect={false}
-          labelStyle={{
-            padding: "0 4px",
-            fontSize: "inherit",
-            color: "inherit",
-            background: "transparent",
-          }}
-        >
-          <MenuItem
-            label="Show Module Name"
-            checked={showSoName}
-            onClick={onToggleSoName}
-          />
-          <MenuItem
-            label="Show Absolute Address"
-            checked={showAbsAddress}
-            disabled={!showSoName}
-            onClick={onToggleAbsAddress}
-          />
-          <MenuItem
-            label="Color Highlight"
-            checked={addrColorHighlight}
-            onClick={onToggleAddrColor}
-          />
-        </MenuDropdown>
+      <MenuDropdown
+        label=""
+        minWidth={160}
+        closeOnSelect={false}
+        labelStyle={{
+          padding: "0 4px",
+          fontSize: "inherit",
+          color: "inherit",
+          background: "transparent",
+        }}
+        customLabel={
+          <span style={{ display: "flex", alignItems: "center", gap: 4 }}>
+            Address
+            <span style={{ fontSize: 10, lineHeight: 1 }}>▼</span>
+          </span>
+        }
+      >
+        <MenuItem
+          label="Show Module Name"
+          checked={showSoName}
+          onClick={onToggleSoName}
+        />
+        <MenuItem
+          label="Show Absolute Address"
+          checked={showAbsAddress}
+          disabled={!showSoName}
+          onClick={onToggleAbsAddress}
+        />
+        <MenuItem
+          label="Color Highlight"
+          checked={addrColorHighlight}
+          onClick={onToggleAddrColor}
+        />
+      </MenuDropdown>
       </span>
       <ResizeHandle onMouseDown={onAddrResizeMouseDown} />
       <span style={{ width: disasmWidth, flexShrink: 0 }}>Disassembly</span>
