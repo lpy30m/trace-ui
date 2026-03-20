@@ -30,6 +30,8 @@ interface Props {
   onScanStrings: () => void;
   hasStringIndex: boolean;
   stringsScanning: boolean;
+  onScanCrypto: () => void;
+  cryptoScanning: boolean;
   isPhase2Ready: boolean;
   onSaveTaintResults: () => void;
   // Highlight & Hide
@@ -49,7 +51,7 @@ interface Props {
   regSelected?: boolean;
 }
 
-export default function TitleBar({ onOpenFile, onCloseFile, onRebuildIndex, onSearch, isLoaded, recentFiles, onRemoveRecent, onGoBack, onGoForward, preferences, onUpdatePreferences, onTaintAnalysis, onScanStrings, hasStringIndex, stringsScanning, isPhase2Ready, onSaveTaintResults, onHighlight, onStrikethrough, onResetHighlight, onHide, sliceActive, sliceFilterMode, sliceInfo, onTaintFilterModeChange, onTaintClear, onTaintGoToSource, onTaintReconfigure, onClearCache, regSelected }: Props) {
+export default function TitleBar({ onOpenFile, onCloseFile, onRebuildIndex, onSearch, isLoaded, recentFiles, onRemoveRecent, onGoBack, onGoForward, preferences, onUpdatePreferences, onTaintAnalysis, onScanStrings, hasStringIndex, stringsScanning, onScanCrypto, cryptoScanning, isPhase2Ready, onSaveTaintResults, onHighlight, onStrikethrough, onResetHighlight, onHide, sliceActive, sliceFilterMode, sliceInfo, onTaintFilterModeChange, onTaintClear, onTaintGoToSource, onTaintReconfigure, onClearCache, regSelected }: Props) {
   const hasSelectedSeq = useHasSelectedSeq();
   const canGoBack = useCanGoBack();
   const canGoForward = useCanGoForward();
@@ -88,6 +90,7 @@ export default function TitleBar({ onOpenFile, onCloseFile, onRebuildIndex, onSe
   const [showRebuildConfirm, setShowRebuildConfirm] = useState(false);
   const [showClearCacheConfirm, setShowClearCacheConfirm] = useState(false);
   const [showScanStringsConfirm, setShowScanStringsConfirm] = useState(false);
+  const [showScanCryptoConfirm, setShowScanCryptoConfirm] = useState(false);
   const [recentHover, setRecentHover] = useState(false);
   const [highlightHover, setHighlightHover] = useState(false);
   const [recentCtxMenu, setRecentCtxMenu] = useState<{ path: string; x: number; y: number } | null>(null);
@@ -339,6 +342,11 @@ export default function TitleBar({ onOpenFile, onCloseFile, onRebuildIndex, onSe
               label={hasStringIndex ? "Rescan Strings" : "Scan Strings"}
               disabled={!isLoaded || !isPhase2Ready || stringsScanning}
               onClick={() => setShowScanStringsConfirm(true)}
+          />
+          <MenuItem
+              label="Scan Crypto"
+              disabled={!isLoaded || cryptoScanning}
+              onClick={() => setShowScanCryptoConfirm(true)}
           />
           <MenuSeparator />
           <MenuItem label="Rebuild Index" disabled={!isLoaded} onClick={() => setShowRebuildConfirm(true)} />
@@ -635,6 +643,19 @@ export default function TitleBar({ onOpenFile, onCloseFile, onRebuildIndex, onSe
             minWidth={360}
             onConfirm={() => { setShowScanStringsConfirm(false); onScanStrings(); }}
             onCancel={() => setShowScanStringsConfirm(false)}
+        />
+      )}
+
+      {/* Scan Crypto 确认对话框 */}
+      {showScanCryptoConfirm && (
+        <ConfirmDialog
+            title="Scan Crypto"
+            message="Scan trace for known cryptographic algorithm constants (MD5, SHA, AES, etc.)?"
+            confirmText="Scan"
+            cancelText="Cancel"
+            minWidth={360}
+            onConfirm={() => { setShowScanCryptoConfirm(false); onScanCrypto(); }}
+            onCancel={() => setShowScanCryptoConfirm(false)}
         />
       )}
 

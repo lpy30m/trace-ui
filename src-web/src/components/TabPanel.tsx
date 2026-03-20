@@ -1,13 +1,14 @@
 import React, { useState, useCallback, useEffect, useMemo, useRef } from "react";
 import { listen } from "@tauri-apps/api/event";
 import { useDragToFloat } from "../hooks/useDragToFloat";
-import type { SearchMatch, SliceResult } from "../types/trace";
+import type { SearchMatch, SliceResult, CryptoScanResult } from "../types/trace";
 import MemoryPanel from "./MemoryPanel";
 import SearchResultList from "./SearchResultList";
 import SearchBar, { SearchOptions } from "./SearchBar";
 import StringsPanel from "./StringsPanel";
+import CryptoPanel from "./CryptoPanel";
 
-const TABS = ["Memory", "Accesses", "Taint State", "Search", "Strings"] as const;
+const TABS = ["Memory", "Accesses", "Taint State", "Search", "Strings", "Crypto"] as const;
 type TabName = typeof TABS[number];
 
 const TAB_TO_PANEL: Record<string, string> = {
@@ -16,6 +17,7 @@ const TAB_TO_PANEL: Record<string, string> = {
   "Taint State": "taint-state",
   "Search": "search",
   "Strings": "strings",
+  "Crypto": "crypto",
 };
 
 interface Props {
@@ -37,6 +39,8 @@ interface Props {
   sliceDuration: number | null;
   sliceError: string | null;
   stringsScanning?: boolean;
+  cryptoResults: CryptoScanResult | null;
+  cryptoScanning: boolean;
   onSearch: (query: string, options: SearchOptions) => void;
 }
 
@@ -47,6 +51,8 @@ export default function TabPanel({
   sliceActive, sliceInfo, sliceFromSpecs,
   isSlicing, sliceDuration, sliceError,
   stringsScanning,
+  cryptoResults,
+  cryptoScanning,
   onSearch,
 }: Props) {
   const [active, setActive] = useState<TabName>("Memory");
@@ -71,6 +77,15 @@ export default function TabPanel({
       setActive("Taint State");
     }
   }, [isSlicing, sliceActive, floatedPanels]);
+
+  // Crypto 扫描完成后自动切换
+  const prevCryptoScanningRef = useRef(false);
+  useEffect(() => {
+    if (prevCryptoScanningRef.current && !cryptoScanning && cryptoResults && !floatedPanels.has("crypto")) {
+      setActive("Crypto");
+    }
+    prevCryptoScanningRef.current = cryptoScanning;
+  }, [cryptoScanning, cryptoResults, floatedPanels]);
 
   // View in Memory：自动切换到 Memory tab（仅在 Memory 未浮动时）
   useEffect(() => {
@@ -321,6 +336,14 @@ export default function TabPanel({
           isPhase2Ready={isPhase2Ready}
           onJumpToSeq={onJumpToSeq}
           stringsScanning={stringsScanning}
+        />
+      </div>
+
+      <div style={tabStyle("Crypto")}>
+        <CryptoPanel
+          cryptoResults={cryptoResults}
+          cryptoScanning={cryptoScanning}
+          onJumpToSeq={onJumpToSeq}
         />
       </div>
 
