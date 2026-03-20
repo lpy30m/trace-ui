@@ -279,7 +279,10 @@ export function highlightHexdump(
         hexHighlights.get(lineIdx)!.push([absStart, absEnd]);
       }
     }
-  } else {
+  }
+
+  // ASCII 列匹配：非 hex 查询直接走此分支；hex 查询未命中时 fallback 到此分支
+  if (!matchInHex || hexHighlights.size === 0) {
     const escaped = query.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
     const flags = caseSensitive ? "g" : "gi";
     let regex: RegExp;

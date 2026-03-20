@@ -125,13 +125,19 @@ export interface FunctionCallsResult {
   total_calls: number;
 }
 
-export interface DependencyNode {
+export interface NodeInfo {
   seq: number;
   expression: string;
   operation: string;
-  children: DependencyNode[];
   isLeaf: boolean;
-  isRef: boolean;
   value: string | null;
   depth: number;
+}
+
+export interface DependencyGraph {
+  nodes: NodeInfo[];
+  edges: [number, number][]; // [parent_seq, child_seq]
+  rootSeq: number;
+  totalReachable: number;
+  truncated: boolean;
 }

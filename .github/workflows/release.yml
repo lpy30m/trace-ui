@@ -64,6 +64,20 @@ jobs:
         env:
           TAURI_SIGNING_PRIVATE_KEY: ""
 
+      # macOS: ad-hoc 签名后重建 DMG（ARM64 内核强制要求签名，否则 SIGKILL）
+      - name: Codesign and rebuild DMG
+        if: startsWith(matrix.label, 'macOS')
+        run: |
+          APP_DIR="target/${{ matrix.target }}/release/bundle/macos"
+          DMG_DIR="target/${{ matrix.target }}/release/bundle/dmg"
+          APP_PATH="$APP_DIR/Trace UI.app"
+
+          codesign --force --deep --sign - "$APP_PATH"
+          codesign --verify --verbose "$APP_PATH"
+
+          rm -f "$DMG_DIR"/*.dmg
+          hdiutil create -volname "Trace UI" -srcfolder "$APP_PATH" -ov -format UDZO "$DMG_DIR/Trace UI_${{ matrix.target }}.dmg"
+
       # 上传产物
       - name: Upload macOS .dmg
         if: startsWith(matrix.label, 'macOS')

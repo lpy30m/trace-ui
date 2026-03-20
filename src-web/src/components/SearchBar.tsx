@@ -217,7 +217,7 @@ export default function SearchBar({
                 }}
                 onMouseEnter={e => (e.currentTarget.style.background = "var(--bg-selected)")}
                 onMouseLeave={e => (e.currentTarget.style.background = "transparent")}
-                onClick={() => { onQueryChange(item); setShowHistory(false); }}
+                onClick={() => { onQueryChange(item); setShowHistory(false); onSearch(item, options); }}
               >
                 <span style={{ flex: 1, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", fontFamily: "var(--font-mono)", fontSize: "var(--font-size-sm)" }}>{item}</span>
                 <span

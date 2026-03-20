@@ -60,7 +60,7 @@ export default function FloatingPanel({ panel }: { panel: string }) {
     emitTo("main", "panel:ready", { panel });
   }, [panel]);
 
-  // 监听主窗口同步事件
+  // 监听主窗口同步事件（dep-tree 不需要 selectedSeq，跳过避免无意义重渲染）
   useEffect(() => {
     const unlisteners: Promise<() => void>[] = [];
 
@@ -68,9 +68,11 @@ export default function FloatingPanel({ panel }: { panel: string }) {
       setSyncState(e.payload);
     }));
 
-    unlisteners.push(listen<{ seq: number | null }>("sync:selected-seq", (e) => {
-      setSyncState(prev => ({ ...prev, selectedSeq: e.payload.seq }));
-    }));
+    if (panel !== "dep-tree") {
+      unlisteners.push(listen<{ seq: number | null }>("sync:selected-seq", (e) => {
+        setSyncState(prev => ({ ...prev, selectedSeq: e.payload.seq }));
+      }));
+    }
 
     unlisteners.push(listen<{ ready: boolean }>("sync:phase2-ready", (e) => {
       setSyncState(prev => ({ ...prev, isPhase2Ready: e.payload.ready }));
@@ -229,7 +231,10 @@ export default function FloatingPanel({ panel }: { panel: string }) {
   };
 
   return (
-    <FloatingWindowFrame title={title}>
+    <FloatingWindowFrame
+      title={title}
+      maxWidth={panel === "dep-tree" ? Math.round(window.screen.width * 0.5) : undefined}
+    >
       {/* 面板内容 */}
       <div style={{ flex: 1, display: "flex", flexDirection: "column", overflow: "hidden" }}>
         {renderPanelContent()}

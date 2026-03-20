@@ -3,7 +3,8 @@ import { createPortal } from "react-dom";
 import { invoke } from "@tauri-apps/api/core";
 import { emitTo, listen } from "@tauri-apps/api/event";
 import { WebviewWindow } from "@tauri-apps/api/webviewWindow";
-import type { TraceLine, CallTreeNodeDto, DefUseChain, DependencyNode } from "../types/trace";
+import { openDepTreeWindow } from "../utils/openDepTreeWindow";
+import type { TraceLine, CallTreeNodeDto, DefUseChain } from "../types/trace";
 import type { HighlightInfo } from "../hooks/useHighlights";
 import { useResizableColumn } from "../hooks/useResizableColumn";
 import type { useFoldState, ResolvedRow } from "../hooks/useFoldState";
@@ -446,12 +447,23 @@ export default function TraceTable({
   const containerRef = useRef<HTMLDivElement>(null);
   const textOverlayRef = useRef<HTMLDivElement>(null);
   const [currentRow, setCurrentRow] = useState(0);
-  // 防抖行号：滚动期间 IPC 和 DOM 重建延迟执行，只有 canvas 重绘使用 currentRow 即时响应
+  // 防抖行号：连续滚动期间 IPC 和 DOM 重建延迟执行，只有 canvas 重绘使用 currentRow 即时响应
+  // 跳转操作通过 flushDebouncedRow 立即同步，绕过 80ms 等待
   const [debouncedRow, setDebouncedRow] = useState(0);
+  const skipDebounceRef = useRef(false);
   useEffect(() => {
+    if (skipDebounceRef.current) {
+      skipDebounceRef.current = false;
+      setDebouncedRow(currentRow);
+      return;
+    }
     const timer = setTimeout(() => setDebouncedRow(currentRow), 80);
     return () => clearTimeout(timer);
   }, [currentRow]);
+  const flushDebouncedRow = useCallback((row: number) => {
+    skipDebounceRef.current = true;
+    setCurrentRow(row);
+  }, []);
   const [canvasSize, setCanvasSize] = useState({ width: 0, height: 0 });
   const [fontReady, setFontReady] = useState(false);
   const hitboxesRef = useRef<TokenHitbox[]>([]);
@@ -666,21 +678,25 @@ export default function TraceTable({
   }, [canvasSize, isLoaded]);
 
   // === scrollToSeq ===
+  // 跳转操作绕过 debouncedRow 80ms 防抖，立即触发数据加载
   const scrollToSeq = useCallback((seq: number, align: "center" | "auto" | "end") => {
     ensureSeqVisible(seq);
     const vi = finalSeqToVirtualIndex(seq);
     if (align === "center") {
-      setCurrentRow(Math.max(0, Math.min(maxRow, vi - Math.floor(visibleRows / 2))));
+      flushDebouncedRow(Math.max(0, Math.min(maxRow, vi - Math.floor(visibleRows / 2))));
     } else if (align === "end") {
       // 将目标行置于窗口最后一行
-      setCurrentRow(Math.max(0, Math.min(maxRow, vi - visibleRows + 1)));
+      flushDebouncedRow(Math.max(0, Math.min(maxRow, vi - visibleRows + 1)));
     } else {
+      // auto: 已在视口内不滚动，否则居中
+      const target = Math.max(0, Math.min(maxRow, vi - Math.floor(visibleRows / 2)));
       setCurrentRow(prev => {
         if (vi >= prev && vi < prev + visibleRows) return prev;
-        return Math.max(0, Math.min(maxRow, vi - Math.floor(visibleRows / 2)));
+        skipDebounceRef.current = true;
+        return target;
       });
     }
-  }, [ensureSeqVisible, finalSeqToVirtualIndex, maxRow, visibleRows]);
+  }, [ensureSeqVisible, finalSeqToVirtualIndex, maxRow, visibleRows, flushDebouncedRow]);
 
   // === 恢复滚动位置 ===
   useEffect(() => {
@@ -1067,39 +1083,10 @@ export default function TraceTable({
     });
   }, []);
 
-  // 依赖树构建状态
-  const depTreeBuildingRef = useRef(false);
-  const [depTreeBuilding, setDepTreeBuilding] = useState(false);
-
-  // 打开依赖树浮动窗口
-  const openDepTreeWindow = useCallback(async (seq: number, target: string) => {
+  // 打开依赖树浮动窗口（立即创建，只传轻量参数，子窗口自己 invoke 后端）
+  const openDepTree = useCallback((seq: number, target: string) => {
     if (!sessionId) return;
-    if (depTreeBuildingRef.current) return; // 防止并发构建
-    depTreeBuildingRef.current = true;
-    setDepTreeBuilding(true);
-    try {
-      const tree = await invoke<DependencyNode>("build_dependency_tree", {
-        sessionId, seq, target: `reg:${target}`, dataOnly: false,
-      });
-      const winLabel = `panel-dep-tree-${Date.now()}`;
-      const unlisten = await listen(`dep-tree:ready:${winLabel}`, () => {
-        emitTo(winLabel, "dep-tree:init-data", { tree, sessionId });
-        unlisten();
-      });
-      new WebviewWindow(winLabel, {
-        url: `index.html?panel=dep-tree`,
-        title: "Dependency Tree",
-        width: 800,
-        height: 600,
-        decorations: false,
-        transparent: true,
-      });
-    } catch (e) {
-      console.error("build_dependency_tree failed:", e);
-    } finally {
-      depTreeBuildingRef.current = false;
-      setDepTreeBuilding(false);
-    }
+    openDepTreeWindow({ sessionId, seq, target: `reg:${target}`, dataOnly: false });
   }, [sessionId]);
 
   // === Canvas 点击 ===
@@ -1534,23 +1521,18 @@ export default function TraceTable({
     // 如果右键命中了某个寄存器，直接用它
     const hitReg = ctxRegRef.current;
     if (hitReg) {
-      openDepTreeWindow(seq, hitReg);
+      openDepTree(seq, hitReg);
       return;
     }
     // 否则查询该行 DEF 寄存器
     try {
       const defs = await invoke<string[]>("get_line_def_registers", { sessionId, seq });
       if (defs.length === 0) return;
-      if (defs.length === 1) {
-        openDepTreeWindow(seq, defs[0]);
-      } else {
-        // 多个 DEF 寄存器：用第一个（后续可扩展为子菜单选择）
-        openDepTreeWindow(seq, defs[0]);
-      }
+      openDepTree(seq, defs[0]);
     } catch (e) {
       console.error("get_line_def_registers failed:", e);
     }
-  }, [sessionId, getSelectedSeqs, openDepTreeWindow]);
+  }, [sessionId, getSelectedSeqs, openDepTree]);
 
   // === 复制辅助 ===
   const getSelectedLines = useCallback(async (): Promise<TraceLine[]> => {
@@ -2831,14 +2813,13 @@ export default function TraceTable({
                     <ContextMenuSeparator />
                     <div
                       onClick={() => {
-                        if (depTreeBuilding) return;
                         handleDepTreeFromMenu();
                         setCtxMenu(null);
                       }}
-                      onMouseEnter={(e) => { if (!depTreeBuilding) (e.currentTarget as HTMLElement).style.background = "var(--bg-selected)"; setHighlightSubmenuOpen(false); }}
+                      onMouseEnter={(e) => { (e.currentTarget as HTMLElement).style.background = "var(--bg-selected)"; setHighlightSubmenuOpen(false); }}
                       onMouseLeave={(e) => { (e.currentTarget as HTMLElement).style.background = "transparent"; }}
-                      style={{ padding: "6px 12px", fontSize: 12, color: depTreeBuilding ? "var(--text-secondary)" : "var(--text-primary)", cursor: depTreeBuilding ? "not-allowed" : "pointer", whiteSpace: "nowrap" }}
-                    >{depTreeBuilding ? "正在构建依赖树..." : "查看依赖树"}</div>
+                      style={{ padding: "6px 12px", fontSize: 12, color: "var(--text-primary)", cursor: "pointer", whiteSpace: "nowrap" }}
+                    >Dependency Tree</div>
                   </>
                 )}
               </>

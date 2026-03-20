@@ -110,21 +110,24 @@ pub fn parse_trace_line_gumtrace(seq: u32, raw: &[u8]) -> Option<TraceLine> {
     let mem_size = extract_mem_size(&disasm);
 
     // Changes: after " -> " in annotation area
-    let changes = if let Some(pos) = annot_area.find(" -> ") {
-        annot_area[pos + 4..].trim().to_string()
-    } else {
-        String::new()
-    };
-
-    // Pre-changes: before " -> "，显示全部寄存器旧值
-    let reg_before = if let Some(pos) = annot_area.find(" -> ") {
+    // reg_before: before " -> "，显示全部寄存器旧值
+    // 当没有 " -> " 时（如 store 指令不改变寄存器），整个 annotation 区域都是 before 值
+    let (changes, reg_before) = if let Some(pos) = annot_area.find(" -> ") {
+        let changes = annot_area[pos + 4..].trim().to_string();
         let before = annot_area[..pos].trim();
-        before.split_whitespace()
+        let reg_before = before.split_whitespace()
             .filter(|tok| !tok.starts_with("mem_w=") && !tok.starts_with("mem_r="))
             .collect::<Vec<_>>()
-            .join(" ")
+            .join(" ");
+        (changes, reg_before)
     } else {
-        String::new()
+        // 没有 " -> "：无寄存器变化（如 str/strb 等 store 指令），
+        // annotation 中的寄存器值即为 before 值
+        let reg_before = annot_area.trim().split_whitespace()
+            .filter(|tok| !tok.starts_with("mem_w=") && !tok.starts_with("mem_r="))
+            .collect::<Vec<_>>()
+            .join(" ");
+        (String::new(), reg_before)
     };
 
     Some(TraceLine {

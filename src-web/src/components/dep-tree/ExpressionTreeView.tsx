@@ -1,31 +1,62 @@
-import React, { useState, useCallback, useRef } from "react";
+import React, { useState, useCallback, useRef, useMemo } from "react";
 import { emit } from "@tauri-apps/api/event";
-import type { DependencyNode } from "../../types/trace";
+import type { DependencyGraph, NodeInfo } from "../../types/trace";
+import { getDepthColor } from "../../utils/depthColors";
 
-const DEPTH_COLORS = [
-  "#e06c75", // red (depth 0)
-  "#e5c07b", // yellow (depth 1)
-  "#98c379", // green (depth 2)
-  "#61afef", // blue (depth 3)
-  "#c678dd", // purple (depth 4)
-  "#abb2bf", // gray (depth 5+)
-];
+const DEFAULT_EXPAND_DEPTH = 4;
 
-function getDepthColor(depth: number): string {
-  return DEPTH_COLORS[Math.min(depth, DEPTH_COLORS.length - 1)];
+interface TreeViewNode {
+  node: NodeInfo;
+  childSeqs: number[];  // 该节点的子节点 seq 列表
+  isFirstExpansion: boolean; // 是否为首次展开（非 ref）
+}
+
+/** 从扁平 graph 构建树渲染所需的数据结构 */
+function buildTreeIndex(graph: DependencyGraph) {
+  // nodeMap: seq → NodeInfo
+  const nodeMap = new Map<number, NodeInfo>();
+  for (const n of graph.nodes) {
+    nodeMap.set(n.seq, n);
+  }
+
+  // childrenMap: parent_seq → child_seq[]
+  const childrenMap = new Map<number, number[]>();
+  for (const [parent, child] of graph.edges) {
+    let list = childrenMap.get(parent);
+    if (!list) {
+      list = [];
+      childrenMap.set(parent, list);
+    }
+    list.push(child);
+  }
+
+  return { nodeMap, childrenMap };
 }
 
 interface TreeNodeProps {
-  node: DependencyNode;
+  seq: number;
+  depth: number;
+  nodeMap: Map<number, NodeInfo>;
+  childrenMap: Map<number, number[]>;
+  expandedSet: React.MutableRefObject<Set<number>>; // 追踪哪些 seq 已在树中展开过
   sessionId: string;
-  defaultExpandDepth: number;
   scrollContainer: React.RefObject<HTMLDivElement | null>;
 }
 
-function TreeNode({ node, sessionId, defaultExpandDepth, scrollContainer }: TreeNodeProps) {
-  const [expanded, setExpanded] = useState(node.depth < defaultExpandDepth);
-  const hasChildren = node.children.length > 0;
-  const color = getDepthColor(node.depth);
+function TreeNode({ seq, depth, nodeMap, childrenMap, expandedSet, sessionId, scrollContainer }: TreeNodeProps) {
+  const node = nodeMap.get(seq);
+  const childSeqs = childrenMap.get(seq) || [];
+
+  // isRef 只在挂载时计算一次，避免重渲染时误判
+  const [isRef] = useState(() => {
+    if (expandedSet.current.has(seq)) return true;
+    expandedSet.current.add(seq);
+    return false;
+  });
+
+  const hasChildren = !isRef && childSeqs.length > 0;
+  const [expanded, setExpanded] = useState(depth < DEFAULT_EXPAND_DEPTH);
+  const color = getDepthColor(depth);
 
   const handleToggle = useCallback((e: React.MouseEvent) => {
     e.stopPropagation();
@@ -33,26 +64,27 @@ function TreeNode({ node, sessionId, defaultExpandDepth, scrollContainer }: Tree
   }, []);
 
   const handleClick = useCallback(() => {
-    if (node.isRef) {
-      // 点击 ref 节点：滚动到完整展开的位置并闪烁高亮
+    if (isRef) {
+      // 点击 ref 节点：滚动到首次展开位置
       const container = scrollContainer.current;
       if (!container) return;
-      const target = container.querySelector(`[data-expanded-seq="${node.seq}"]`) as HTMLElement | null;
+      const target = container.querySelector(`[data-expanded-seq="${seq}"]`) as HTMLElement | null;
       if (target) {
         target.scrollIntoView({ behavior: "smooth", block: "center" });
         target.style.background = "rgba(97, 175, 239, 0.25)";
         setTimeout(() => { target.style.background = "transparent"; }, 1500);
       }
     } else {
-      emit("dep-tree:jump-to-seq", { sessionId, seq: node.seq });
+      emit("dep-tree:jump-to-seq", { sessionId, seq });
     }
-  }, [sessionId, node.seq, node.isRef, scrollContainer]);
+  }, [sessionId, seq, isRef, scrollContainer]);
+
+  if (!node) return null;
 
   return (
-    <div style={{ marginLeft: node.depth > 0 ? 16 : 0 }}>
+    <div style={{ marginLeft: depth > 0 ? 16 : 0 }}>
       <div
-        // 非 ref 节点标记为锚点，供 ref 节点跳转
-        {...(!node.isRef ? { "data-expanded-seq": String(node.seq) } : {})}
+        {...(!isRef ? { "data-expanded-seq": String(seq) } : {})}
         onClick={handleClick}
         style={{
           display: "flex",
@@ -85,11 +117,7 @@ function TreeNode({ node, sessionId, defaultExpandDepth, scrollContainer }: Tree
         </span>
 
         {/* Operation badge */}
-        <span style={{
-          color: color,
-          fontWeight: 600,
-          flexShrink: 0,
-        }}>
+        <span style={{ color, fontWeight: 600, flexShrink: 0 }}>
           {node.operation}
         </span>
 
@@ -104,8 +132,8 @@ function TreeNode({ node, sessionId, defaultExpandDepth, scrollContainer }: Tree
           {node.expression}
         </span>
 
-        {/* Ref badge for nodes expanded elsewhere */}
-        {node.isRef && (
+        {/* Ref badge */}
+        {isRef && (
           <span style={{
             padding: "0 4px",
             borderRadius: 3,
@@ -115,12 +143,12 @@ function TreeNode({ node, sessionId, defaultExpandDepth, scrollContainer }: Tree
             flexShrink: 0,
             cursor: "pointer",
           }}>
-            → 点击定位
+            → Go to
           </span>
         )}
 
         {/* Value badge for leaf nodes */}
-        {!node.isRef && node.isLeaf && node.value != null && (
+        {!isRef && node.isLeaf && node.value != null && (
           <span style={{
             padding: "0 4px",
             borderRadius: 3,
@@ -145,19 +173,22 @@ function TreeNode({ node, sessionId, defaultExpandDepth, scrollContainer }: Tree
           minWidth: 40,
           textAlign: "right",
         }}>
-          #{node.seq}
+          #{seq}
         </span>
       </div>
 
       {/* Children */}
       {expanded && hasChildren && (
         <div>
-          {node.children.map((child, i) => (
+          {childSeqs.map((childSeq, i) => (
             <TreeNode
-              key={`${child.seq}-${i}`}
-              node={child}
+              key={`${childSeq}-${i}`}
+              seq={childSeq}
+              depth={depth + 1}
+              nodeMap={nodeMap}
+              childrenMap={childrenMap}
+              expandedSet={expandedSet}
               sessionId={sessionId}
-              defaultExpandDepth={defaultExpandDepth}
               scrollContainer={scrollContainer}
             />
           ))}
@@ -168,12 +199,18 @@ function TreeNode({ node, sessionId, defaultExpandDepth, scrollContainer }: Tree
 }
 
 interface ExpressionTreeViewProps {
-  tree: DependencyNode;
+  graph: DependencyGraph;
   sessionId: string;
 }
 
-export default function ExpressionTreeView({ tree, sessionId }: ExpressionTreeViewProps) {
+export default function ExpressionTreeView({ graph, sessionId }: ExpressionTreeViewProps) {
   const containerRef = useRef<HTMLDivElement | null>(null);
+  const expandedSet = useRef(new Set<number>());
+
+  const { nodeMap, childrenMap } = useMemo(() => {
+    expandedSet.current = new Set<number>(); // reset on graph change
+    return buildTreeIndex(graph);
+  }, [graph]);
 
   return (
     <div
@@ -184,7 +221,15 @@ export default function ExpressionTreeView({ tree, sessionId }: ExpressionTreeVi
         padding: "4px 0",
       }}
     >
-      <TreeNode node={tree} sessionId={sessionId} defaultExpandDepth={4} scrollContainer={containerRef} />
+      <TreeNode
+        seq={graph.rootSeq}
+        depth={0}
+        nodeMap={nodeMap}
+        childrenMap={childrenMap}
+        expandedSet={expandedSet}
+        sessionId={sessionId}
+        scrollContainer={containerRef}
+      />
     </div>
   );
 }

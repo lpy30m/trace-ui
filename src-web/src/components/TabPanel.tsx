@@ -1,10 +1,10 @@
 import React, { useState, useCallback, useEffect, useMemo, useRef } from "react";
-import { listen, emitTo } from "@tauri-apps/api/event";
+import { listen } from "@tauri-apps/api/event";
 import { invoke } from "@tauri-apps/api/core";
-import { WebviewWindow } from "@tauri-apps/api/webviewWindow";
 import { cleanupListener } from "../utils/tauriEvents";
+import { openDepTreeWindow } from "../utils/openDepTreeWindow";
 import { useDragToFloat } from "../hooks/useDragToFloat";
-import type { SearchMatch, SliceResult, DependencyNode } from "../types/trace";
+import type { SearchMatch, SliceResult } from "../types/trace";
 import MemoryPanel from "./MemoryPanel";
 import SearchResultList from "./SearchResultList";
 import SearchBar, { SearchOptions } from "./SearchBar";
@@ -14,52 +14,26 @@ const TABS = ["Memory", "Accesses", "Taint State", "Search", "Strings"] as const
 type TabName = typeof TABS[number];
 
 function DepTreeFromSliceButton({ sessionId }: { sessionId: string | null }) {
-  const [building, setBuilding] = useState(false);
-  const buildingRef = useRef(false);
-
-  const handleClick = useCallback(async () => {
-    if (!sessionId || buildingRef.current) return;
-    buildingRef.current = true;
-    setBuilding(true);
-    try {
-      const tree = await invoke<DependencyNode>("build_dependency_tree_from_slice", { sessionId });
-      const winLabel = `panel-dep-tree-${Date.now()}`;
-      const unlisten = await listen(`dep-tree:ready:${winLabel}`, () => {
-        emitTo(winLabel, "dep-tree:init-data", { tree, sessionId });
-        unlisten();
-      });
-      new WebviewWindow(winLabel, {
-        url: `index.html?panel=dep-tree`,
-        title: "Dependency Tree",
-        width: 800,
-        height: 600,
-        decorations: false,
-        transparent: true,
-      });
-    } catch (e) {
-      console.error("build_dependency_tree_from_slice failed:", e);
-    } finally {
-      buildingRef.current = false;
-      setBuilding(false);
-    }
+  const handleClick = useCallback(() => {
+    if (!sessionId) return;
+    openDepTreeWindow({ sessionId, fromSlice: true });
   }, [sessionId]);
 
   return (
     <div style={{ marginTop: 4 }}>
       <button
         onClick={handleClick}
-        disabled={building}
         style={{
           padding: "3px 10px",
           fontSize: 11,
           background: "var(--btn-secondary, #3e4451)",
-          color: building ? "var(--text-secondary)" : "var(--text-primary)",
+          color: "var(--text-primary)",
           border: "1px solid var(--border-color)",
           borderRadius: 4,
-          cursor: building ? "not-allowed" : "pointer",
+          cursor: "pointer",
         }}
       >
-        {building ? "正在构建依赖树..." : "以依赖树查看"}
+        View as Dependency Tree
       </button>
     </div>
   );
