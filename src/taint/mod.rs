@@ -5,6 +5,7 @@ pub mod insn_class;
 pub mod def_use;
 pub mod scanner;
 pub mod slicer;
+pub mod dep_tree;
 pub mod call_tree;
 pub mod mem_access;
 pub mod reg_checkpoint;
