@@ -37,11 +37,12 @@ export function MenuSeparator() {
 }
 
 // --- MenuDropdown: 通用下拉菜单容器 ---
-export function MenuDropdown({ label, children, minWidth = 200, labelStyle }: {
+export function MenuDropdown({ label, children, minWidth = 200, labelStyle, closeOnSelect = true }: {
   label: string;
   children: ReactNode;
   minWidth?: number;
   labelStyle?: React.CSSProperties;
+  closeOnSelect?: boolean;
 }) {
   const [open, setOpen] = useState(false);
   const [hover, setHover] = useState(false);
@@ -101,7 +102,7 @@ export function MenuDropdown({ label, children, minWidth = 200, labelStyle }: {
       </button>
       {open && (
         <div
-          onClick={() => setOpen(false)}
+          onClick={closeOnSelect ? () => setOpen(false) : undefined}
           style={{
             position: "absolute", top: "100%", left: 0, marginTop: 2,
             background: "var(--bg-dialog)", border: "1px solid var(--border-color)",
