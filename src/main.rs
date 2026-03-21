@@ -64,6 +64,7 @@ fn main() {
             commands::browse::get_consumed_seqs,
             commands::functions::get_function_calls,
             commands::crypto::scan_crypto,
+            commands::crypto::get_crypto_context,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

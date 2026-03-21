@@ -18,7 +18,7 @@ pub struct CallTreeNodeDto {
 }
 
 /// 从原始数据中按 entry_seq 提取该行的偏移地址，回退到绝对地址
-fn resolve_offset_addr(n: &CallTreeNode, line_index: Option<&LineIndexView<'_>>, data: &[u8]) -> String {
+pub(crate) fn resolve_offset_addr(n: &CallTreeNode, line_index: Option<&LineIndexView<'_>>, data: &[u8]) -> String {
     if let Some(li) = line_index {
         if let Some(line_bytes) = li.get_line(data, n.entry_seq) {
             if let Ok(line_str) = std::str::from_utf8(line_bytes) {

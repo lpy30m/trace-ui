@@ -341,6 +341,7 @@ export default function TabPanel({
 
       <div style={tabStyle("Crypto")}>
         <CryptoPanel
+          sessionId={sessionId}
           cryptoResults={cryptoResults}
           cryptoScanning={cryptoScanning}
           onJumpToSeq={onJumpToSeq}

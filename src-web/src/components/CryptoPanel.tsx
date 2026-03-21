@@ -1,19 +1,37 @@
 import React, { useState, useEffect, useRef, useCallback, useMemo } from "react";
+import { invoke } from "@tauri-apps/api/core";
 import { emit } from "@tauri-apps/api/event";
 import { useVirtualizerNoSync } from "../hooks/useVirtualizerNoSync";
 import { useResizableColumn } from "../hooks/useResizableColumn";
 import ContextMenu, { ContextMenuItem } from "./ContextMenu";
-import type { CryptoMatch, CryptoScanResult } from "../types/trace";
+import type { CryptoMatch, CryptoScanResult, CryptoFunctionContext } from "../types/trace";
 
 const ROW_HEIGHT = 22;
 
 interface Props {
+  sessionId: string | null;
   cryptoResults: CryptoScanResult | null;
   cryptoScanning: boolean;
   onJumpToSeq: (seq: number) => void;
 }
 
-export default function CryptoPanel({ cryptoResults, cryptoScanning, onJumpToSeq }: Props) {
+/** Format hex string as hexdump: 16 bytes per line, hex + ASCII sidebar */
+function formatHexdump(hex: string): string {
+  const bytes: number[] = [];
+  for (let i = 0; i < hex.length; i += 2) {
+    bytes.push(parseInt(hex.substring(i, i + 2), 16));
+  }
+  const lines: string[] = [];
+  for (let i = 0; i < bytes.length; i += 16) {
+    const chunk = bytes.slice(i, i + 16);
+    const hexPart = chunk.map(b => b.toString(16).padStart(2, "0")).join(" ");
+    const asciiPart = chunk.map(b => (b >= 0x20 && b <= 0x7e) ? String.fromCharCode(b) : ".").join("");
+    lines.push(`${hexPart.padEnd(47)}  ${asciiPart}`);
+  }
+  return lines.join("\n");
+}
+
+export default function CryptoPanel({ sessionId, cryptoResults, cryptoScanning, onJumpToSeq }: Props) {
   const seqCol = useResizableColumn(70, "right", 40, "crypto:seq");
   const algoCol = useResizableColumn(100, "left", 50, "crypto:algo");
   const magicCol = useResizableColumn(110, "left", 60, "crypto:magic");
@@ -28,6 +46,11 @@ export default function CryptoPanel({ cryptoResults, cryptoScanning, onJumpToSeq
   const [selectedSeq, setSelectedSeq] = useState<number | null>(null);
   const [algoFilter, setAlgoFilter] = useState<string | null>(null);
   const [contextMenu, setContextMenu] = useState<{ x: number; y: number; match: CryptoMatch } | null>(null);
+
+  // Expand/collapse state
+  const [expandedSeq, setExpandedSeq] = useState<number | null>(null);
+  const [contextCache, setContextCache] = useState<Map<number, CryptoFunctionContext>>(new Map());
+  const [loadingSeq, setLoadingSeq] = useState<number | null>(null);
 
   const parentRef = useRef<HTMLDivElement>(null);
 
@@ -52,7 +75,10 @@ export default function CryptoPanel({ cryptoResults, cryptoScanning, onJumpToSeq
   const virtualizer = useVirtualizerNoSync({
     count: filtered.length,
     getScrollElement: () => parentRef.current,
-    estimateSize: () => ROW_HEIGHT,
+    estimateSize: (i: number) => {
+      const m = filtered[i];
+      return m && m.seq === expandedSeq ? ROW_HEIGHT + 160 : ROW_HEIGHT;
+    },
     overscan: 20,
   });
   const virtualItems = virtualizer.getVirtualItems();
@@ -61,6 +87,34 @@ export default function CryptoPanel({ cryptoResults, cryptoScanning, onJumpToSeq
     setSelectedSeq(match.seq);
     onJumpToSeq(match.seq);
   }, [onJumpToSeq]);
+
+  const handleToggleExpand = useCallback((e: React.MouseEvent, match: CryptoMatch) => {
+    e.stopPropagation();
+    const seq = match.seq;
+    if (expandedSeq === seq) {
+      setExpandedSeq(null);
+      return;
+    }
+    setExpandedSeq(seq);
+    // Load context if not cached
+    if (!contextCache.has(seq) && sessionId) {
+      setLoadingSeq(seq);
+      invoke<CryptoFunctionContext>("get_crypto_context", {
+        sessionId,
+        seq,
+        algorithm: match.algorithm,
+      }).then(ctx => {
+        setContextCache(prev => {
+          const next = new Map(prev);
+          next.set(seq, ctx);
+          return next;
+        });
+        setLoadingSeq(null);
+      }).catch(() => {
+        setLoadingSeq(null);
+      });
+    }
+  }, [expandedSeq, contextCache, sessionId]);
 
   const handleContextMenu = useCallback((e: React.MouseEvent, match: CryptoMatch) => {
     e.preventDefault();
@@ -85,11 +139,18 @@ export default function CryptoPanel({ cryptoResults, cryptoScanning, onJumpToSeq
     emit("action:view-in-memory", { addr: address, seq });
   }, [contextMenu]);
 
-  // Reset filter when results change
+  // Reset state when results change
   useEffect(() => {
     setAlgoFilter(null);
     setSelectedSeq(null);
+    setExpandedSeq(null);
+    setContextCache(new Map());
   }, [cryptoResults]);
+
+  // Re-measure when expanded row changes
+  useEffect(() => {
+    virtualizer.measure();
+  }, [expandedSeq, contextCache]);
 
   if (cryptoScanning) {
     return (
@@ -115,6 +176,14 @@ export default function CryptoPanel({ cryptoResults, cryptoScanning, onJumpToSeq
       </div>
     );
   }
+
+  const labelStyle: React.CSSProperties = {
+    color: "var(--text-secondary)", fontSize: 11, flexShrink: 0, width: 60, textAlign: "right", marginRight: 8,
+  };
+  const monoStyle: React.CSSProperties = {
+    fontFamily: "var(--font-mono, monospace)", fontSize: 11, color: "var(--text-primary)",
+    whiteSpace: "pre", lineHeight: 1.4,
+  };
 
   return (
     <div style={{ flex: 1, display: "flex", flexDirection: "column", overflow: "hidden" }}>
@@ -168,6 +237,7 @@ export default function CryptoPanel({ cryptoResults, cryptoScanning, onJumpToSeq
         borderBottom: "1px solid var(--border-color)",
         fontSize: "var(--font-size-sm)", color: "var(--text-secondary)", flexShrink: 0,
       }}>
+        <span style={{ width: 20, flexShrink: 0 }} />
         <span style={{ width: seqCol.width, flexShrink: 0 }}>Line#</span>
         <div onMouseDown={seqCol.onMouseDown} style={HANDLE_STYLE}><div style={{ width: 1, height: "100%", background: "var(--border-color)" }} /></div>
         <span style={{ width: algoCol.width, flexShrink: 0 }}>Algorithm</span>
@@ -191,36 +261,149 @@ export default function CryptoPanel({ cryptoResults, cryptoScanning, onJumpToSeq
               const match = filtered[virtualRow.index];
               if (!match) return null;
               const isSelected = match.seq === selectedSeq;
+              const isExpanded = match.seq === expandedSeq;
+              const ctx = contextCache.get(match.seq);
+              const isLoading = loadingSeq === match.seq;
               return (
                 <div
                   key={virtualRow.key}
                   data-index={virtualRow.index}
                   ref={virtualizer.measureElement}
-                  onClick={() => handleRowClick(match)}
-                  onContextMenu={e => handleContextMenu(e, match)}
                   style={{
-                    position: "absolute", top: 0, left: 0, width: "100%", height: ROW_HEIGHT,
+                    position: "absolute", top: 0, left: 0, width: "100%",
                     transform: `translateY(${virtualRow.start}px)`,
-                    display: "flex", alignItems: "center", padding: "0 8px",
-                    cursor: "pointer", fontSize: "var(--font-size-sm)",
-                    background: isSelected ? "var(--bg-selected)"
-                      : virtualRow.index % 2 === 0 ? "var(--bg-row-even)" : "var(--bg-row-odd)",
                   }}
-                  onMouseEnter={(e) => { if (!isSelected) e.currentTarget.style.background = "var(--bg-hover)"; }}
-                  onMouseLeave={(e) => { if (!isSelected) e.currentTarget.style.background = virtualRow.index % 2 === 0 ? "var(--bg-row-even)" : "var(--bg-row-odd)"; }}
                 >
-                  <span style={{ width: seqCol.width, flexShrink: 0, color: "var(--syntax-number)" }}>{match.seq + 1}</span>
-                  <span style={{ width: 8, flexShrink: 0 }} />
-                  <span style={{ width: algoCol.width, flexShrink: 0, color: "var(--syntax-keyword)" }}>{match.algorithm}</span>
-                  <span style={{ width: 8, flexShrink: 0 }} />
-                  <span style={{ width: magicCol.width, flexShrink: 0, color: "var(--syntax-literal)" }}>{match.magic_hex}</span>
-                  <span style={{ width: 8, flexShrink: 0 }} />
-                  <span style={{ width: addrCol.width, flexShrink: 0, color: "var(--syntax-literal)" }}>{match.address}</span>
-                  <span style={{ width: 8, flexShrink: 0 }} />
-                  <span style={{
-                    flex: 1, color: "var(--text-primary)",
-                    overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap",
-                  }}>{match.disasm}</span>
+                  {/* Main row */}
+                  <div
+                    onClick={() => handleRowClick(match)}
+                    onContextMenu={e => handleContextMenu(e, match)}
+                    style={{
+                      display: "flex", alignItems: "center", padding: "0 8px",
+                      height: ROW_HEIGHT,
+                      cursor: "pointer", fontSize: "var(--font-size-sm)",
+                      background: isSelected ? "var(--bg-selected)"
+                        : virtualRow.index % 2 === 0 ? "var(--bg-row-even)" : "var(--bg-row-odd)",
+                    }}
+                    onMouseEnter={(e) => { if (!isSelected) e.currentTarget.style.background = "var(--bg-hover)"; }}
+                    onMouseLeave={(e) => { if (!isSelected) e.currentTarget.style.background = isSelected ? "var(--bg-selected)" : virtualRow.index % 2 === 0 ? "var(--bg-row-even)" : "var(--bg-row-odd)"; }}
+                  >
+                    <span
+                      onClick={(e) => handleToggleExpand(e, match)}
+                      style={{
+                        width: 20, flexShrink: 0, cursor: "pointer",
+                        color: "var(--text-secondary)", fontSize: 10, textAlign: "center",
+                        userSelect: "none",
+                      }}
+                    >{isExpanded ? "\u25BC" : "\u25B6"}</span>
+                    <span style={{ width: seqCol.width, flexShrink: 0, color: "var(--syntax-number)" }}>{match.seq + 1}</span>
+                    <span style={{ width: 8, flexShrink: 0 }} />
+                    <span style={{ width: algoCol.width, flexShrink: 0, color: "var(--syntax-keyword)" }}>{match.algorithm}</span>
+                    <span style={{ width: 8, flexShrink: 0 }} />
+                    <span style={{ width: magicCol.width, flexShrink: 0, color: "var(--syntax-literal)" }}>{match.magic_hex}</span>
+                    <span style={{ width: 8, flexShrink: 0 }} />
+                    <span style={{ width: addrCol.width, flexShrink: 0, color: "var(--syntax-literal)" }}>{match.address}</span>
+                    <span style={{ width: 8, flexShrink: 0 }} />
+                    <span style={{
+                      flex: 1, color: "var(--text-primary)",
+                      overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap",
+                    }}>{match.disasm}</span>
+                  </div>
+                  {/* Expanded context */}
+                  {isExpanded && (
+                    <div style={{
+                      padding: "6px 12px 6px 28px",
+                      background: "var(--bg-secondary)",
+                      borderBottom: "1px solid var(--border-color)",
+                      fontSize: 11,
+                    }}>
+                      {isLoading && !ctx ? (
+                        <div style={{ display: "flex", alignItems: "center", gap: 6, padding: "4px 0" }}>
+                          <span style={{
+                            display: "inline-block", width: 12, height: 12,
+                            border: "2px solid var(--border-color)",
+                            borderTop: "2px solid var(--btn-primary)",
+                            borderRadius: "50%",
+                            animation: "spin 1s linear infinite",
+                          }} />
+                          <span style={{ color: "var(--text-secondary)" }}>Loading context...</span>
+                        </div>
+                      ) : ctx ? (
+                        <div style={{ display: "flex", flexDirection: "column", gap: 4 }}>
+                          {/* Inner function */}
+                          <div style={{ display: "flex", alignItems: "baseline" }}>
+                            <span style={labelStyle}>Inner</span>
+                            <span style={{ color: "var(--syntax-keyword)", fontWeight: 500 }}>
+                              {ctx.func_name ?? ctx.func_addr}
+                            </span>
+                            {ctx.func_name && (
+                              <span style={{ color: "var(--text-tertiary)", marginLeft: 6, fontSize: 10, fontFamily: "var(--font-mono, monospace)" }}>
+                                {ctx.func_addr}
+                              </span>
+                            )}
+                            <span style={{ color: "var(--text-tertiary)", marginLeft: 8, fontSize: 10 }}>
+                              seq {ctx.entry_seq + 1} ~ {ctx.exit_seq + 1}
+                            </span>
+                          </div>
+                          {/* Caller function */}
+                          {ctx.caller_addr && (
+                            <div style={{ display: "flex", alignItems: "baseline" }}>
+                              <span style={labelStyle}>Caller</span>
+                              <span style={{ color: "var(--syntax-func, var(--syntax-keyword))", fontWeight: 500 }}>
+                                {ctx.caller_name ?? ctx.caller_addr}
+                              </span>
+                              {ctx.caller_name && (
+                                <span style={{ color: "var(--text-tertiary)", marginLeft: 6, fontSize: 10, fontFamily: "var(--font-mono, monospace)" }}>
+                                  {ctx.caller_addr}
+                                </span>
+                              )}
+                              {ctx.caller_entry_seq != null && ctx.caller_exit_seq != null && (
+                                <span style={{ color: "var(--text-tertiary)", marginLeft: 8, fontSize: 10 }}>
+                                  seq {ctx.caller_entry_seq + 1} ~ {ctx.caller_exit_seq + 1}
+                                </span>
+                              )}
+                            </div>
+                          )}
+                          {/* Args */}
+                          <div style={{ display: "flex", alignItems: "baseline" }}>
+                            <span style={labelStyle}>Args</span>
+                            <span style={{ ...monoStyle, fontSize: 11 }}>
+                              x0={ctx.args[0]}, x1={ctx.args[1]}, x2={ctx.args[2]}, x3={ctx.args[3]}
+                            </span>
+                            <span style={{ color: "var(--text-tertiary)", marginLeft: 8, fontSize: 10 }}>
+                              ({ctx.param_hint})
+                            </span>
+                          </div>
+                          {/* Input */}
+                          {ctx.input_hex && (
+                            <div style={{ display: "flex", alignItems: "flex-start" }}>
+                              <span style={labelStyle}>Input</span>
+                              <pre style={{ ...monoStyle, margin: 0, background: "var(--bg-primary)", padding: "2px 6px", borderRadius: 3, overflow: "auto", maxWidth: "100%" }}>
+                                {formatHexdump(ctx.input_hex)}
+                              </pre>
+                            </div>
+                          )}
+                          {/* Output */}
+                          {ctx.output_hex && (
+                            <div style={{ display: "flex", alignItems: "flex-start" }}>
+                              <span style={labelStyle}>Output</span>
+                              <pre style={{ ...monoStyle, margin: 0, background: "var(--bg-primary)", padding: "2px 6px", borderRadius: 3, overflow: "auto", maxWidth: "100%" }}>
+                                {formatHexdump(ctx.output_hex)}
+                              </pre>
+                            </div>
+                          )}
+                          {!ctx.input_hex && !ctx.output_hex && (
+                            <div style={{ display: "flex", alignItems: "baseline" }}>
+                              <span style={labelStyle}>Memory</span>
+                              <span style={{ color: "var(--text-tertiary)", fontStyle: "italic" }}>No memory data available</span>
+                            </div>
+                          )}
+                        </div>
+                      ) : (
+                        <span style={{ color: "var(--text-tertiary)" }}>Failed to load context</span>
+                      )}
+                    </div>
+                  )}
                 </div>
               );
             })}
