@@ -4,6 +4,7 @@ use crate::state::AppState;
 use crate::taint::types::TraceFormat;
 use crate::commands::browse::{parse_trace_line, parse_trace_line_gumtrace};
 use crate::commands::utils::ascii_contains;
+use crate::taint::types::RegId;
 
 /// 28 crypto algorithms with their magic number constants.
 /// Each entry: (algorithm_name, &[magic_u32_values])
@@ -194,4 +195,271 @@ pub async fn scan_crypto(
     .map_err(|e| format!("Scan thread panic: {}", e))?;
 
     Ok(result)
+}
+
+#[derive(Serialize)]
+pub struct CryptoFunctionContext {
+    func_name: Option<String>,
+    func_addr: String,
+    entry_seq: u32,
+    exit_seq: u32,
+    caller_name: Option<String>,
+    caller_addr: Option<String>,
+    caller_entry_seq: Option<u32>,
+    caller_exit_seq: Option<u32>,
+    args: [String; 4],
+    input_hex: Option<String>,
+    output_hex: Option<String>,
+    param_hint: String,
+}
+
+/// Read register values at a given seq by replaying from nearest checkpoint.
+fn replay_registers_at(
+    session: &crate::state::SessionState,
+    seq: u32,
+) -> Option<[u64; RegId::COUNT]> {
+    let reg_view = session.reg_checkpoints_view()?;
+    let line_index = session.line_index_view()?;
+    let (ckpt_seq, snapshot) = reg_view.nearest_before(seq)?;
+    let mut values = *snapshot;
+    for replay_seq in ckpt_seq..=seq {
+        if let Some(raw) = line_index.get_line(&session.mmap, replay_seq) {
+            if let Ok(line_str) = std::str::from_utf8(raw) {
+                crate::phase2::update_reg_values(&mut values, line_str);
+            }
+        }
+    }
+    Some(values)
+}
+
+/// Read up to `len` bytes from memory at the given address/seq.
+fn read_memory_bytes(
+    session: &crate::state::SessionState,
+    addr: u64,
+    seq: u32,
+    len: usize,
+) -> Option<Vec<u8>> {
+    let mem_view = session.mem_accesses_view()?;
+    let mut bytes = vec![0u8; len];
+    let mut any_known = false;
+    for offset in 0..len {
+        let byte_addr = addr + offset as u64;
+        let mut best_seq: Option<u32> = None;
+        let mut best_byte: u8 = 0;
+        for check_offset in 0u64..=7 {
+            if byte_addr < check_offset {
+                continue;
+            }
+            let check_addr = byte_addr - check_offset;
+            if let Some(records) = mem_view.query(check_addr) {
+                let pos = records.partition_point(|r: &crate::flat::mem_access::FlatMemAccessRecord| r.seq <= seq);
+                if pos > 0 {
+                    let rec = &records[pos - 1];
+                    if check_offset < rec.size as u64 {
+                        if best_seq.is_none() || rec.seq > best_seq.unwrap() {
+                            best_seq = Some(rec.seq);
+                            best_byte = ((rec.data >> (check_offset * 8)) & 0xFF) as u8;
+                        }
+                    }
+                }
+            }
+        }
+        if best_seq.is_some() {
+            bytes[offset] = best_byte;
+            any_known = true;
+        }
+    }
+    if any_known { Some(bytes) } else { None }
+}
+
+fn make_param_hint(algorithm: &str) -> String {
+    let algo_upper = algorithm.to_uppercase();
+    if algo_upper.contains("MD5") || algo_upper.contains("SHA1") || algo_upper.contains("SHA256")
+        || algo_upper.contains("SHA512") || algo_upper.contains("SM3")
+    {
+        "x0=ctx, x1=data_ptr, x2=data_len".to_string()
+    } else if algo_upper.contains("AES") {
+        "x0=input, x1=output, x2=key, x3=rounds/len".to_string()
+    } else {
+        "x0=arg0, x1=arg1, x2=arg2, x3=arg3".to_string()
+    }
+}
+
+fn bytes_to_hex(bytes: &[u8]) -> String {
+    bytes.iter().map(|b| format!("{:02x}", b)).collect::<Vec<_>>().join("")
+}
+
+#[tauri::command]
+pub fn get_crypto_context(
+    session_id: String,
+    seq: u32,
+    algorithm: String,
+    state: State<'_, AppState>,
+) -> Result<CryptoFunctionContext, String> {
+    let sessions = state.sessions.read().map_err(|e| e.to_string())?;
+    let session = sessions.get(&session_id)
+        .ok_or_else(|| format!("Session {} not found", session_id))?;
+
+    // 1. Find the innermost function containing this seq
+    let call_tree = session.call_tree.as_ref().ok_or("Call tree not built yet")?;
+    let mut best_node: Option<&crate::taint::call_tree::CallTreeNode> = None;
+    for node in &call_tree.nodes {
+        if node.entry_seq <= seq && seq <= node.exit_seq {
+            match best_node {
+                None => best_node = Some(node),
+                Some(prev) => {
+                    let prev_span = prev.exit_seq - prev.entry_seq;
+                    let this_span = node.exit_seq - node.entry_seq;
+                    if this_span < prev_span {
+                        best_node = Some(node);
+                    }
+                }
+            }
+        }
+    }
+    let func_node = best_node.ok_or("No function found for this seq")?;
+
+    // Resolve inner func_addr
+    let line_index = session.line_index_view();
+    let data: &[u8] = &session.mmap;
+    let func_addr_str = crate::commands::call_tree::resolve_offset_addr(
+        func_node, line_index.as_ref(), data,
+    );
+
+    let entry_seq = func_node.entry_seq;
+    let exit_seq = func_node.exit_seq;
+    let func_name = func_node.func_name.clone();
+
+    // 2. Find parent (caller) node via parent_id
+    let parent_node = func_node.parent_id
+        .and_then(|pid| call_tree.nodes.get(pid as usize));
+
+    let (caller_name, caller_addr, caller_entry_seq, caller_exit_seq) = match parent_node {
+        Some(pn) => {
+            let addr = crate::commands::call_tree::resolve_offset_addr(
+                pn, line_index.as_ref(), data,
+            );
+            (pn.func_name.clone(), Some(addr), Some(pn.entry_seq), Some(pn.exit_seq))
+        }
+        None => (None, None, None, None),
+    };
+
+    // 3. Replay registers at the parent's entry (or inner entry as fallback) to get x0~x3
+    let args_seq = caller_entry_seq.unwrap_or(entry_seq);
+    let entry_regs = replay_registers_at(session, args_seq);
+    let reg_vals: [u64; 4] = match &entry_regs {
+        Some(vals) => [vals[0], vals[1], vals[2], vals[3]],
+        None => [u64::MAX; 4],
+    };
+
+    let format_reg = |v: u64| -> String {
+        if v == u64::MAX { "?".to_string() } else { format!("0x{:x}", v) }
+    };
+
+    let args = [
+        format_reg(reg_vals[0]),
+        format_reg(reg_vals[1]),
+        format_reg(reg_vals[2]),
+        format_reg(reg_vals[3]),
+    ];
+
+    // 4. Read input memory based on algorithm heuristics
+    //    Use inner function's entry_seq for memory reads — that's when the data
+    //    is actually in memory, ready to be processed. The pointers come from
+    //    caller's registers but memory content must be sampled at inner entry.
+    let algo_upper = algorithm.to_uppercase();
+    let is_hash = algo_upper.contains("MD5") || algo_upper.contains("SHA1")
+        || algo_upper.contains("SHA256") || algo_upper.contains("SHA512")
+        || algo_upper.contains("SM3");
+    let is_aes = algo_upper.contains("AES");
+
+    let mem_read_seq = entry_seq; // inner function entry: data is ready here
+
+    let input_hex = if is_hash {
+        // Hash: x1 = data pointer, x2 = length
+        let ptr = reg_vals[1];
+        let len = reg_vals[2];
+        if ptr != u64::MAX && ptr != 0 && len != u64::MAX {
+            let read_len = (len as usize).min(256);
+            if read_len > 0 {
+                read_memory_bytes(session, ptr, mem_read_seq, read_len)
+                    .map(|b| bytes_to_hex(&b))
+            } else {
+                None
+            }
+        } else {
+            None
+        }
+    } else if is_aes {
+        // AES: x0 = input buffer, 64 bytes
+        let ptr = reg_vals[0];
+        if ptr != u64::MAX && ptr != 0 {
+            read_memory_bytes(session, ptr, mem_read_seq, 64)
+                .map(|b| bytes_to_hex(&b))
+        } else {
+            None
+        }
+    } else {
+        // Generic: x0, 64 bytes
+        let ptr = reg_vals[0];
+        if ptr != u64::MAX && ptr != 0 {
+            read_memory_bytes(session, ptr, mem_read_seq, 64)
+                .map(|b| bytes_to_hex(&b))
+        } else {
+            None
+        }
+    };
+
+    // 5. Read output memory at inner function's exit
+    let exit_regs = replay_registers_at(session, exit_seq);
+    let output_hex = if let Some(exit_vals) = &exit_regs {
+        if is_hash {
+            // Hash: x0 = ctx/digest buffer, 64 bytes
+            let ptr = exit_vals[0];
+            if ptr != u64::MAX && ptr != 0 {
+                read_memory_bytes(session, ptr, exit_seq, 64)
+                    .map(|b| bytes_to_hex(&b))
+            } else {
+                None
+            }
+        } else if is_aes {
+            // AES: x1 = output buffer, 64 bytes
+            let ptr = exit_vals[1];
+            if ptr != u64::MAX && ptr != 0 {
+                read_memory_bytes(session, ptr, exit_seq, 64)
+                    .map(|b| bytes_to_hex(&b))
+            } else {
+                None
+            }
+        } else {
+            // Generic: x0, 64 bytes
+            let ptr = exit_vals[0];
+            if ptr != u64::MAX && ptr != 0 {
+                read_memory_bytes(session, ptr, exit_seq, 64)
+                    .map(|b| bytes_to_hex(&b))
+            } else {
+                None
+            }
+        }
+    } else {
+        None
+    };
+
+    // 6. Generate param hint
+    let param_hint = make_param_hint(&algorithm);
+
+    Ok(CryptoFunctionContext {
+        func_name,
+        func_addr: func_addr_str,
+        entry_seq,
+        exit_seq,
+        caller_name,
+        caller_addr,
+        caller_entry_seq,
+        caller_exit_seq,
+        args,
+        input_hex,
+        output_hex,
+        param_hint,
+    })
 }

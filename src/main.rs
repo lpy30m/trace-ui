@@ -67,6 +67,7 @@ fn main() {
             commands::dep_tree::build_dependency_tree_from_slice,
             commands::dep_tree::get_line_def_registers,
             commands::crypto::scan_crypto,
+            commands::crypto::get_crypto_context,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

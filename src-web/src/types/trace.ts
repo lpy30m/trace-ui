@@ -158,3 +158,18 @@ export interface CryptoScanResult {
   total_lines_scanned: number;
   scan_duration_ms: number;
 }
+
+export interface CryptoFunctionContext {
+  func_name: string | null;
+  func_addr: string;
+  entry_seq: number;
+  exit_seq: number;
+  caller_name: string | null;
+  caller_addr: string | null;
+  caller_entry_seq: number | null;
+  caller_exit_seq: number | null;
+  args: [string, string, string, string];
+  input_hex: string | null;
+  output_hex: string | null;
+  param_hint: string;
+}
