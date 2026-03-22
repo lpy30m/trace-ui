@@ -3,7 +3,7 @@ import { listen } from "@tauri-apps/api/event";
 import { invoke } from "@tauri-apps/api/core";
 import { openDepTreeWindow } from "../utils/openDepTreeWindow";
 import { useDragToFloat } from "../hooks/useDragToFloat";
-import type { SearchMatch, SliceResult, CryptoScanResult } from "../types/trace";
+import type { SearchMatch, SliceResult, CryptoScanResult, CryptoCorrelateResult } from "../types/trace";
 import MemoryPanel from "./MemoryPanel";
 import SearchResultList from "./SearchResultList";
 import SearchBar, { SearchOptions } from "./SearchBar";
@@ -69,6 +69,8 @@ interface Props {
   stringsScanning?: boolean;
   cryptoResults: CryptoScanResult | null;
   cryptoScanning: boolean;
+  correlateResults: CryptoCorrelateResult | null;
+  correlateScanning: boolean;
   onSearch: (query: string, options: SearchOptions) => void;
   showSoName?: boolean;
   showAbsAddress?: boolean;
@@ -84,6 +86,8 @@ export default function TabPanel({
   stringsScanning,
   cryptoResults,
   cryptoScanning,
+  correlateResults,
+  correlateScanning,
   onSearch,
   showSoName = false,
   showAbsAddress = false,
@@ -386,6 +390,8 @@ export default function TabPanel({
           sessionId={sessionId}
           cryptoResults={cryptoResults}
           cryptoScanning={cryptoScanning}
+          correlateResults={correlateResults}
+          correlateScanning={correlateScanning}
           onJumpToSeq={onJumpToSeq}
         />
       </div>

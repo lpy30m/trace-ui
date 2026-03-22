@@ -3,10 +3,13 @@ use tauri::State;
 use crate::state::AppState;
 use crate::taint::types::TraceFormat;
 use crate::commands::browse::{parse_trace_line, parse_trace_line_gumtrace};
-use crate::commands::utils::ascii_contains;
 use crate::taint::types::RegId;
+use md5::Md5;
+use sha1::Sha1;
+use sha2::{Sha256, Digest};
+use aho_corasick::AhoCorasick;
 
-/// 28 crypto algorithms with their magic number constants.
+/// 30 crypto algorithms with their magic number constants.
 /// Each entry: (algorithm_name, &[magic_u32_values])
 const CRYPTO_MAGIC_NUMBERS: &[(&str, &[u32])] = &[
     ("MD5",          &[0xD76AA478, 0xE8C7B756, 0x242070DB, 0xC1BDCEEE]),
@@ -36,6 +39,10 @@ const CRYPTO_MAGIC_NUMBERS: &[(&str, &[u32])] = &[
     ("DES",          &[0xFEE1A2B3, 0xD7BEF080]),
     ("DES1",         &[0x3A322A22, 0x2A223A32]),
     ("DES_SBOX",     &[0x2C1E241B, 0x5A7F361D, 0x3D4793C6, 0x0B0EEDF8]),
+    // AES 解密 T-table（Td0 前 4 项）
+    ("AES_Td0",      &[0x50A7F451, 0x5365417E, 0xC3A4171A, 0x965E273A]),
+    // AES 逆 S-box 前 4 字节 packed
+    ("AES_ISBOX",    &[0x52096AD5, 0x30367FD9, 0xF33A8C69, 0x49C8386C]),
 ];
 
 #[derive(Serialize, Clone)]
@@ -57,27 +64,55 @@ pub struct CryptoScanResult {
 }
 
 /// Pre-compute all needle bytes (lowercase hex of each magic number).
-/// Returns Vec<(algorithm, magic_hex_display, needle_bytes)>
-fn build_needles() -> Vec<(&'static str, String, Vec<u8>)> {
-    let mut needles = Vec::new();
+/// Returns (AhoCorasick automaton, Vec<(algo, hex_display)> indexed by pattern id)
+fn build_crypto_ac() -> (AhoCorasick, Vec<(&'static str, String)>) {
+    let mut patterns: Vec<Vec<u8>> = Vec::new();
+    let mut meta: Vec<(&str, String)> = Vec::new();
     for &(algo, magics) in CRYPTO_MAGIC_NUMBERS {
         for &val in magics {
             let hex_display = format!("0x{:08X}", val);
             let needle = format!("{:x}", val).into_bytes();
-            needles.push((algo, hex_display, needle));
+            patterns.push(needle);
+            meta.push((algo, hex_display));
         }
     }
-    needles
+    let ac = aho_corasick::AhoCorasickBuilder::new()
+        .ascii_case_insensitive(true)
+        .build(&patterns)
+        .expect("failed to build AhoCorasick");
+    (ac, meta)
 }
 
-/// Scan a chunk of the trace file for crypto magic numbers.
+/// Minimum distinct magic values required for an algorithm match to be valid.
+/// Algorithms whose matched distinct values < threshold are discarded (reduces false positives).
+fn min_hits_for(algo: &str) -> usize {
+    match algo {
+        "AES_Td0" | "AES_ISBOX" => 2,
+        _ => 1,
+    }
+}
+
+/// Case-insensitive ASCII substring match — only used for secondary verification
+/// (single pattern per candidate, not the hot path).
+#[inline]
+fn ascii_contains(haystack: &[u8], needle: &[u8]) -> bool {
+    if needle.is_empty() { return true; }
+    if needle.len() > haystack.len() { return false; }
+    haystack.windows(needle.len()).any(|window| {
+        window.iter().zip(needle).all(|(h, n)| h.to_ascii_lowercase() == *n)
+    })
+}
+
+/// Scan a chunk of the trace file for crypto magic numbers using Aho-Corasick.
 fn scan_chunk(
     data: &[u8],
     start_seq: u32,
     end_seq: u32,
     start_offset: usize,
-    needles: &[(&str, String, Vec<u8>)],
-    trace_format: TraceFormat,
+    ac: &AhoCorasick,
+    needle_meta: &[(&str, String)],
+    trace_format: crate::taint::types::TraceFormat,
+    max_matches: usize,
 ) -> Vec<CryptoMatch> {
     // 粗估 0.5% 匹配率预分配，减少运行时 Vec 扩容
     let estimated = end_seq.saturating_sub(start_seq) as usize / 200;
@@ -92,11 +127,16 @@ fn scan_chunk(
 
         let line = &data[pos..end];
 
-        for (algo, hex_display, needle) in needles {
-            if ascii_contains(line, needle) {
+        // AhoCorasick finds the first (leftmost) match across all patterns at once
+        if let Some(mat) = ac.find(line) {
+            if matches.len() < max_matches {
+                let pid = mat.pattern().as_usize();
+                let (algo, hex_display) = &needle_meta[pid];
                 let parsed = match trace_format {
-                    TraceFormat::Unidbg => parse_trace_line(seq, line),
-                    TraceFormat::Gumtrace => parse_trace_line_gumtrace(seq, line),
+                    crate::taint::types::TraceFormat::Unidbg =>
+                        crate::commands::browse::parse_trace_line(seq, line),
+                    crate::taint::types::TraceFormat::Gumtrace =>
+                        crate::commands::browse::parse_trace_line_gumtrace(seq, line),
                 };
                 if let Some(p) = parsed {
                     matches.push(CryptoMatch {
@@ -108,7 +148,6 @@ fn scan_chunk(
                         changes: p.changes,
                     });
                 }
-                break; // one match per line is enough
             }
         }
 
@@ -160,20 +199,38 @@ pub async fn scan_crypto(
 
     let result = tauri::async_runtime::spawn_blocking(move || {
         let data: &[u8] = &mmap_arc;
-        let needles = build_needles();
+        let (ac, needle_meta) = build_crypto_ac();
+        let max_total = 10000usize;
 
-        let all_matches = if let Some(chunks) = chunks {
+        let mut all_matches = if let Some(chunks) = chunks {
             use rayon::prelude::*;
             let chunk_results: Vec<Vec<CryptoMatch>> = chunks.par_iter()
                 .map(|&(start_seq, end_seq, start_offset)| {
-                    scan_chunk(data, start_seq, end_seq, start_offset, &needles, trace_format)
+                    scan_chunk(data, start_seq, end_seq, start_offset, &ac, &needle_meta, trace_format, max_total)
                 })
                 .collect();
 
             chunk_results.into_iter().flatten().collect()
         } else {
-            scan_chunk(data, 0, total_lines, 0, &needles, trace_format)
+            scan_chunk(data, 0, total_lines, 0, &ac, &needle_meta, trace_format, max_total)
         };
+
+        // Post-filter: discard algorithms whose distinct magic hits < min_hits threshold
+        let pass_filter: std::collections::HashSet<String> = {
+            let mut algo_distinct: std::collections::HashMap<&str, std::collections::HashSet<&str>> =
+                std::collections::HashMap::new();
+            for m in &all_matches {
+                algo_distinct.entry(m.algorithm.as_str())
+                    .or_default()
+                    .insert(m.magic_hex.as_str());
+            }
+            algo_distinct
+                .into_iter()
+                .filter(|(algo, vals)| vals.len() >= min_hits_for(algo))
+                .map(|(algo, _)| algo.to_string())
+                .collect()
+        };
+        all_matches.retain(|m| pass_filter.contains(&m.algorithm));
 
         // Collect unique algorithms found
         let mut algos: Vec<String> = Vec::new();
@@ -273,11 +330,12 @@ fn read_memory_bytes(
 }
 
 fn make_param_hint(algorithm: &str) -> String {
+    // Hints describe inner function (transform/compress) params
     let algo_upper = algorithm.to_uppercase();
     if algo_upper.contains("MD5") || algo_upper.contains("SHA1") || algo_upper.contains("SHA256")
         || algo_upper.contains("SHA512") || algo_upper.contains("SM3")
     {
-        "x0=ctx, x1=data_ptr, x2=data_len".to_string()
+        "x0=ctx, x1=block_ptr (64B)".to_string()
     } else if algo_upper.contains("AES") {
         "x0=input, x1=output, x2=key, x3=rounds/len".to_string()
     } else {
@@ -344,9 +402,11 @@ pub fn get_crypto_context(
         None => (None, None, None, None),
     };
 
-    // 3. Replay registers at the parent's entry (or inner entry as fallback) to get x0~x3
-    let args_seq = caller_entry_seq.unwrap_or(entry_seq);
-    let entry_regs = replay_registers_at(session, args_seq);
+    // 3. Replay registers at the inner function's entry to get x0~x3
+    //    These are the actual args passed to the transform/compress function.
+    //    Caller info is kept for display only — its args may be from a much
+    //    higher-level function and not directly useful.
+    let entry_regs = replay_registers_at(session, entry_seq);
     let reg_vals: [u64; 4] = match &entry_regs {
         Some(vals) => [vals[0], vals[1], vals[2], vals[3]],
         None => [u64::MAX; 4],
@@ -376,17 +436,13 @@ pub fn get_crypto_context(
     let mem_read_seq = entry_seq; // inner function entry: data is ready here
 
     let input_hex = if is_hash {
-        // Hash: x1 = data pointer, x2 = length
+        // Hash transform/compress: x0=ctx, x1=block_ptr
+        // Read block at x1 — SHA-256 block = 64 bytes, SHA-512 = 128 bytes
         let ptr = reg_vals[1];
-        let len = reg_vals[2];
-        if ptr != u64::MAX && ptr != 0 && len != u64::MAX {
-            let read_len = (len as usize).min(256);
-            if read_len > 0 {
-                read_memory_bytes(session, ptr, mem_read_seq, read_len)
-                    .map(|b| bytes_to_hex(&b))
-            } else {
-                None
-            }
+        let block_size: usize = if algo_upper.contains("SHA512") { 128 } else { 64 };
+        if ptr != u64::MAX && ptr != 0 {
+            read_memory_bytes(session, ptr, mem_read_seq, block_size)
+                .map(|b| bytes_to_hex(&b))
         } else {
             None
         }
@@ -462,4 +518,262 @@ pub fn get_crypto_context(
         output_hex,
         param_hint,
     })
+}
+
+// ── Crypto String Correlate ──
+
+#[derive(Serialize, Clone)]
+pub struct CryptoCorrelateMatch {
+    pub input_string: String,
+    pub input_addr: String,
+    pub algorithm: String,
+    pub hash_hex: String,
+    pub seq: u32,
+    pub address: String,
+    pub disasm: String,
+}
+
+#[derive(Serialize)]
+pub struct CryptoCorrelateResult {
+    pub matches: Vec<CryptoCorrelateMatch>,
+    pub strings_tested: usize,
+    pub needles_count: usize,
+    pub scan_duration_ms: u64,
+}
+
+/// Needle for correlate scan: first 4 bytes of hash as lowercase hex (8 ascii chars),
+/// plus bytes 4..8 for secondary verification.
+struct CorrelateNeedle {
+    string_idx: usize,
+    algo: &'static str,
+    full_hash_hex: String,
+    secondary: Vec<u8>, // next 8 hex chars as ascii bytes (for verification after AC match)
+}
+
+/// Scan a chunk for correlate needles using Aho-Corasick.
+/// AC matches on primary (first 8 hex chars), then verify secondary bytes.
+fn correlate_scan_chunk(
+    data: &[u8],
+    start_seq: u32,
+    end_seq: u32,
+    start_offset: usize,
+    ac: &AhoCorasick,
+    needles: &[CorrelateNeedle],
+    trace_format: crate::taint::types::TraceFormat,
+    max_matches: usize,
+) -> Vec<(usize, &'static str, String, u32, String, String)> {
+    // Returns: (string_idx, algo, full_hash_hex, seq, address, disasm)
+    let mut matches = Vec::new();
+    let mut pos = start_offset;
+    let mut seq = start_seq;
+
+    while pos < data.len() && seq < end_seq {
+        let end = memchr::memchr(b'\n', &data[pos..])
+            .map(|i| pos + i)
+            .unwrap_or(data.len());
+
+        let line = &data[pos..end];
+
+        // Collect unique pattern matches on this line via AC
+        let mut seen_pids: Vec<usize> = Vec::new();
+        for mat in ac.find_iter(line) {
+            let pid = mat.pattern().as_usize();
+            if !seen_pids.contains(&pid) {
+                seen_pids.push(pid);
+            }
+        }
+
+        // Verify secondary and emit matches
+        let mut parsed_cache: Option<Option<crate::commands::browse::TraceLine>> = None;
+        for pid in seen_pids {
+            let needle = &needles[pid];
+            // Verify secondary bytes also present on this line
+            if !needle.secondary.is_empty() && !ascii_contains(line, &needle.secondary) {
+                continue;
+            }
+            if matches.len() >= max_matches { break; }
+            // Lazily parse the line (once per line, shared across multiple hits)
+            let parsed = parsed_cache.get_or_insert_with(|| {
+                match trace_format {
+                    crate::taint::types::TraceFormat::Unidbg =>
+                        crate::commands::browse::parse_trace_line(seq, line),
+                    crate::taint::types::TraceFormat::Gumtrace =>
+                        crate::commands::browse::parse_trace_line_gumtrace(seq, line),
+                }
+            });
+            if let Some(p) = parsed {
+                matches.push((
+                    needle.string_idx,
+                    needle.algo,
+                    needle.full_hash_hex.clone(),
+                    seq,
+                    p.address.clone(),
+                    p.disasm.clone(),
+                ));
+            }
+        }
+
+        pos = end + 1;
+        seq += 1;
+    }
+
+    matches
+}
+
+#[tauri::command]
+pub async fn correlate_crypto_strings(
+    session_id: String,
+    state: State<'_, AppState>,
+) -> Result<CryptoCorrelateResult, String> {
+    let start_time = std::time::Instant::now();
+
+    let num_cpus = std::thread::available_parallelism()
+        .map(|n| n.get())
+        .unwrap_or(4);
+
+    // 1. Extract strings from session.string_index
+    let (mmap_arc, total_lines, trace_format, chunks, unique_strings) = {
+        let sessions = state.sessions.read().map_err(|e| e.to_string())?;
+        let session = sessions.get(&session_id)
+            .ok_or_else(|| format!("Session {} not found", session_id))?;
+
+        let string_index = session.string_index.as_ref()
+            .ok_or("No string scan results. Run Scan Strings first.")?;
+
+        // Filter: byte_len 4~256, deduplicate by content, limit 5000
+        let mut seen = std::collections::HashSet::new();
+        let mut unique: Vec<(usize, String, String)> = Vec::new(); // (idx, content, addr_hex)
+        for (i, rec) in string_index.strings.iter().enumerate() {
+            if rec.byte_len < 4 || rec.byte_len > 256 { continue; }
+            if seen.insert(rec.content.clone()) {
+                unique.push((i, rec.content.clone(), format!("0x{:x}", rec.addr)));
+                if unique.len() >= 5000 { break; }
+            }
+        }
+
+        let total_lines = session.lidx_store.as_ref().map(|s| s.total_lines()).unwrap_or(0);
+        let chunks: Option<Vec<(u32, u32, usize)>> = if num_cpus > 1 && total_lines > 10000 {
+            session.line_index_view().map(|li| {
+                let data: &[u8] = &session.mmap;
+                let num_chunks = num_cpus.min(16);
+                let lines_per_chunk = (total_lines as usize + num_chunks - 1) / num_chunks;
+                let mut chunks = Vec::with_capacity(num_chunks);
+                for i in 0..num_chunks {
+                    let start_seq = (i * lines_per_chunk) as u32;
+                    if start_seq >= total_lines { break; }
+                    let end_seq = ((i + 1) * lines_per_chunk).min(total_lines as usize) as u32;
+                    let start_offset = li.line_byte_offset(data, start_seq).unwrap_or(0) as usize;
+                    chunks.push((start_seq, end_seq, start_offset));
+                }
+                chunks
+            })
+        } else {
+            None
+        };
+
+        (session.mmap.clone(), total_lines, session.trace_format, chunks, unique)
+    };
+
+    let strings_tested = unique_strings.len();
+
+    let result = tauri::async_runtime::spawn_blocking(move || {
+        // 2. Compute hashes and build needles + Aho-Corasick automaton
+        let mut needles: Vec<CorrelateNeedle> = Vec::new();
+        let mut primary_patterns: Vec<Vec<u8>> = Vec::new();
+
+        for (_idx, (string_idx, content, _addr)) in unique_strings.iter().enumerate() {
+            let input_bytes = content.as_bytes();
+
+            // MD5
+            let md5_hash = {
+                let mut hasher = Md5::new();
+                hasher.update(input_bytes);
+                hasher.finalize()
+            };
+            let md5_hex = bytes_to_hex(&md5_hash);
+            // SHA1
+            let sha1_hash = {
+                let mut hasher = Sha1::new();
+                hasher.update(input_bytes);
+                hasher.finalize()
+            };
+            let sha1_hex = bytes_to_hex(&sha1_hash);
+            // SHA256
+            let sha256_hash = {
+                let mut hasher = Sha256::new();
+                hasher.update(input_bytes);
+                hasher.finalize()
+            };
+            let sha256_hex = bytes_to_hex(&sha256_hash);
+
+            for (algo, hex) in [("MD5", md5_hex), ("SHA1", sha1_hex), ("SHA256", sha256_hex)] {
+                if hex.len() < 16 { continue; }
+                let primary = hex[..8].as_bytes().to_vec();
+                let secondary = hex[8..16].as_bytes().to_vec();
+                primary_patterns.push(primary);
+                needles.push(CorrelateNeedle {
+                    string_idx: *string_idx,
+                    algo,
+                    full_hash_hex: hex,
+                    secondary,
+                });
+            }
+        }
+
+        let needles_count = needles.len();
+        let ac = aho_corasick::AhoCorasickBuilder::new()
+            .ascii_case_insensitive(true)
+            .build(&primary_patterns)
+            .expect("failed to build correlate AhoCorasick");
+        let max_total = 10000usize;
+        let data: &[u8] = &mmap_arc;
+
+        // 3. Scan trace
+        let raw_matches = if let Some(chunks) = chunks {
+            use rayon::prelude::*;
+            let chunk_results: Vec<Vec<_>> = chunks.par_iter()
+                .map(|&(start_seq, end_seq, start_offset)| {
+                    correlate_scan_chunk(data, start_seq, end_seq, start_offset, &ac, &needles, trace_format, max_total)
+                })
+                .collect();
+
+            let mut all = Vec::new();
+            for chunk_matches in chunk_results {
+                if all.len() >= max_total { break; }
+                let remaining = max_total - all.len();
+                all.extend(chunk_matches.into_iter().take(remaining));
+            }
+            all
+        } else {
+            correlate_scan_chunk(data, 0, total_lines, 0, &ac, &needles, trace_format, max_total)
+        };
+
+        // 4. Build result
+        let matches: Vec<CryptoCorrelateMatch> = raw_matches.into_iter().map(|(str_idx, algo, hash_hex, seq, address, disasm)| {
+            let (content, addr) = unique_strings.iter()
+                .find(|(idx, _, _)| *idx == str_idx)
+                .map(|(_, c, a)| (c.clone(), a.clone()))
+                .unwrap_or_default();
+            CryptoCorrelateMatch {
+                input_string: content,
+                input_addr: addr,
+                algorithm: algo.to_string(),
+                hash_hex,
+                seq,
+                address,
+                disasm,
+            }
+        }).collect();
+
+        CryptoCorrelateResult {
+            matches,
+            strings_tested,
+            needles_count,
+            scan_duration_ms: start_time.elapsed().as_millis() as u64,
+        }
+    })
+    .await
+    .map_err(|e| format!("Correlate thread panic: {}", e))?;
+
+    Ok(result)
 }

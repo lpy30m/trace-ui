@@ -68,6 +68,7 @@ fn main() {
             commands::dep_tree::get_line_def_registers,
             commands::crypto::scan_crypto,
             commands::crypto::get_crypto_context,
+            commands::crypto::correlate_crypto_strings,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
