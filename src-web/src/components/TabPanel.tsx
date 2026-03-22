@@ -1,7 +1,7 @@
 import React, { useState, useCallback, useEffect, useMemo, useRef } from "react";
 import { listen } from "@tauri-apps/api/event";
 import { useDragToFloat } from "../hooks/useDragToFloat";
-import type { SearchMatch, SliceResult, CryptoScanResult } from "../types/trace";
+import type { SearchMatch, SliceResult, CryptoScanResult, CryptoCorrelateResult } from "../types/trace";
 import MemoryPanel from "./MemoryPanel";
 import SearchResultList from "./SearchResultList";
 import SearchBar, { SearchOptions } from "./SearchBar";
@@ -41,6 +41,8 @@ interface Props {
   stringsScanning?: boolean;
   cryptoResults: CryptoScanResult | null;
   cryptoScanning: boolean;
+  correlateResults: CryptoCorrelateResult | null;
+  correlateScanning: boolean;
   onSearch: (query: string, options: SearchOptions) => void;
 }
 
@@ -53,6 +55,8 @@ export default function TabPanel({
   stringsScanning,
   cryptoResults,
   cryptoScanning,
+  correlateResults,
+  correlateScanning,
   onSearch,
 }: Props) {
   const [active, setActive] = useState<TabName>("Memory");
@@ -344,6 +348,8 @@ export default function TabPanel({
           sessionId={sessionId}
           cryptoResults={cryptoResults}
           cryptoScanning={cryptoScanning}
+          correlateResults={correlateResults}
+          correlateScanning={correlateScanning}
           onJumpToSeq={onJumpToSeq}
         />
       </div>

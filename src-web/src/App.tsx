@@ -28,7 +28,7 @@ import { useFuncRenameStore } from "./hooks/useFuncRenameStore";
 import { usePreferences, saveSessionSnapshot, loadSessionSnapshot } from "./hooks/usePreferences";
 import { useHighlights } from "./hooks/useHighlights";
 import type { SessionSnapshot } from "./hooks/usePreferences";
-import type { CallTreeNodeDto, SearchMatch, CryptoScanResult } from "./types/trace";
+import type { CallTreeNodeDto, SearchMatch, CryptoScanResult, CryptoCorrelateResult } from "./types/trace";
 import type { SearchOptions } from "./components/SearchBar";
 
 const PANEL_SIZES: Record<string, { width: number; height: number }> = {
@@ -103,6 +103,8 @@ function App() {
   const [stringsScanningSessionId, setStringsScanningSessionId] = useState<string | null>(null);
   const [cryptoScanningSessionId, setCryptoScanningSessionId] = useState<string | null>(null);
   const [cryptoResults, setCryptoResults] = useState<CryptoScanResult | null>(null);
+  const [correlateScanningSessionId, setCorrelateScanningSessionId] = useState<string | null>(null);
+  const [correlateResults, setCorrelateResults] = useState<CryptoCorrelateResult | null>(null);
   const [leftTab, setLeftTab] = useState<"tree" | "list">("tree");
   const [callInfoExpandRequest, setCallInfoExpandRequest] = useState<{ seq: number; nonce: number } | null>(null);
 
@@ -113,7 +115,7 @@ function App() {
   useEffect(() => { loadForFile(filePath); }, [filePath, loadForFile]);
 
   // 切换 session 时清除 crypto 结果
-  useEffect(() => { setCryptoResults(null); }, [activeSessionId]);
+  useEffect(() => { setCryptoResults(null); setCorrelateResults(null); }, [activeSessionId]);
 
   // 控制 TraceTable 滚动对齐方式：back/forward 用 "auto"，其他用 "center"
   const scrollAlignRef = useRef<"center" | "auto" | "end">("center");
@@ -610,6 +612,22 @@ function App() {
     }
   }, [activeSessionId, showToast]);
 
+  const correlateCryptoStrings = useCallback(async () => {
+    if (!activeSessionId) return;
+    setCorrelateScanningSessionId(activeSessionId);
+    setCorrelateResults(null);
+    try {
+      const result = await invoke<CryptoCorrelateResult>("correlate_crypto_strings", { sessionId: activeSessionId });
+      setCorrelateResults(result);
+      showToast(`Found ${result.matches.length} string-hash correlations (${result.strings_tested} strings tested)`, { type: "success" });
+    } catch (e) {
+      console.warn("correlate_crypto_strings:", e);
+      showToast(String(e), { type: "error" });
+    } finally {
+      setCorrelateScanningSessionId(null);
+    }
+  }, [activeSessionId, showToast]);
+
   // 浮动窗口引用（用于主窗口关闭时清理）
   const floatingWindowRefs = useRef<Map<string, WebviewWindow>>(new Map());
 
@@ -994,6 +1012,8 @@ function App() {
         stringsScanning={stringsScanningSessionId === activeSessionId}
         onScanCrypto={scanCrypto}
         cryptoScanning={cryptoScanningSessionId === activeSessionId}
+        onCorrelateStrings={correlateCryptoStrings}
+        correlateScanning={correlateScanningSessionId === activeSessionId}
         isPhase2Ready={isPhase2Ready}
         onClearCache={() => {
           clearRecent();
@@ -1146,6 +1166,8 @@ function App() {
                 stringsScanning={stringsScanningSessionId === activeSessionId}
                 cryptoResults={cryptoResults}
                 cryptoScanning={cryptoScanningSessionId === activeSessionId}
+                correlateResults={correlateResults}
+                correlateScanning={correlateScanningSessionId === activeSessionId}
                 onSearch={handleSearch}
               />
             </Panel>

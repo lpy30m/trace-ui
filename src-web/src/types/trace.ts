@@ -151,3 +151,20 @@ export interface CryptoFunctionContext {
   output_hex: string | null;
   param_hint: string;
 }
+
+export interface CryptoCorrelateMatch {
+  input_string: string;
+  input_addr: string;
+  algorithm: string;
+  hash_hex: string;
+  seq: number;
+  address: string;
+  disasm: string;
+}
+
+export interface CryptoCorrelateResult {
+  matches: CryptoCorrelateMatch[];
+  strings_tested: number;
+  needles_count: number;
+  scan_duration_ms: number;
+}
