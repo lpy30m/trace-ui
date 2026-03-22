@@ -1,8 +1,6 @@
 use serde::Serialize;
 use tauri::State;
 use crate::state::AppState;
-use crate::taint::types::TraceFormat;
-use crate::commands::browse::{parse_trace_line, parse_trace_line_gumtrace};
 use crate::taint::types::RegId;
 use md5::Md5;
 use sha1::Sha1;
