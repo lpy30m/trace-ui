@@ -84,3 +84,60 @@ pub struct AnalysisReportExport {
     pub bytes_written: u64,
     pub content: Option<String>,
 }
+
+#[derive(Clone, Debug, Default)]
+pub struct TraceDiffOptions {
+    pub start_seq: Option<u32>,
+    pub end_seq: Option<u32>,
+    pub max_items: u32,
+}
+
+#[derive(Clone, Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct TraceProfileSummary {
+    pub session_id: String,
+    pub file_path: String,
+    pub total_lines: u32,
+    pub scanned_lines: u32,
+    pub instruction_count: u64,
+    pub call_count: u64,
+    pub branch_count: u64,
+    pub memory_access_count: u64,
+    pub modules: Vec<String>,
+}
+
+#[derive(Clone, Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct TraceCountDelta {
+    pub key: String,
+    pub label: String,
+    pub left_count: u64,
+    pub right_count: u64,
+    pub delta: i64,
+    pub left_sample_seq: Option<u32>,
+    pub right_sample_seq: Option<u32>,
+}
+
+#[derive(Clone, Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct TraceDiffSection {
+    pub added: Vec<TraceCountDelta>,
+    pub removed: Vec<TraceCountDelta>,
+    pub changed: Vec<TraceCountDelta>,
+    pub total_added: u32,
+    pub total_removed: u32,
+    pub total_changed: u32,
+    pub truncated: bool,
+}
+
+#[derive(Clone, Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct TraceDiffResult {
+    pub left: TraceProfileSummary,
+    pub right: TraceProfileSummary,
+    pub functions: TraceDiffSection,
+    pub branches: TraceDiffSection,
+    pub instructions: TraceDiffSection,
+    pub memory_access_sites: TraceDiffSection,
+    pub limitations: Vec<String>,
+}

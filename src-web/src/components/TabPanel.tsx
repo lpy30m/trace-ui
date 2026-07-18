@@ -12,11 +12,13 @@ import SearchResultList from "./SearchResultList";
 import SearchBar, { SearchOptions } from "./SearchBar";
 import StringsPanel from "./StringsPanel";
 import CryptoPanel from "./CryptoPanel";
+import AnalysisHistoryPanel from "./AnalysisHistoryPanel";
+import FunctionInspectorPanel from "./FunctionInspectorPanel";
 import TaintResultViews from "./TaintResultViews";
 import { useSelectedSeq } from "../stores/selectedSeqStore";
 import { explainTaintError } from "../utils/taintError";
 
-const TABS = ["Memory", "Accesses", "Taint State", "Search", "Strings", "Crypto"] as const;
+const TABS = ["Memory", "Accesses", "Taint State", "Search", "Strings", "Crypto", "Analyses", "Function"] as const;
 type TabName = typeof TABS[number];
 
 function DepTreeFromSliceButton({ sessionId }: { sessionId: string | null }) {
@@ -52,6 +54,8 @@ const TAB_TO_PANEL: Record<string, string> = {
   "Search": "search",
   "Strings": "strings",
   "Crypto": "crypto",
+  "Analyses": "analyses",
+  "Function": "function",
 };
 
 interface Props {
@@ -493,6 +497,14 @@ export default function TabPanel({
           onScanStrings={onScanStrings}
           onTraceInput={onTraceDigestInput}
         />
+      </div>
+
+      <div style={tabStyle("Analyses")}>
+        <AnalysisHistoryPanel sessionId={sessionId} />
+      </div>
+
+      <div style={tabStyle("Function")}>
+        <FunctionInspectorPanel sessionId={sessionId} onJumpToSeq={onJumpToSeq} active={active === "Function"} />
       </div>
 
       <div style={tabStyle("Accesses")}>

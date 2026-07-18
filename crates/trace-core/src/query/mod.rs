@@ -1,8 +1,11 @@
 pub mod analysis_summary;
 pub mod call_tree;
 pub mod crypto;
+pub mod crypto_functions;
 pub mod dep_tree;
+pub mod evidence_score;
 pub mod forward_slice;
+pub mod function_inspect;
 pub mod hash_match;
 pub mod mem_access;
 pub mod registers;

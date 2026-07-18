@@ -210,7 +210,7 @@ pub struct MemHistoryMeta {
 
 // ── Call Tree ──
 
-#[derive(Serialize)]
+#[derive(Serialize, Clone)]
 pub struct CallTreeNodeDto {
     pub id: u32,
     pub func_addr: String,

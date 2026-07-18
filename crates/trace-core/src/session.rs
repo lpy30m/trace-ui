@@ -62,6 +62,8 @@ pub struct SessionState {
     pub call_search_texts: HashMap<u32, String>,
     /// 缓存 crypto scan 结果，避免重复扫描
     pub crypto_cache: Option<CryptoScanResult>,
+    /// 缓存函数级密码识别报告（全量，按需截断）
+    pub crypto_functions_cache: Option<crate::query::crypto_functions::CryptoFunctionReport>,
 }
 
 impl SessionState {

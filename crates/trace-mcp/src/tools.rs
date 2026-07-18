@@ -8,10 +8,11 @@ use rmcp::{
 
 use crate::types::*;
 use trace_core::{
-    api_types::TraceLine, classify_flow_endpoints, parse_hex_addr, summarize_dependency_graph,
-    apply_resource_validation, AnalysisEvidence, BuildOptions, DepTreeOptions,
-    ForwardSliceOptions, HashAlgorithm, HashMatchRequest, HashTransformOptions, SearchOptions,
-    SliceOptions, StringQueryOptions, TraceEngine,
+    api_types::TraceLine, apply_resource_validation, classify_flow_endpoints, parse_hex_addr,
+    score_evidence, summarize_dependency_graph, AnalysisEvidence, BuildOptions,
+    CryptoFunctionsOptions, DepTreeOptions, EvidenceScoreSignal, ForwardSliceOptions, HashAlgorithm,
+    HashMatchRequest, HashTransformOptions, SearchOptions, SliceOptions, StringQueryOptions,
+    TraceDiffOptions, TraceEngine,
 };
 
 // ── 截断常量 ──
@@ -520,7 +521,7 @@ fn run_known_digest_analysis(
         }
     }
 
-    let result = serde_json::json!({
+    let mut result = serde_json::json!({
         "session_id": session_id,
         "string_matches": string_matches,
         "memory_matches": memory_matches,
@@ -536,8 +537,242 @@ fn run_known_digest_analysis(
             "Run taint_analysis with mem:ADDRESS:SIZE@(SEQ+1), or repeat with trace_matches=true."
         },
     });
+    let candidate_assessments = score_known_digest_candidates(&result);
+    let verified_count = candidate_assessments
+        .iter()
+        .filter(|item| item["assessment"]["grade"] == "verified")
+        .count();
+    let related_count = candidate_assessments
+        .iter()
+        .filter(|item| item["assessment"]["grade"] == "related")
+        .count();
+    let uncertain_count = candidate_assessments.len() - verified_count - related_count;
+    result["candidate_assessments"] = serde_json::Value::Array(candidate_assessments);
+    result["assessment_summary"] = serde_json::json!({
+        "verified": verified_count,
+        "related": related_count,
+        "uncertain": uncertain_count,
+        "scope_note": "Candidate verification and producer attribution are scored separately."
+    });
     let evidence = collect_known_digest_evidence(&result);
     Ok((result, evidence, request_record))
+}
+
+fn score_known_digest_candidates(result: &serde_json::Value) -> Vec<serde_json::Value> {
+    let traced = result
+        .get("traced_matches")
+        .and_then(serde_json::Value::as_array)
+        .cloned()
+        .unwrap_or_default();
+    let mut assessments = Vec::new();
+
+    if let Some(matches) = result
+        .get("string_matches")
+        .and_then(|value| value.get("matches"))
+        .and_then(serde_json::Value::as_array)
+    {
+        for matched in matches {
+            let query_index = matched
+                .get("queryIndex")
+                .and_then(serde_json::Value::as_u64)
+                .unwrap_or_default();
+            let addr = matched
+                .get("addr")
+                .and_then(serde_json::Value::as_str)
+                .unwrap_or_default();
+            let seq = matched
+                .get("seq")
+                .and_then(serde_json::Value::as_u64)
+                .unwrap_or_default();
+            let trace = traced.iter().find(|item| {
+                item.get("kind").and_then(serde_json::Value::as_str) == Some("candidate_string")
+                    && item.get("query_index").and_then(serde_json::Value::as_u64)
+                        == Some(query_index)
+                    && item.get("addr").and_then(serde_json::Value::as_str) == Some(addr)
+                    && item.get("seq").and_then(serde_json::Value::as_u64) == Some(seq)
+            });
+            let origin_available = trace
+                .and_then(|item| item.get("analysis"))
+                .is_some_and(|value| !value.is_null());
+            let origin_truncated = trace
+                .and_then(|item| item.get("analysis"))
+                .and_then(|analysis| analysis.get("summary"))
+                .and_then(|summary| summary.get("truncated"))
+                .and_then(serde_json::Value::as_bool)
+                .unwrap_or(false);
+            let function_context = trace
+                .and_then(|item| item.get("analysis"))
+                .and_then(|analysis| analysis.get("summary"))
+                .and_then(|summary| summary.get("functions"))
+                .and_then(serde_json::Value::as_array)
+                .is_some_and(|values| !values.is_empty());
+            let xrefs = matched
+                .get("xrefCount")
+                .and_then(serde_json::Value::as_u64)
+                .unwrap_or_default();
+            let assessment = score_evidence(
+                "candidate_bytes",
+                true,
+                vec![
+                    EvidenceScoreSignal::new(
+                        "exact_digest_recomputation",
+                        "The candidate bytes recompute to the requested digest.",
+                        60,
+                        true,
+                        matched
+                            .get("normalizedDigest")
+                            .and_then(serde_json::Value::as_str)
+                            .map(str::to_string),
+                    ),
+                    EvidenceScoreSignal::new(
+                        "runtime_observation",
+                        "The candidate was observed in runtime memory.",
+                        10,
+                        true,
+                        Some(format!("{addr} at seq {seq}")),
+                    ),
+                    EvidenceScoreSignal::new(
+                        "explicit_transform",
+                        "The exact encoding transform is recorded.",
+                        10,
+                        matched.get("transform").is_some(),
+                        matched.get("transform").map(serde_json::Value::to_string),
+                    ),
+                    EvidenceScoreSignal::new(
+                        "runtime_xref",
+                        "The runtime string has instruction cross-references.",
+                        5,
+                        xrefs > 0,
+                        Some(format!("xref_count={xrefs}")),
+                    ),
+                    EvidenceScoreSignal::new(
+                        "origin_trace",
+                        "A backward origin trace was produced for the candidate.",
+                        10,
+                        origin_available,
+                        origin_available.then(|| format!("candidate origin traced from {addr} at seq {seq}")),
+                    ),
+                    EvidenceScoreSignal::new(
+                        "function_context",
+                        "The origin trace contains function-level context.",
+                        5,
+                        function_context,
+                        None,
+                    ),
+                    EvidenceScoreSignal::new(
+                        "truncated_origin",
+                        "The origin trace was truncated.",
+                        -10,
+                        origin_truncated,
+                        None,
+                    ),
+                ],
+                vec![
+                    "Verified means these candidate bytes produce the digest; it does not by itself prove that the traced program used them for this output."
+                        .to_string(),
+                ],
+            );
+            assessments.push(serde_json::json!({
+                "kind": "candidate_string",
+                "query_index": query_index,
+                "digest": matched.get("normalizedDigest"),
+                "addr": addr,
+                "seq": seq,
+                "content": matched.get("content"),
+                "transform": matched.get("transform"),
+                "assessment": assessment,
+            }));
+        }
+    }
+
+    if let Some(matches) = result
+        .get("memory_matches")
+        .and_then(|value| value.get("matches"))
+        .and_then(serde_json::Value::as_array)
+    {
+        for matched in matches {
+            let query_index = matched
+                .get("queryIndex")
+                .and_then(serde_json::Value::as_u64)
+                .unwrap_or_default();
+            let addr = matched
+                .get("addr")
+                .and_then(serde_json::Value::as_str)
+                .unwrap_or_default();
+            let seq = matched
+                .get("lastWriteSeq")
+                .and_then(serde_json::Value::as_u64)
+                .unwrap_or_default();
+            let trace = traced.iter().find(|item| {
+                item.get("kind").and_then(serde_json::Value::as_str) == Some("digest_output")
+                    && item.get("query_index").and_then(serde_json::Value::as_u64)
+                        == Some(query_index)
+                    && item.get("addr").and_then(serde_json::Value::as_str) == Some(addr)
+                    && item.get("seq").and_then(serde_json::Value::as_u64) == Some(seq)
+            });
+            let origin_available = trace
+                .and_then(|item| item.get("analysis"))
+                .is_some_and(|value| !value.is_null());
+            let write_count = matched
+                .get("writeSeqs")
+                .and_then(serde_json::Value::as_array)
+                .map_or(0, Vec::len);
+            let assessment = score_evidence(
+                "digest_output_buffer",
+                true,
+                vec![
+                    EvidenceScoreSignal::new(
+                        "exact_digest_bytes",
+                        "The reconstructed memory bytes exactly equal the requested digest.",
+                        65,
+                        true,
+                        matched
+                            .get("normalizedDigest")
+                            .and_then(serde_json::Value::as_str)
+                            .map(str::to_string),
+                    ),
+                    EvidenceScoreSignal::new(
+                        "runtime_writes",
+                        "The digest buffer was reconstructed from observed memory writes.",
+                        20,
+                        write_count > 0,
+                        Some(format!("write_count={write_count}")),
+                    ),
+                    EvidenceScoreSignal::new(
+                        "complete_buffer_width",
+                        "The full digest-width buffer was reconstructed.",
+                        10,
+                        matched
+                            .get("byteLen")
+                            .and_then(serde_json::Value::as_u64)
+                            .unwrap_or_default()
+                            > 0,
+                        matched.get("byteLen").map(serde_json::Value::to_string),
+                    ),
+                    EvidenceScoreSignal::new(
+                        "origin_trace",
+                        "A backward trace was produced from the digest output buffer.",
+                        5,
+                        origin_available,
+                        origin_available.then(|| format!("digest output traced from {addr} at seq {seq}")),
+                    ),
+                ],
+                vec![
+                    "Verified means the output buffer contains the digest bytes; the original input still requires dependency evidence."
+                        .to_string(),
+                ],
+            );
+            assessments.push(serde_json::json!({
+                "kind": "digest_output",
+                "query_index": query_index,
+                "digest": matched.get("normalizedDigest"),
+                "addr": addr,
+                "seq": seq,
+                "assessment": assessment,
+            }));
+        }
+    }
+    assessments
 }
 
 fn run_crypto_detection(
@@ -999,9 +1234,519 @@ fn run_forward_taint_analysis(
     Ok((result, evidence, request_record))
 }
 
+fn collect_trace_diff_evidence(diff: &serde_json::Value) -> AnalysisEvidence {
+    let mut evidence = AnalysisEvidence::default();
+    for side in ["left", "right"] {
+        if let Some(modules) = diff
+            .get(side)
+            .and_then(|value| value.get("modules"))
+            .and_then(serde_json::Value::as_array)
+        {
+            for module in modules.iter().filter_map(serde_json::Value::as_str) {
+                push_unique(&mut evidence.modules, module);
+            }
+        }
+    }
+    if let Some(functions) = diff.get("functions") {
+        for bucket in ["added", "removed", "changed"] {
+            if let Some(items) = functions.get(bucket).and_then(serde_json::Value::as_array) {
+                for item in items {
+                    if let Some(label) = item.get("label").and_then(serde_json::Value::as_str) {
+                        push_unique(&mut evidence.functions, label);
+                    }
+                }
+            }
+        }
+    }
+    if let Some(branches) = diff.get("branches") {
+        for bucket in ["added", "removed", "changed"] {
+            if let Some(items) = branches.get(bucket).and_then(serde_json::Value::as_array) {
+                for item in items {
+                    if let Some(label) = item.get("label").and_then(serde_json::Value::as_str) {
+                        push_unique(&mut evidence.operations, label);
+                    }
+                }
+            }
+        }
+    }
+    evidence.functions.truncate(100);
+    evidence.operations.truncate(100);
+    evidence
+}
+
+fn run_trace_diff_analysis(
+    engine: &TraceEngine,
+    left_session_id: &str,
+    right_session_id: &str,
+    start_seq: Option<u32>,
+    end_seq: Option<u32>,
+    max_items: u32,
+    checkpoint: &mut dyn FnMut(&str, u8) -> Result<(), String>,
+) -> Result<(serde_json::Value, AnalysisEvidence, serde_json::Value), String> {
+    let request = serde_json::json!({
+        "left_session_id": left_session_id,
+        "right_session_id": right_session_id,
+        "start_seq": start_seq,
+        "end_seq": end_seq,
+        "max_items": max_items.clamp(1, 1000),
+    });
+    let mut cancellation_error = None;
+    let diff = engine.compare_trace_sessions_cancellable(
+        left_session_id,
+        right_session_id,
+        TraceDiffOptions {
+            start_seq,
+            end_seq,
+            max_items: max_items.clamp(1, 1000),
+        },
+        |processed, total| {
+            let progress = if total == 0 {
+                90
+            } else {
+                5 + ((processed as u64 * 85) / total as u64).min(85) as u8
+            };
+            match checkpoint("profiling_traces", progress) {
+                Ok(()) => true,
+                Err(error) => {
+                    cancellation_error = Some(error);
+                    false
+                }
+            }
+        },
+    );
+    if let Some(error) = cancellation_error {
+        return Err(error);
+    }
+    let diff = diff.map_err(|error| error.to_string())?;
+    checkpoint("synthesizing_trace_diff", 94)?;
+    let result = serde_json::to_value(diff).map_err(|error| error.to_string())?;
+    let evidence = collect_trace_diff_evidence(&result);
+    Ok((result, evidence, request))
+}
+
+fn collect_search_evidence(lines: &[TraceLine]) -> AnalysisEvidence {
+    let mut evidence = AnalysisEvidence::default();
+    for line in lines {
+        if let Some(module) = line.so_name.as_deref() {
+            push_unique(&mut evidence.modules, module);
+        }
+        if let Some(call) = line.call_info.as_ref() {
+            push_unique(&mut evidence.functions, &call.func_name);
+        }
+        if !line.address.is_empty() {
+            push_unique(&mut evidence.addresses, &line.address);
+        }
+        push_unique(&mut evidence.operations, operation_name(line));
+    }
+    evidence
+}
+
+fn result_has_verified_digest(result: &serde_json::Value) -> bool {
+    result
+        .get("assessment_summary")
+        .and_then(|value| value.get("verified"))
+        .and_then(serde_json::Value::as_u64)
+        .unwrap_or_default()
+        > 0
+}
+
+fn result_has_verified_sink(result: &serde_json::Value) -> bool {
+    result
+        .get("flow_endpoints")
+        .and_then(serde_json::Value::as_array)
+        .is_some_and(|items| {
+            items.iter().any(|item| {
+                item.get("call_context")
+                    .and_then(|value| value.get("resourceValidation"))
+                    .and_then(|value| value.get("status"))
+                    .and_then(serde_json::Value::as_str)
+                    == Some("verified")
+            })
+        })
+}
+
+fn trace_diff_change_count(result: &serde_json::Value) -> u64 {
+    ["functions", "branches", "instructions", "memoryAccessSites"]
+        .iter()
+        .filter_map(|section| result.get(*section))
+        .map(|section| {
+            ["totalAdded", "totalRemoved", "totalChanged"]
+                .iter()
+                .filter_map(|field| section.get(*field).and_then(serde_json::Value::as_u64))
+                .sum::<u64>()
+        })
+        .sum()
+}
+
+fn run_auto_investigation(
+    engine: &TraceEngine,
+    session_id: &str,
+    req: AutoInvestigateRequest,
+    checkpoint: &mut dyn FnMut(&str, u8) -> Result<(), String>,
+) -> Result<(serde_json::Value, AnalysisEvidence, serde_json::Value), String> {
+    if req.compare_analysis_ids.len() == 1 || req.compare_analysis_ids.len() > 10 {
+        return Err("compare_analysis_ids must contain either zero or 2-10 IDs".to_string());
+    }
+    let request_record = serde_json::json!({
+        "objective": req.objective,
+        "digests": req.digests,
+        "algorithm": format!("{:?}", req.algorithm).to_ascii_lowercase(),
+        "from_specs": req.from_specs,
+        "search_terms": req.search_terms,
+        "compare_analysis_ids": req.compare_analysis_ids,
+        "compare_session_id": req.compare_session_id,
+        "include_crypto": req.include_crypto,
+        "data_only": req.data_only,
+        "max_search_results": req.max_search_results,
+        "max_trace_matches": req.max_trace_matches,
+        "max_diff_items": req.max_diff_items,
+    });
+    let mut evidence = AnalysisEvidence::default();
+    let mut steps = Vec::new();
+    let mut mode_count = 0u32;
+    let mut search_match_count = 0u64;
+    let mut crypto_match_count = 0u64;
+    let mut verified_digest = false;
+    let mut dependency_context = false;
+    let mut dataflow_supported = false;
+    let mut verified_sink = false;
+    let mut diff_changes = 0u64;
+    let mut truncated = false;
+
+    checkpoint("session_overview", 3)?;
+    let session = engine
+        .get_session_info(session_id)
+        .map_err(|error| error.to_string())?;
+    let mut functions = engine
+        .get_function_calls(session_id)
+        .map_err(|error| error.to_string())?
+        .functions;
+    functions.sort_by(|left, right| right.occurrences.len().cmp(&left.occurrences.len()));
+    let function_overview: Vec<_> = functions
+        .iter()
+        .take(30)
+        .map(|function| {
+            serde_json::json!({
+                "func_name": function.func_name,
+                "call_count": function.occurrences.len(),
+                "is_jni": function.is_jni,
+            })
+        })
+        .collect();
+    steps.push(serde_json::json!({
+        "stage": "session_overview",
+        "status": "completed",
+        "output": {
+            "file_path": session.file_path,
+            "total_lines": session.total_lines,
+            "trace_format": session.trace_format,
+            "function_count": functions.len(),
+            "top_functions": function_overview,
+        }
+    }));
+
+    let mut terms = Vec::new();
+    for term in req.search_terms.iter().map(|term| term.trim()) {
+        if !term.is_empty() && !terms.iter().any(|existing: &String| existing == term) {
+            terms.push(term.to_string());
+        }
+        if terms.len() >= 10 {
+            break;
+        }
+    }
+    if !terms.is_empty() {
+        mode_count = mode_count.saturating_add(1);
+        checkpoint("searching_terms", 12)?;
+        let mut searches = Vec::new();
+        for term in terms {
+            let search = engine
+                .search(
+                    session_id,
+                    &term,
+                    SearchOptions {
+                        case_sensitive: false,
+                        use_regex: false,
+                        fuzzy: false,
+                        max_results: Some(req.max_search_results.clamp(1, 100)),
+                    },
+                )
+                .map_err(|error| error.to_string())?;
+            let lines = engine
+                .get_lines(session_id, &search.match_seqs)
+                .map_err(|error| error.to_string())?;
+            evidence = merge_evidence(evidence, collect_search_evidence(&lines));
+            search_match_count = search_match_count.saturating_add(search.total_matches as u64);
+            truncated |= search.truncated;
+            searches.push(serde_json::json!({
+                "term": term,
+                "total_matches": search.total_matches,
+                "truncated": search.truncated,
+                "lines": lines.iter().map(compact_line).collect::<Vec<_>>(),
+            }));
+        }
+        steps.push(serde_json::json!({
+            "stage": "search",
+            "status": "completed",
+            "output": searches,
+        }));
+    }
+
+    if req.include_crypto {
+        mode_count = mode_count.saturating_add(1);
+        checkpoint("crypto_detection", 28)?;
+        let crypto = run_crypto_detection(engine, session_id, 3, 50)?;
+        crypto_match_count = crypto
+            .get("match_count")
+            .and_then(serde_json::Value::as_u64)
+            .unwrap_or_default();
+        truncated |= crypto
+            .get("matches_truncated")
+            .and_then(serde_json::Value::as_bool)
+            .unwrap_or(false);
+        evidence = merge_evidence(evidence, collect_crypto_evidence(&crypto));
+        steps.push(serde_json::json!({
+            "stage": "crypto_detection",
+            "status": "completed",
+            "output": crypto,
+        }));
+    }
+
+    if !req.digests.is_empty() {
+        mode_count = mode_count.saturating_add(1);
+        checkpoint("known_digest_analysis", 45)?;
+        let digest_request = AnalyzeKnownDigestRequest {
+            session_id: None,
+            digests: req.digests,
+            algorithm: req.algorithm,
+            search_strings: true,
+            search_memory: true,
+            auto_scan_strings: true,
+            utf8_nul: true,
+            utf16le: true,
+            utf16le_nul: true,
+            max_results: 100,
+            trace_matches: true,
+            max_trace_matches: req.max_trace_matches.clamp(1, 10),
+            data_only: req.data_only,
+            start_seq: None,
+            max_dependency_nodes: 2000,
+        };
+        let (digest, digest_evidence, _) =
+            run_known_digest_analysis(engine, session_id, digest_request)?;
+        verified_digest = result_has_verified_digest(&digest);
+        dependency_context |= digest
+            .get("traced_matches")
+            .and_then(serde_json::Value::as_array)
+            .is_some_and(|items| {
+                items.iter().any(|item| {
+                    item.get("analysis")
+                        .is_some_and(|analysis| !analysis.is_null())
+                })
+            });
+        evidence = merge_evidence(evidence, digest_evidence);
+        steps.push(serde_json::json!({
+            "stage": "known_digest_analysis",
+            "status": "completed",
+            "output": digest,
+        }));
+    }
+
+    if !req.from_specs.is_empty() {
+        mode_count = mode_count.saturating_add(1);
+        checkpoint("forward_data_flow", 63)?;
+        let forward_request = ForwardTaintAnalysisRequest {
+            session_id: None,
+            from_specs: req.from_specs,
+            data_only: req.data_only,
+            start_seq: None,
+            end_seq: None,
+            max_nodes: 20_000,
+            include_lines: 150,
+            max_sinks: 100,
+        };
+        let mut nested_checkpoint = |_: &str, _: u8| checkpoint("forward_data_flow", 70);
+        let (forward, forward_evidence, _) = run_forward_taint_analysis(
+            engine,
+            session_id,
+            forward_request,
+            &mut nested_checkpoint,
+        )?;
+        dataflow_supported |= forward
+            .get("affected_count")
+            .and_then(serde_json::Value::as_u64)
+            .unwrap_or_default()
+            > 1;
+        verified_sink = result_has_verified_sink(&forward);
+        truncated |= forward
+            .get("truncated")
+            .and_then(serde_json::Value::as_bool)
+            .unwrap_or(false);
+        evidence = merge_evidence(evidence, forward_evidence);
+        steps.push(serde_json::json!({
+            "stage": "forward_data_flow",
+            "status": "completed",
+            "output": forward,
+        }));
+    }
+
+    if req.compare_analysis_ids.len() >= 2 {
+        mode_count = mode_count.saturating_add(1);
+        checkpoint("comparing_analyses", 78)?;
+        let comparison = engine
+            .compare_analyses(session_id, &req.compare_analysis_ids)
+            .map_err(|error| error.to_string())?;
+        steps.push(serde_json::json!({
+            "stage": "analysis_comparison",
+            "status": "completed",
+            "output": comparison,
+        }));
+    }
+
+    if let Some(other_session_id) = req.compare_session_id.as_deref() {
+        mode_count = mode_count.saturating_add(1);
+        checkpoint("trace_diff", 82)?;
+        let mut diff_checkpoint =
+            |_: &str, progress: u8| checkpoint("trace_diff", 82 + (progress / 8).min(12));
+        let (diff, diff_evidence, _) = run_trace_diff_analysis(
+            engine,
+            session_id,
+            other_session_id,
+            None,
+            None,
+            req.max_diff_items.clamp(1, 500),
+            &mut diff_checkpoint,
+        )?;
+        diff_changes = trace_diff_change_count(&diff);
+        evidence = merge_evidence(evidence, diff_evidence);
+        steps.push(serde_json::json!({
+            "stage": "trace_diff",
+            "status": "completed",
+            "output": diff,
+        }));
+    }
+
+    checkpoint("evidence_synthesis", 96)?;
+    let warnings_present = !evidence.warnings.is_empty();
+    let verification_gate = verified_sink && dataflow_supported;
+    let assessment = score_evidence(
+        "auto_investigation",
+        verification_gate,
+        vec![
+            EvidenceScoreSignal::new(
+                "objective",
+                "A concrete investigation objective was supplied.",
+                5,
+                !req.objective.trim().is_empty(),
+                Some(req.objective.clone()),
+            ),
+            EvidenceScoreSignal::new(
+                "search_matches",
+                "Search terms produced runtime evidence.",
+                15,
+                search_match_count > 0,
+                Some(format!("match_count={search_match_count}")),
+            ),
+            EvidenceScoreSignal::new(
+                "crypto_signatures",
+                "Cryptographic signatures were observed.",
+                10,
+                crypto_match_count > 0,
+                Some(format!("match_count={crypto_match_count}")),
+            ),
+            EvidenceScoreSignal::new(
+                "verified_digest_candidate",
+                "At least one digest candidate was exactly verified.",
+                25,
+                verified_digest,
+                None,
+            ),
+            EvidenceScoreSignal::new(
+                "data_flow",
+                "Dependency analysis supports a concrete data-flow path.",
+                25,
+                dataflow_supported,
+                None,
+            ),
+            EvidenceScoreSignal::new(
+                "dependency_context",
+                "Backward dependency context was collected for a candidate or output buffer.",
+                10,
+                dependency_context,
+                None,
+            ),
+            EvidenceScoreSignal::new(
+                "verified_sink",
+                "A Source/Sink endpoint has verified cross-call resource provenance.",
+                25,
+                verified_sink,
+                None,
+            ),
+            EvidenceScoreSignal::new(
+                "trace_diff",
+                "A second trace produced execution-profile differences.",
+                10,
+                diff_changes > 0,
+                Some(format!("change_count={diff_changes}")),
+            ),
+            EvidenceScoreSignal::new(
+                "independent_modes",
+                "Multiple independent analysis modes contributed evidence.",
+                10,
+                mode_count >= 2,
+                Some(format!("mode_count={mode_count}")),
+            ),
+            EvidenceScoreSignal::new(
+                "warnings",
+                "The investigation contains warnings or known limitations.",
+                -10,
+                warnings_present,
+                Some(format!("warning_count={}", evidence.warnings.len())),
+            ),
+            EvidenceScoreSignal::new(
+                "truncated",
+                "One or more bounded stages were truncated.",
+                -10,
+                truncated,
+                None,
+            ),
+        ],
+        vec![
+            "The orchestration is deterministic and evidence-driven; it does not infer unexecuted program behavior."
+                .to_string(),
+            "A verified candidate score applies only to its declared scope and should not be generalized to producer attribution without data-flow evidence."
+                .to_string(),
+        ],
+    );
+    let conclusion = match assessment.grade.as_str() {
+        "verified" => "The investigation found high-confidence evidence that satisfies the declared verification gate. Review the scored factors and exact trace lines before final attribution.",
+        "related" => "The investigation found related evidence, but at least one verification gate or strong data-flow link is still missing.",
+        _ => "The available trace evidence is insufficient for a reliable conclusion. Narrow the objective or provide known values and explicit data sources.",
+    };
+    let result = serde_json::json!({
+        "session_id": session_id,
+        "objective": req.objective,
+        "conclusion": conclusion,
+        "assessment": assessment,
+        "steps": steps,
+        "evidence": evidence.clone(),
+        "limitations": [
+            "Only executed behavior recorded in the trace is analyzed.",
+            "Search, digest tracing, forward flow, and Trace Diff use bounded result sets.",
+            "Natural-language objectives are recorded for the AI client; deterministic stages are selected from the structured request fields."
+        ],
+        "next_actions": [
+            "Inspect factors with zero or negative awarded_points and collect the missing evidence.",
+            "Use get_trace_lines and get_memory for exact evidence around the highest-scoring findings.",
+            "Export this analysis_id as Markdown or JSON after review."
+        ]
+    });
+    Ok((result, evidence, request_record))
+}
+
 const RECIPE_FORWARD: &str = "forward_to_sinks";
 const RECIPE_DIGEST: &str = "known_digest_flow";
 const RECIPE_CRYPTO: &str = "crypto_investigation";
+const RECIPE_AUTO: &str = "auto_investigation";
 
 fn built_in_recipes() -> Vec<serde_json::Value> {
     vec![
@@ -1047,11 +1792,28 @@ fn built_in_recipes() -> Vec<serde_json::Value> {
                 "max_trace_matches": 3
             }
         }),
+        serde_json::json!({
+            "recipe_id": RECIPE_AUTO,
+            "name": "Automatic evidence investigation",
+            "description": "Combine searches, crypto detection, known digests, forward flow, saved-analysis comparison, and optional Trace Diff.",
+            "workflow": RECIPE_AUTO,
+            "built_in": true,
+            "defaults": {
+                "include_crypto": true,
+                "data_only": true,
+                "max_search_results": 20,
+                "max_trace_matches": 3,
+                "max_diff_items": 50
+            }
+        }),
     ]
 }
 
 fn supported_recipe_workflow(workflow: &str) -> bool {
-    matches!(workflow, RECIPE_FORWARD | RECIPE_DIGEST | RECIPE_CRYPTO)
+    matches!(
+        workflow,
+        RECIPE_FORWARD | RECIPE_DIGEST | RECIPE_CRYPTO | RECIPE_AUTO
+    )
 }
 
 fn merge_recipe_values(
@@ -1093,7 +1855,10 @@ fn recipe_definition(
                 .and_then(|value| value.as_str())
                 .unwrap_or_default()
                 .to_string(),
-            recipe.get("defaults").cloned().unwrap_or_else(|| serde_json::json!({})),
+            recipe
+                .get("defaults")
+                .cloned()
+                .unwrap_or_else(|| serde_json::json!({})),
             true,
         ));
     }
@@ -1180,6 +1945,14 @@ fn run_recipe_analysis(
             let mut checkpoint = |_: &str, _: u8| Ok(());
             let (result, evidence, _) =
                 run_crypto_flow_analysis(engine, session_id, request, &mut checkpoint)?;
+            (result, evidence)
+        }
+        RECIPE_AUTO => {
+            let request: AutoInvestigateRequest = serde_json::from_value(resolved)
+                .map_err(|error| format!("Invalid auto_investigation inputs: {error}"))?;
+            let mut checkpoint = |_: &str, _: u8| Ok(());
+            let (result, evidence, _) =
+                run_auto_investigation(engine, session_id, request, &mut checkpoint)?;
             (result, evidence)
         }
         _ => return Err(format!("Unsupported recipe workflow: {workflow}")),
@@ -2032,6 +2805,107 @@ impl TraceToolHandler {
     }
 
     #[tool(
+        name = "auto_investigate",
+        description = "Run a deterministic AI-oriented investigation plan and save one evidence package. It can combine session overview, literal searches, crypto detection, known-digest verification, forward data flow, comparison of saved analyses, and execution-profile Trace Diff against a second open session. Returns scored factors, verification scope, limitations, steps, and an analysis_id."
+    )]
+    async fn auto_investigate(
+        &self,
+        Parameters(req): Parameters<AutoInvestigateRequest>,
+    ) -> Result<String, String> {
+        let sid = self.resolve_session(req.session_id.clone())?;
+        let engine = self.engine.clone();
+        blocking(move || {
+            let mut checkpoint = |_: &str, _: u8| Ok(());
+            let (result, evidence, request) =
+                run_auto_investigation(&engine, &sid, req, &mut checkpoint)?;
+            let record = engine
+                .save_analysis(
+                    &sid,
+                    "auto_investigation",
+                    "Automatic evidence investigation",
+                    request,
+                    result.clone(),
+                    evidence,
+                )
+                .map_err(|error| error.to_string())?;
+            let mut response = result;
+            response["analysis_id"] = serde_json::json!(record.analysis_id);
+            response["saved"] = serde_json::json!(true);
+            Ok(json(&response))
+        })
+        .await
+    }
+
+    #[tool(
+        name = "start_auto_investigation",
+        description = "Start auto_investigate as a cancellable background task. Poll get_analysis_task until completed, then retrieve the analysis_id with get_analysis."
+    )]
+    fn start_auto_investigation(
+        &self,
+        Parameters(req): Parameters<AutoInvestigateRequest>,
+    ) -> Result<String, String> {
+        let sid = self.resolve_session(req.session_id.clone())?;
+        let task = self
+            .engine
+            .create_analysis_task(&sid, "auto_investigation")
+            .map_err(|error| error.to_string())?;
+        let task_id = task.task_id.clone();
+        let worker_task_id = task_id.clone();
+        let engine = self.engine.clone();
+        tokio::task::spawn_blocking(move || {
+            let outcome = (|| -> Result<(), String> {
+                engine
+                    .start_analysis_task(&worker_task_id, "starting")
+                    .map_err(|error| error.to_string())?;
+                let mut checkpoint = |stage: &str, progress: u8| -> Result<(), String> {
+                    if engine.analysis_task_cancelled(&worker_task_id) {
+                        let _ = engine.mark_analysis_task_cancelled(&worker_task_id);
+                        return Err(TASK_CANCELLED.to_string());
+                    }
+                    engine
+                        .update_analysis_task(&worker_task_id, stage, progress)
+                        .map_err(|error| error.to_string())
+                };
+                let (result, evidence, request) =
+                    run_auto_investigation(&engine, &sid, req, &mut checkpoint)?;
+                checkpoint("saving", 98)?;
+                let record = engine
+                    .save_analysis(
+                        &sid,
+                        "auto_investigation",
+                        "Automatic evidence investigation",
+                        request,
+                        result,
+                        evidence,
+                    )
+                    .map_err(|error| error.to_string())?;
+                if engine.analysis_task_cancelled(&worker_task_id) {
+                    let _ = engine.delete_analysis(&sid, &record.analysis_id);
+                    let _ = engine.mark_analysis_task_cancelled(&worker_task_id);
+                    return Err(TASK_CANCELLED.to_string());
+                }
+                engine
+                    .complete_analysis_task(&worker_task_id, &record.analysis_id)
+                    .map_err(|error| error.to_string())?;
+                Ok(())
+            })();
+            if let Err(error) = outcome {
+                if error == TASK_CANCELLED {
+                    let _ = engine.mark_analysis_task_cancelled(&worker_task_id);
+                } else {
+                    let _ = engine.fail_analysis_task(&worker_task_id, &error);
+                }
+            }
+        });
+        Ok(json(&serde_json::json!({
+            "task": task,
+            "task_id": task_id,
+            "poll_with": "get_analysis_task",
+            "cancel_with": "cancel_analysis_task",
+        })))
+    }
+
+    #[tool(
         name = "start_crypto_investigation",
         description = "Start a crypto-flow investigation as a background task and return immediately with task_id. \
             Poll get_analysis_task for stage and progress. On completion the task contains analysis_id. \
@@ -2162,7 +3036,7 @@ impl TraceToolHandler {
 
     #[tool(
         name = "save_analysis_recipe",
-        description = "Save a reusable AI analysis recipe for the current trace. Supported workflows are forward_to_sinks, known_digest_flow, and crypto_investigation. Defaults are persisted with the trace and merged with inputs supplied to run_analysis_recipe."
+        description = "Save a reusable AI analysis recipe for the current trace. Supported workflows are forward_to_sinks, known_digest_flow, crypto_investigation, and auto_investigation. Defaults are persisted with the trace and merged with inputs supplied to run_analysis_recipe."
     )]
     fn save_analysis_recipe(
         &self,
@@ -2286,8 +3160,7 @@ impl TraceToolHandler {
     ) -> Result<String, String> {
         let sid = self.resolve_session(req.session_id)?;
         if built_in_recipes().iter().any(|recipe| {
-            recipe.get("recipe_id").and_then(|value| value.as_str())
-                == Some(req.recipe_id.as_str())
+            recipe.get("recipe_id").and_then(|value| value.as_str()) == Some(req.recipe_id.as_str())
         }) {
             return Err("Built-in recipes cannot be deleted".to_string());
         }
@@ -2402,6 +3275,123 @@ impl TraceToolHandler {
             .compare_analyses(&sid, &req.analysis_ids)
             .map_err(|error| error.to_string())?;
         Ok(json(&comparison))
+    }
+
+    #[tool(
+        name = "compare_traces",
+        description = "Compare two open trace sessions by module-relative executed instruction locations and counts. Returns added, removed, and count-changed functions, branches, instructions, and memory access sites. The result is saved under analysis_id for reports and later review."
+    )]
+    async fn compare_traces(
+        &self,
+        Parameters(req): Parameters<CompareTracesRequest>,
+    ) -> Result<String, String> {
+        let left_sid = self.resolve_session(req.session_id)?;
+        let right_sid = req.other_session_id;
+        let engine = self.engine.clone();
+        blocking(move || {
+            let mut checkpoint = |_: &str, _: u8| Ok(());
+            let (result, evidence, request) = run_trace_diff_analysis(
+                &engine,
+                &left_sid,
+                &right_sid,
+                req.start_seq,
+                req.end_seq,
+                req.max_items,
+                &mut checkpoint,
+            )?;
+            let record = engine
+                .save_analysis(
+                    &left_sid,
+                    "trace_diff",
+                    "Dynamic trace comparison",
+                    request,
+                    result.clone(),
+                    evidence,
+                )
+                .map_err(|error| error.to_string())?;
+            let mut response = result;
+            response["analysis_id"] = serde_json::json!(record.analysis_id);
+            response["saved"] = serde_json::json!(true);
+            Ok(json(&response))
+        })
+        .await
+    }
+
+    #[tool(
+        name = "start_trace_diff",
+        description = "Start compare_traces as a cancellable background task for large traces. Poll get_analysis_task until completion; the task returns an analysis_id saved on the left/base session."
+    )]
+    fn start_trace_diff(
+        &self,
+        Parameters(req): Parameters<CompareTracesRequest>,
+    ) -> Result<String, String> {
+        let left_sid = self.resolve_session(req.session_id)?;
+        let right_sid = req.other_session_id;
+        let task = self
+            .engine
+            .create_analysis_task(&left_sid, "trace_diff")
+            .map_err(|error| error.to_string())?;
+        let task_id = task.task_id.clone();
+        let worker_task_id = task_id.clone();
+        let engine = self.engine.clone();
+        tokio::task::spawn_blocking(move || {
+            let outcome = (|| -> Result<(), String> {
+                engine
+                    .start_analysis_task(&worker_task_id, "starting")
+                    .map_err(|error| error.to_string())?;
+                let mut checkpoint = |stage: &str, progress: u8| -> Result<(), String> {
+                    if engine.analysis_task_cancelled(&worker_task_id) {
+                        let _ = engine.mark_analysis_task_cancelled(&worker_task_id);
+                        return Err(TASK_CANCELLED.to_string());
+                    }
+                    engine
+                        .update_analysis_task(&worker_task_id, stage, progress)
+                        .map_err(|error| error.to_string())
+                };
+                let (result, evidence, request) = run_trace_diff_analysis(
+                    &engine,
+                    &left_sid,
+                    &right_sid,
+                    req.start_seq,
+                    req.end_seq,
+                    req.max_items,
+                    &mut checkpoint,
+                )?;
+                checkpoint("saving", 98)?;
+                let record = engine
+                    .save_analysis(
+                        &left_sid,
+                        "trace_diff",
+                        "Dynamic trace comparison",
+                        request,
+                        result,
+                        evidence,
+                    )
+                    .map_err(|error| error.to_string())?;
+                if engine.analysis_task_cancelled(&worker_task_id) {
+                    let _ = engine.delete_analysis(&left_sid, &record.analysis_id);
+                    let _ = engine.mark_analysis_task_cancelled(&worker_task_id);
+                    return Err(TASK_CANCELLED.to_string());
+                }
+                engine
+                    .complete_analysis_task(&worker_task_id, &record.analysis_id)
+                    .map_err(|error| error.to_string())?;
+                Ok(())
+            })();
+            if let Err(error) = outcome {
+                if error == TASK_CANCELLED {
+                    let _ = engine.mark_analysis_task_cancelled(&worker_task_id);
+                } else {
+                    let _ = engine.fail_analysis_task(&worker_task_id, &error);
+                }
+            }
+        });
+        Ok(json(&serde_json::json!({
+            "task": task,
+            "task_id": task_id,
+            "poll_with": "get_analysis_task",
+            "cancel_with": "cancel_analysis_task",
+        })))
     }
 
     #[tool(
@@ -2637,6 +3627,71 @@ impl TraceToolHandler {
             })))
         }).await
     }
+
+    #[tool(
+        name = "analyze_crypto_functions",
+        description = "Identify likely cryptographic FUNCTIONS (not just isolated constants). \
+            Aggregates magic-constant hits and dedicated ARM64 crypto instructions (AES/SHA/SM3/SM4/CRC32/PMULL) \
+            by their enclosing function, scores each with explainable High/Medium/Low confidence, and reports \
+            entry X0-X7, return X0, and any call annotation. Saves an analysis_id for get_analysis/compare_analyses."
+    )]
+    async fn analyze_crypto_functions(
+        &self,
+        Parameters(req): Parameters<AnalyzeCryptoFunctionsRequest>,
+    ) -> Result<String, String> {
+        let sid = self.resolve_session(req.session_id)?;
+        let engine = self.engine.clone();
+        let max_candidates = req.max_candidates;
+        blocking(move || {
+            let report = engine
+                .analyze_crypto_functions(&sid, CryptoFunctionsOptions { max_candidates })
+                .map_err(|e| e.to_string())?;
+
+            let mut result =
+                serde_json::to_value(&report).map_err(|e| format!("serialize failed: {e}"))?;
+
+            let mut evidence = AnalysisEvidence::default();
+            for c in &report.candidates {
+                for a in &c.algorithms {
+                    push_unique(&mut evidence.algorithms, a.clone());
+                }
+                if let Some(name) = &c.func_name {
+                    push_unique(&mut evidence.functions, name.clone());
+                }
+                push_unique(&mut evidence.functions, c.func_addr.clone());
+                push_unique(&mut evidence.addresses, c.func_addr.clone());
+                for k in c.crypto_insn_counts.keys() {
+                    push_unique(&mut evidence.operations, k.clone());
+                }
+            }
+            evidence.algorithms.truncate(100);
+            evidence.functions.truncate(100);
+            evidence.addresses.truncate(200);
+            evidence.operations.truncate(50);
+
+            let request_record = serde_json::json!({ "max_candidates": max_candidates });
+            match engine.save_analysis(
+                &sid,
+                "crypto_functions",
+                "Function-level crypto identification",
+                request_record,
+                result.clone(),
+                evidence,
+            ) {
+                Ok(record) => {
+                    result["analysis_id"] = serde_json::json!(record.analysis_id);
+                    result["saved"] = serde_json::json!(true);
+                    result["compare_with"] = serde_json::json!("compare_analyses");
+                }
+                Err(e) => {
+                    result["saved"] = serde_json::json!(false);
+                    result["save_error"] = serde_json::json!(e.to_string());
+                }
+            }
+            Ok(json(&result))
+        })
+        .await
+    }
 }
 
 #[tool_handler]
@@ -2651,18 +3706,20 @@ impl ServerHandler for TraceToolHandler {
             "Trace UI MCP Server — analyze ARM64 execution traces.\n\n\
              Workflow:\n\
              1. Start: open_trace with file path → get session overview\n\
-             2. Overview: analyze_function (no args) to list functions, analyze_crypto to detect algorithms\n\
-             3. Background investigation: start_crypto_investigation, then poll get_analysis_task\n\
-             4. Synchronous investigation: investigate_crypto_flow for small traces or direct clients\n\
-             5. Known values: analyze_known_digest to match digest inputs and trace candidate origins\n\
-             6. Recipes: list_analysis_recipes, then run_analysis_recipe for repeatable investigations\n\
-             7. Forward flow: forward_taint_analysis, or start_forward_taint_analysis for large traces\n\
-             8. Compare: list_analyses then compare_analyses to cross-check forward/backward evidence\n\
-             9. Locate: search_instructions (supports seq_range/addr_range filtering)\n\
-             10. Backward trace: taint_analysis to find origins and save an analysis_id\n\
-             11. Report: export_analysis_report for Markdown/JSON evidence packages\n\
-             12. Deep dive: use mem:ADDRESS:SIZE@LINE for complete multi-byte buffers\n\
-             13. Extract: get_memory to read key buffers, get_trace_lines(full=true) for register details\n\n\
+             2. Automatic investigation: auto_investigate, or start_auto_investigation for large traces\n\
+             3. Overview: analyze_function (no args) to list functions, analyze_crypto to detect algorithms\n\
+             4. Background investigation: start_crypto_investigation, then poll get_analysis_task\n\
+             5. Synchronous crypto investigation: investigate_crypto_flow for small traces or direct clients\n\
+             6. Known values: analyze_known_digest to match digest inputs and score candidate evidence\n\
+             7. Recipes: list_analysis_recipes, then run_analysis_recipe for repeatable investigations\n\
+             8. Forward flow: forward_taint_analysis, or start_forward_taint_analysis for large traces\n\
+             9. Compare analyses: list_analyses then compare_analyses to cross-check evidence\n\
+             10. Compare traces: compare_traces, or start_trace_diff for large traces\n\
+             11. Locate: search_instructions (supports seq_range/addr_range filtering)\n\
+             12. Backward trace: taint_analysis to find origins and save an analysis_id\n\
+             13. Report: export_analysis_report for Markdown/JSON evidence packages\n\
+             14. Deep dive: use mem:ADDRESS:SIZE@LINE for complete multi-byte buffers\n\
+             15. Extract: get_memory to read key buffers, get_trace_lines(full=true) for register details\n\n\
              Tips:\n\
              - session_id is optional when only one trace is open\n\
              - Use data_only=true in forward_taint_analysis and taint_analysis to reduce noise\n\
@@ -2671,5 +3728,119 @@ impl ServerHandler for TraceToolHandler {
              - analyze_function with node_id shows entry args (X0-X7) and return value\n\
              - Use addr_range to focus search/taint on a specific address range".to_string(),
         )
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn build_session(engine: &TraceEngine, lines: &[&str]) -> (String, std::path::PathBuf) {
+        let path = std::env::temp_dir().join(format!(
+            "trace-ui-auto-investigate-{}.gumtrace.txt",
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        std::fs::write(&path, lines.join("\n")).unwrap();
+        let session = engine.create_session(path.to_str().unwrap()).unwrap();
+        engine
+            .build_index(
+                &session.session_id,
+                BuildOptions {
+                    force_rebuild: true,
+                    skip_strings: false,
+                },
+                None,
+            )
+            .unwrap();
+        (session.session_id, path)
+    }
+
+    #[test]
+    fn digest_candidate_scoring_distinguishes_verification_scope() {
+        let result = serde_json::json!({
+            "string_matches": {
+                "matches": [{
+                    "queryIndex": 0,
+                    "normalizedDigest": "5d41402abc4b2a76b9719d911017c592",
+                    "content": "hello",
+                    "addr": "0x1000",
+                    "seq": 10,
+                    "transform": "utf8",
+                    "xrefCount": 1
+                }]
+            },
+            "memory_matches": {"matches": []},
+            "traced_matches": []
+        });
+        let assessments = score_known_digest_candidates(&result);
+        assert_eq!(assessments.len(), 1);
+        assert_eq!(assessments[0]["assessment"]["grade"], "verified");
+        assert_eq!(assessments[0]["assessment"]["scope"], "candidate_bytes");
+        assert!(assessments[0]["assessment"]["limitations"][0]
+            .as_str()
+            .unwrap()
+            .contains("does not by itself prove"));
+    }
+
+    #[test]
+    fn auto_investigation_combines_search_and_trace_diff() {
+        let engine = TraceEngine::new();
+        let (left, left_path) = build_session(
+            &engine,
+            &[
+                "[lib.so] 0x1000!0x10 bl #0x2000",
+                "call func: read(3, 0x5000, 4)",
+                "ret: 4",
+            ],
+        );
+        let (right, right_path) = build_session(
+            &engine,
+            &[
+                "[lib.so] 0x1000!0x10 bl #0x2000",
+                "call func: read(3, 0x5000, 4)",
+                "ret: 4",
+                "[lib.so] 0x1004!0x14 bl #0x3000",
+                "call func: write(3, 0x5000, 4)",
+                "ret: 4",
+            ],
+        );
+        let mut checkpoint = |_: &str, _: u8| Ok(());
+        let (result, _, _) = run_auto_investigation(
+            &engine,
+            &left,
+            AutoInvestigateRequest {
+                session_id: None,
+                objective: "Compare input and output behavior".to_string(),
+                digests: Vec::new(),
+                algorithm: KnownDigestAlgorithm::Auto,
+                from_specs: Vec::new(),
+                search_terms: vec!["read".to_string()],
+                compare_analysis_ids: Vec::new(),
+                compare_session_id: Some(right.clone()),
+                include_crypto: false,
+                data_only: true,
+                max_search_results: 20,
+                max_trace_matches: 3,
+                max_diff_items: 20,
+            },
+            &mut checkpoint,
+        )
+        .unwrap();
+        assert_eq!(result["assessment"]["grade"], "related");
+        assert!(result["steps"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|step| step["stage"] == "trace_diff"));
+
+        engine.delete_file_cache(left_path.to_str().unwrap());
+        engine.delete_file_cache(right_path.to_str().unwrap());
+        engine.close_session(&left).unwrap();
+        engine.close_session(&right).unwrap();
+        let _ = std::fs::remove_file(left_path);
+        let _ = std::fs::remove_file(right_path);
     }
 }

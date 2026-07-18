@@ -6,6 +6,7 @@ import VirtualScrollArea from "./VirtualScrollArea";
 import ContextMenu, { ContextMenuItem } from "./ContextMenu";
 import Minimap, { MINIMAP_WIDTH } from "./Minimap";
 import KnownDigestPanel from "./KnownDigestPanel";
+import CryptoFunctionsPanel from "./CryptoFunctionsPanel";
 import type { CryptoMatch, CryptoScanResult, HashMatchResult, TraceLine } from "../types/trace";
 import type { ResolvedRow } from "../hooks/useFoldState";
 
@@ -298,7 +299,7 @@ function DetectionPanel({ cryptoResults, cryptoScanning, onJumpToSeq }: Detectio
 }
 
 export default function CryptoPanel(props: Props) {
-  const [view, setView] = useState<"detection" | "known-digest">("detection");
+  const [view, setView] = useState<"detection" | "known-digest" | "functions">("detection");
 
   const segmentStyle = (active: boolean): React.CSSProperties => ({
     height: 26,
@@ -324,10 +325,17 @@ export default function CryptoPanel(props: Props) {
           </button>
           <button
             type="button"
-            style={{ ...segmentStyle(view === "known-digest"), borderRight: "none" }}
+            style={segmentStyle(view === "known-digest")}
             onClick={() => setView("known-digest")}
           >
             Known Digest
+          </button>
+          <button
+            type="button"
+            style={{ ...segmentStyle(view === "functions"), borderRight: "none" }}
+            onClick={() => setView("functions")}
+          >
+            Functions
           </button>
         </div>
       </div>
@@ -346,6 +354,12 @@ export default function CryptoPanel(props: Props) {
             onJumpToSeq={props.onJumpToSeq}
             onScanStrings={props.onScanStrings}
             onTraceInput={props.onTraceInput}
+          />
+        </div>
+        <div style={{ flex: 1, minWidth: 0, minHeight: 0, display: view === "functions" ? "flex" : "none" }}>
+          <CryptoFunctionsPanel
+            sessionId={props.sessionId}
+            onJumpToSeq={props.onJumpToSeq}
           />
         </div>
       </div>

@@ -1,6 +1,6 @@
 # Trace UI AI 分析能力路线图
 
-更新日期：2026-07-17
+更新日期：2026-07-18
 
 ## 1. 目标
 
@@ -22,15 +22,18 @@
 - [x] 污点 Summary、Key Steps、函数、模块、字符串和内存输入输出摘要。
 - [x] MCP `analyze_known_digest` 高层工具。
 - [x] MCP `investigate_crypto_flow` 调查编排工具。
+- [x] MCP `auto_investigate` 自动证据调查，以及可取消的 `start_auto_investigation`。
 - [x] `analysis_id`、分析列表、读取、比较和删除。
 - [x] 分析证据结构化为算法、摘要、函数、模块、字符串、地址、操作和警告。
+- [x] 候选证据 `verified/related/uncertain` 分级、可解释评分因子和验证范围。
+- [x] 跨 Session Trace Diff：比较函数、分支、指令和内存访问站点的动态执行差异。
 
 ## 3. 当前限制
 
-- [ ] 分析记录只保存在进程内存，应用重启后丢失。
-- [ ] 长时间 MCP 调查以同步请求运行，缺少统一的任务进度和取消接口。
-- [ ] 当前主要支持反向污点，不能直接回答“这个输入最终影响了什么”。
-- [ ] 自动候选排序仍以命中顺序为主，缺少统一证据评分。
+- [x] 分析记录已随 Trace 内容校验持久化，应用重启后可以恢复。
+- [x] Crypto、正向污点和自动调查支持统一后台任务、进度与取消。
+- [x] 正向污点可以回答“这个输入最终影响了什么”。
+- [x] 摘要候选和自动调查使用统一、可解释的证据评分。
 - [ ] 字符串索引仍偏向解码文本，不能始终保留 UTF-16、结尾 NUL 和二进制原始字节。
 - [ ] 二进制摘要搜索需要重放内存写入，重复查询成本较高。
 
@@ -109,8 +112,8 @@ forward_taint_analysis {
 - [x] Source/Sink 跨调用验证：解析函数原始参数和返回值，跟踪 open/fopen/socket/accept/dup/malloc 创建的资源及 close 生命周期。
 - [x] 对 read/write/send/recv/fread/fwrite 等调用验证句柄来源，修正文件与 Socket 分类并返回资源创建序号。
 - [ ] 系统调用号、pipe/eventfd、跨线程句柄传递和结构体内嵌句柄的深度验证。
-- [ ] 候选重新计算验证与 verified/related/uncertain 分级。
-- [x] 内置 Analysis Recipes：`forward_to_sinks`、`known_digest_flow`、`crypto_investigation`。
+- [x] 候选重新计算验证与 verified/related/uncertain 分级，并明确区分候选字节验证、摘要输出验证和生产函数归因。
+- [x] 内置 Analysis Recipes：`forward_to_sinks`、`known_digest_flow`、`crypto_investigation`、`auto_investigation`。
 - [x] 自定义 Recipe 支持保存默认参数、列出、运行、删除和随 Trace 持久化。
 - [x] 任意 `analysis_id` 可导出 JSON 或 Markdown，支持内联返回或写入文件。
 - [ ] 可分享证据包：报告、Trace 片段和内存快照的压缩归档。
@@ -132,3 +135,6 @@ forward_taint_analysis {
 - 2026-07-17：调用资源索引按执行序号跟踪句柄创建、复制、使用和关闭；只有观察到来源时才将资源状态标记为 verified。
 - 2026-07-17：Recipe 定义复用 Analysis Store 持久化，自定义 Recipe 的 ID 即其 `analysis_id`，运行结果保存为 `recipe_run`。
 - 2026-07-17：报告导出直接读取持久化 Analysis Record，Markdown 保留 Metadata、Evidence、Request 和 Result 四个证据区块。
+- 2026-07-18：新增通用证据评分器；只有满足验证门槛且达到分数阈值时才返回 verified，限制和扣分项随结果输出。
+- 2026-07-18：新增 `compare_traces`，按模块相对偏移和执行次数比较动态函数、分支、指令与内存访问站点，避免使用绝对地址和序号硬对齐。
+- 2026-07-18：新增同步/后台 `auto_investigate`，确定性编排搜索、Crypto、摘要、正向流、Analysis Compare 和 Trace Diff，并保存单一证据包。

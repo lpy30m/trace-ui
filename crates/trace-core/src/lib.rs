@@ -20,7 +20,8 @@ pub mod utils;
 
 pub use analysis::{
     AnalysisComparison, AnalysisEvidence, AnalysisRecord, AnalysisRecordSummary,
-    AnalysisReportExport, AnalysisUniqueEvidence,
+    AnalysisReportExport, AnalysisUniqueEvidence, TraceCountDelta, TraceDiffOptions,
+    TraceDiffResult, TraceDiffSection, TraceProfileSummary,
 };
 pub use analysis_task::{AnalysisTaskInfo, AnalysisTaskStatus};
 pub use api_types::*;
@@ -29,6 +30,16 @@ pub use error::{Result, TraceError};
 pub use query::analysis_summary::{
     summarize_dependency_graph, AnalysisKeyStep, AnalysisOperationCount, AnalysisStringEvidence,
     DependencyAnalysisSummary,
+};
+pub use query::crypto_functions::{
+    CryptoFamily, CryptoFunctionCandidate, CryptoFunctionIo, CryptoFunctionReport,
+    CryptoFunctionsOptions,
+};
+pub use query::function_inspect::{
+    FunctionCallAnnotation, FunctionInspection, FunctionRef, MemTouch, RegValue,
+};
+pub use query::evidence_score::{
+    score_evidence, EvidenceAssessment, EvidenceScoreFactor, EvidenceScoreSignal,
 };
 pub use query::hash_match::{
     HashAlgorithm, HashDigestQueryResult, HashMatchRequest, HashMatchResponse, HashMatchResult,

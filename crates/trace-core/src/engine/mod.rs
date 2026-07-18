@@ -2,12 +2,15 @@ mod analysis;
 mod analysis_task;
 mod browse;
 mod build;
+mod crypto_functions;
 mod forward_slice;
+mod function_inspect;
 mod hash_match;
 mod query;
 mod search;
 mod slice;
 mod source_sink;
+mod trace_diff;
 
 use memmap2::Mmap;
 use std::collections::HashMap;
@@ -108,6 +111,7 @@ impl TraceEngine {
             consumed_seqs: Vec::new(),
             call_search_texts: HashMap::new(),
             crypto_cache: None,
+            crypto_functions_cache: None,
         };
 
         let handle = Arc::new(SessionHandle {

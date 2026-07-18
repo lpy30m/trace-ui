@@ -539,6 +539,27 @@ pub async fn scan_crypto(
 }
 
 #[tauri::command]
+pub async fn analyze_crypto_functions(
+    session_id: String,
+    max_candidates: Option<u32>,
+    engine: State<'_, Arc<TraceEngine>>,
+) -> Result<trace_core::CryptoFunctionReport, String> {
+    let engine = engine.inner().clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        engine
+            .analyze_crypto_functions(
+                &session_id,
+                trace_core::CryptoFunctionsOptions {
+                    max_candidates: max_candidates.unwrap_or(50),
+                },
+            )
+            .map_err(|e| e.to_string())
+    })
+    .await
+    .map_err(|e| format!("Task execution failed: {}", e))?
+}
+
+#[tauri::command]
 pub async fn match_known_digests(
     session_id: String,
     request: trace_core::HashMatchRequest,
@@ -574,6 +595,93 @@ pub fn load_crypto_cache(
     engine: State<'_, Arc<TraceEngine>>,
 ) -> Result<Option<trace_core::query::crypto::CryptoScanResult>, String> {
     engine.load_crypto_cache(&session_id).map_err(|e| e.to_string())
+}
+
+// ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+//  Analysis Store (AI-created analyses; shared with MCP via disk cache)
+// ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+#[tauri::command]
+pub fn list_analyses(
+    session_id: String,
+    kind: Option<String>,
+    limit: Option<u32>,
+    engine: State<'_, Arc<TraceEngine>>,
+) -> Result<Vec<trace_core::AnalysisRecordSummary>, String> {
+    engine
+        .list_analyses(&session_id, kind.as_deref(), limit.unwrap_or(100))
+        .map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+pub fn get_analysis(
+    session_id: String,
+    analysis_id: String,
+    engine: State<'_, Arc<TraceEngine>>,
+) -> Result<trace_core::AnalysisRecord, String> {
+    engine
+        .get_analysis(&session_id, &analysis_id)
+        .map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+pub fn compare_analyses(
+    session_id: String,
+    analysis_ids: Vec<String>,
+    engine: State<'_, Arc<TraceEngine>>,
+) -> Result<trace_core::AnalysisComparison, String> {
+    engine
+        .compare_analyses(&session_id, &analysis_ids)
+        .map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+pub fn delete_analysis(
+    session_id: String,
+    analysis_id: String,
+    engine: State<'_, Arc<TraceEngine>>,
+) -> Result<bool, String> {
+    engine
+        .delete_analysis(&session_id, &analysis_id)
+        .map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+pub fn render_analysis_report(
+    session_id: String,
+    analysis_id: String,
+    format: String,
+    engine: State<'_, Arc<TraceEngine>>,
+) -> Result<String, String> {
+    engine
+        .render_analysis_report(&session_id, &analysis_id, &format)
+        .map_err(|e| e.to_string())
+}
+
+// ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+//  Function Inspector
+// ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+#[tauri::command]
+pub fn inspect_function(
+    session_id: String,
+    node_id: u32,
+    engine: State<'_, Arc<TraceEngine>>,
+) -> Result<trace_core::FunctionInspection, String> {
+    engine
+        .inspect_function(&session_id, node_id)
+        .map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+pub fn inspect_function_at_seq(
+    session_id: String,
+    seq: u32,
+    engine: State<'_, Arc<TraceEngine>>,
+) -> Result<trace_core::FunctionInspection, String> {
+    engine
+        .inspect_function_at_seq(&session_id, seq)
+        .map_err(|e| e.to_string())
 }
 
 // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━

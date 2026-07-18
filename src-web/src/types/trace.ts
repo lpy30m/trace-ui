@@ -251,3 +251,160 @@ export interface HashMemoryMatchResponse {
   totalMatches: number;
   truncated: boolean;
 }
+
+export interface EvidenceScoreFactor {
+  code: string;
+  label: string;
+  points: number;
+  observed: boolean;
+  awardedPoints: number;
+  evidence: string | null;
+}
+
+export interface EvidenceAssessment {
+  scope: string;
+  score: number;
+  grade: string;       // "verified" | "related" | "uncertain"
+  confidence: string;  // "high" | "medium" | "low"
+  verificationGateMet: boolean;
+  factors: EvidenceScoreFactor[];
+  limitations: string[];
+}
+
+export interface CryptoRegValue {
+  reg: string;
+  value: string;
+}
+
+export interface CryptoCallAnnotation {
+  funcName: string;
+  isJni: boolean;
+  args: CryptoRegValue[];
+  retValue: string | null;
+}
+
+export interface CryptoFunctionIo {
+  entryArgs: CryptoRegValue[];
+  returnValue: string | null;
+  callAnnotation: CryptoCallAnnotation | null;
+}
+
+export interface CryptoFunctionCandidate {
+  funcId: number;
+  funcAddr: string;
+  funcName: string | null;
+  entrySeq: number;
+  exitSeq: number;
+  lineCount: number;
+  algorithms: string[];
+  magicHits: number;
+  distinctMagics: number;
+  cryptoInsnCounts: Record<string, number>;
+  cryptoInsnTotal: number;
+  io: CryptoFunctionIo;
+  assessment: EvidenceAssessment;
+}
+
+export interface CryptoFunctionReport {
+  candidates: CryptoFunctionCandidate[];
+  totalFunctionsScanned: number;
+  functionsWithSignals: number;
+  magicHitCount: number;
+  cryptoInsnCount: number;
+  candidatesTruncated: boolean;
+  limitations: string[];
+}
+
+export interface AnalysisEvidence {
+  algorithms: string[];
+  digests: string[];
+  functions: string[];
+  modules: string[];
+  keyStrings: string[];
+  memoryReads: string[];
+  memoryWrites: string[];
+  addresses: string[];
+  operations: string[];
+  warnings: string[];
+}
+
+export interface AnalysisRecordSummary {
+  analysisId: string;
+  sessionId: string;
+  kind: string;
+  title: string;
+  createdAtMs: number;
+  algorithms: string[];
+  functions: string[];
+  keyStrings: string[];
+  warningCount: number;
+}
+
+export interface AnalysisRecord {
+  analysisId: string;
+  sessionId: string;
+  kind: string;
+  title: string;
+  createdAtMs: number;
+  request: unknown;
+  result: unknown;
+  evidence: AnalysisEvidence;
+}
+
+export interface AnalysisUniqueEvidence {
+  analysisId: string;
+  evidence: AnalysisEvidence;
+}
+
+export interface AnalysisComparison {
+  analysisIds: string[];
+  kinds: string[];
+  commonEvidence: AnalysisEvidence;
+  uniqueEvidence: AnalysisUniqueEvidence[];
+}
+
+export interface RegValue {
+  reg: string;
+  value: string;
+}
+
+export interface FunctionRef {
+  funcId: number;
+  funcAddr: string;
+  funcName: string | null;
+  entrySeq: number;
+  exitSeq: number;
+  lineCount: number;
+}
+
+export interface FunctionCallAnnotation {
+  funcName: string;
+  isJni: boolean;
+  args: RegValue[];
+  retValue: string | null;
+}
+
+export interface MemTouch {
+  addr: string;
+  count: number;
+  size: number;
+}
+
+export interface FunctionInspection {
+  funcId: number;
+  funcAddr: string;
+  funcName: string | null;
+  entrySeq: number;
+  exitSeq: number;
+  lineCount: number;
+  parent: FunctionRef | null;
+  entryArgs: RegValue[];
+  returnValue: string | null;
+  callAnnotation: FunctionCallAnnotation | null;
+  children: FunctionRef[];
+  childCount: number;
+  memoryReads: MemTouch[];
+  memoryWrites: MemTouch[];
+  scannedLines: number;
+  ioTruncated: boolean;
+}

@@ -377,6 +377,27 @@ pub struct CompareAnalysesRequest {
 }
 
 #[derive(Debug, Deserialize, JsonSchema)]
+pub struct CompareTracesRequest {
+    #[schemars(description = "Left/base session ID (optional if only one session is open)")]
+    pub session_id: Option<String>,
+    #[schemars(description = "Right/comparison trace session ID")]
+    pub other_session_id: String,
+    #[schemars(description = "Optional 0-based first sequence profiled in both traces")]
+    pub start_seq: Option<u32>,
+    #[schemars(description = "Optional 0-based last sequence profiled in both traces")]
+    pub end_seq: Option<u32>,
+    #[schemars(
+        description = "Maximum added, removed, and changed items returned per section (default: 100, max: 1000)"
+    )]
+    #[serde(default = "default_trace_diff_items")]
+    pub max_items: u32,
+}
+
+fn default_trace_diff_items() -> u32 {
+    100
+}
+
+#[derive(Debug, Deserialize, JsonSchema)]
 pub struct DeleteAnalysisRequest {
     #[schemars(description = "Session ID (optional if only one session is open)")]
     pub session_id: Option<String>,
@@ -428,6 +449,69 @@ pub struct InvestigateCryptoFlowRequest {
     pub utf16le_nul: bool,
 }
 
+#[derive(Debug, Deserialize, JsonSchema)]
+pub struct AutoInvestigateRequest {
+    #[schemars(description = "Session ID (optional if only one session is open)")]
+    pub session_id: Option<String>,
+    #[schemars(description = "Human or AI investigation objective recorded in the report")]
+    #[serde(default)]
+    pub objective: String,
+    #[schemars(
+        description = "Known digest values to correlate with runtime strings and output buffers"
+    )]
+    #[serde(default)]
+    pub digests: Vec<String>,
+    #[schemars(description = "Digest algorithm. Use auto to infer it from digest length.")]
+    #[serde(default)]
+    pub algorithm: KnownDigestAlgorithm,
+    #[schemars(description = "Explicit register or memory values to trace forward")]
+    #[serde(default)]
+    pub from_specs: Vec<String>,
+    #[schemars(
+        description = "Literal instruction, function, address, or annotation terms to search"
+    )]
+    #[serde(default)]
+    pub search_terms: Vec<String>,
+    #[schemars(description = "Existing analysis IDs to compare as part of synthesis (2-10)")]
+    #[serde(default)]
+    pub compare_analysis_ids: Vec<String>,
+    #[schemars(
+        description = "Optional second open trace session for execution-profile Trace Diff"
+    )]
+    pub compare_session_id: Option<String>,
+    #[schemars(description = "Run crypto signature detection (default: true)")]
+    #[serde(default = "default_true")]
+    pub include_crypto: bool,
+    #[schemars(
+        description = "Follow only data dependencies during automatic taint stages (default: true)"
+    )]
+    #[serde(default = "default_true")]
+    pub data_only: bool,
+    #[schemars(
+        description = "Maximum matches returned for each search term (default: 20, max: 100)"
+    )]
+    #[serde(default = "default_auto_search_results")]
+    pub max_search_results: u32,
+    #[schemars(
+        description = "Maximum digest candidates traced automatically (default: 3, max: 10)"
+    )]
+    #[serde(default = "default_digest_traces")]
+    pub max_trace_matches: u32,
+    #[schemars(
+        description = "Maximum Trace Diff entries returned per section (default: 50, max: 500)"
+    )]
+    #[serde(default = "default_auto_diff_items")]
+    pub max_diff_items: u32,
+}
+
+fn default_auto_search_results() -> u32 {
+    20
+}
+
+fn default_auto_diff_items() -> u32 {
+    50
+}
+
 fn default_crypto_matches() -> u32 {
     50
 }
@@ -466,7 +550,9 @@ pub struct SaveAnalysisRecipeRequest {
     #[schemars(description = "What this recipe investigates")]
     #[serde(default)]
     pub description: String,
-    #[schemars(description = "Recipe workflow: forward_to_sinks, known_digest_flow, or crypto_investigation")]
+    #[schemars(
+        description = "Recipe workflow: forward_to_sinks, known_digest_flow, crypto_investigation, or auto_investigation"
+    )]
     pub workflow: String,
     #[schemars(description = "Default input object merged with run_analysis_recipe inputs")]
     #[serde(default)]
@@ -507,9 +593,13 @@ pub struct ExportAnalysisReportRequest {
     #[schemars(description = "Report format: markdown or json (default: markdown)")]
     #[serde(default = "default_report_format")]
     pub format: String,
-    #[schemars(description = "Optional output file path. If omitted, report content is returned inline.")]
+    #[schemars(
+        description = "Optional output file path. If omitted, report content is returned inline."
+    )]
     pub output_path: Option<String>,
-    #[schemars(description = "Include report content even when output_path is supplied (default: false)")]
+    #[schemars(
+        description = "Include report content even when output_path is supplied (default: false)"
+    )]
     #[serde(default)]
     pub include_content: bool,
 }
@@ -552,6 +642,21 @@ pub struct AnalyzeCryptoRequest {
 
 fn default_crypto_context() -> u32 {
     3
+}
+
+#[derive(Debug, Deserialize, JsonSchema)]
+pub struct AnalyzeCryptoFunctionsRequest {
+    #[schemars(description = "Session ID (optional if only one session is open)")]
+    pub session_id: Option<String>,
+    #[schemars(
+        description = "Max candidate functions to return, ranked by confidence (default: 50, max: 500)"
+    )]
+    #[serde(default = "default_crypto_fn_candidates")]
+    pub max_candidates: u32,
+}
+
+fn default_crypto_fn_candidates() -> u32 {
+    50
 }
 
 #[cfg(test)]
@@ -600,5 +705,30 @@ mod tests {
         assert_eq!(request.max_nodes, 10_000);
         assert_eq!(request.include_lines, 100);
         assert_eq!(request.max_sinks, 100);
+    }
+
+    #[test]
+    fn auto_investigation_defaults_to_bounded_multi_stage_analysis() {
+        let request: AutoInvestigateRequest =
+            serde_json::from_value(serde_json::json!({})).unwrap();
+
+        assert!(request.include_crypto);
+        assert!(request.data_only);
+        assert_eq!(request.max_search_results, 20);
+        assert_eq!(request.max_trace_matches, 3);
+        assert_eq!(request.max_diff_items, 50);
+        assert!(request.search_terms.is_empty());
+    }
+
+    #[test]
+    fn trace_diff_defaults_to_explainable_result_limit() {
+        let request: CompareTracesRequest = serde_json::from_value(serde_json::json!({
+            "other_session_id": "other"
+        }))
+        .unwrap();
+
+        assert_eq!(request.max_items, 100);
+        assert!(request.start_seq.is_none());
+        assert!(request.end_seq.is_none());
     }
 }

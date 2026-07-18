@@ -1,0 +1,6 @@
+﻿Package: trace-ui-source-macos-20260718
+Branch: build/macos-analysis-20260718
+Base commit: 33ed4270cf7f432dac7e2626a499f11441e2dfd0
+Packaged at: 2026-07-18 12:09:53 +08:00
+Includes current working-tree source changes.
+Excluded: target, node_modules, dist, .git, logs, large traces, binaries, release artifacts, and analysis tools/data.
