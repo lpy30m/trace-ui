@@ -539,6 +539,36 @@ pub async fn scan_crypto(
 }
 
 #[tauri::command]
+pub async fn match_known_digests(
+    session_id: String,
+    request: trace_core::HashMatchRequest,
+    engine: State<'_, Arc<TraceEngine>>,
+) -> Result<trace_core::HashMatchResponse, String> {
+    let engine = engine.inner().clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        engine
+            .match_known_digests(&session_id, &request)
+            .map_err(|e| e.to_string())
+    })
+    .await
+    .map_err(|e| format!("Task execution failed: {}", e))?
+}
+
+#[tauri::command]
+pub async fn find_digest_memory(
+    session_id: String,
+    request: trace_core::HashMatchRequest,
+    engine: State<'_, Arc<TraceEngine>>,
+) -> Result<trace_core::HashMemoryMatchResponse, String> {
+    let engine = engine.inner().clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        engine.find_digest_memory(&session_id, &request).map_err(|e| e.to_string())
+    })
+    .await
+    .map_err(|e| format!("Task execution failed: {}", e))?
+}
+
+#[tauri::command]
 pub fn load_crypto_cache(
     session_id: String,
     engine: State<'_, Arc<TraceEngine>>,

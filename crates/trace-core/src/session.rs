@@ -1,22 +1,24 @@
+use crate::flat::archives::{CachedStore, Phase2Archive, ScanArchive};
+use crate::flat::bitvec::BitView;
+use crate::flat::deps::DepsView;
+use crate::flat::line_index::{LineIndexArchive, LineIndexView};
+use crate::flat::mem_access::MemAccessView;
+use crate::flat::mem_last_def::MemLastDefView;
+use crate::flat::pair_split::PairSplitView;
+use crate::flat::reg_checkpoints::RegCheckpointsView;
+use crate::flat::scan_view::ScanView;
+use crate::query::call_tree::CallTree;
+use crate::query::crypto::CryptoScanResult;
+use crate::query::forward_slice::ForwardDependencyIndex;
+use crate::query::source_sink::ResourceFlowIndex;
+use crate::query::strings::StringIndex;
+use crate::scanner::RegLastDef;
+use memmap2::Mmap;
 use std::collections::HashMap;
 use std::sync::atomic::AtomicBool;
 use std::sync::{Arc, Mutex, RwLock};
-use memmap2::Mmap;
-use crate::flat::archives::{CachedStore, Phase2Archive, ScanArchive};
-use crate::flat::line_index::{LineIndexArchive, LineIndexView};
-use crate::flat::mem_access::MemAccessView;
-use crate::flat::reg_checkpoints::RegCheckpointsView;
-use crate::flat::deps::DepsView;
-use crate::flat::mem_last_def::MemLastDefView;
-use crate::flat::pair_split::PairSplitView;
-use crate::flat::bitvec::BitView;
-use crate::flat::scan_view::ScanView;
-use crate::query::call_tree::CallTree;
-use crate::scanner::RegLastDef;
-use crate::query::strings::StringIndex;
-use trace_parser::types::TraceFormat;
 use trace_parser::gumtrace::CallAnnotation;
-use crate::query::crypto::CryptoScanResult;
+use trace_parser::types::TraceFormat;
 
 #[derive(Clone)]
 pub struct SliceOrigin {
@@ -43,6 +45,9 @@ pub struct SessionState {
     // Scan
     pub scan_store: Option<CachedStore<ScanArchive>>,
     pub reg_last_def: Option<RegLastDef>,
+    /// Session-local reverse adjacency index used by repeated forward analyses.
+    pub forward_dependency_index: Option<Arc<ForwardDependencyIndex>>,
+    pub resource_flow_index: Option<Arc<ResourceFlowIndex>>,
 
     // LineIndex
     pub lidx_store: Option<CachedStore<LineIndexArchive>>,
@@ -99,12 +104,17 @@ impl SessionState {
 
     #[allow(dead_code)]
     pub fn scan_line_count(&self) -> u32 {
-        self.scan_store.as_ref().map(|s| s.line_count()).unwrap_or(0)
+        self.scan_store
+            .as_ref()
+            .map(|s| s.line_count())
+            .unwrap_or(0)
     }
 
     /// 从 call_annotations 重建搜索文本缓存
     pub fn rebuild_call_search_texts(&mut self) {
-        self.call_search_texts = self.call_annotations.iter()
+        self.call_search_texts = self
+            .call_annotations
+            .iter()
             .map(|(&seq, ann)| (seq, ann.searchable_text()))
             .collect();
     }
@@ -116,8 +126,11 @@ pub struct SessionHandle {
     pub(crate) file_size: u64,
     pub(crate) building: AtomicBool,
     pub(crate) build_cancel: AtomicBool,
+    pub(crate) closed: AtomicBool,
+    pub(crate) lifecycle: Mutex<()>,
     pub(crate) scanning_strings: AtomicBool,
     pub(crate) scan_strings_cancel: AtomicBool,
+    pub(crate) forward_index_build: Mutex<()>,
     /// 缓存最近一次搜索的全量匹配序列号及其 generation，供分页拉取
     pub(crate) search_cache: Mutex<(u64, Vec<u32>)>,
     pub(crate) state: RwLock<SessionState>,

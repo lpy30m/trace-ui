@@ -30,8 +30,9 @@ import { useHighlights } from "./hooks/useHighlights";
 import { useMcpStatus } from "./hooks/useMcpStatus";
 import McpIndicator from "./components/McpIndicator";
 import type { SessionSnapshot } from "./hooks/usePreferences";
-import type { CallTreeNodeDto, SearchMatch, CryptoScanResult } from "./types/trace";
+import type { CallTreeNodeDto, SearchMatch, CryptoScanResult, HashMatchResult, StringRecordDto } from "./types/trace";
 import type { SearchOptions } from "./components/SearchBar";
+import { explainTaintError } from "./utils/taintError";
 
 const PANEL_SIZES: Record<string, { width: number; height: number }> = {
   memory: { width: 1100, height: 390 },
@@ -608,6 +609,80 @@ function App() {
       setStringsScanningSessionId(null);
     }
   }, [activeSessionId, setHasStringIndexMap, showToast]);
+
+  const traceDigestInput = useCallback(async (match: HashMatchResult) => {
+    const sourceSpec = `mem:${match.addr}:${match.byteLen}@${match.seq + 1}`;
+    try {
+      const result = await slice.runSlice([sourceSpec], undefined, match.seq, match.seq, true);
+      const warningCount = result?.warnings.length ?? 0;
+      showToast(
+        warningCount > 0
+          ? `Taint analysis completed with ${warningCount} warning${warningCount === 1 ? "" : "s"}`
+          : "Taint analysis completed",
+        { type: warningCount > 0 ? "info" : "success" },
+      );
+      handleJumpToSeq(match.seq);
+    } catch (error) {
+      const info = explainTaintError(error);
+      showToast(`${info.title}. ${info.suggestion}`, { duration: 6000, type: "error" });
+    }
+  }, [handleJumpToSeq, showToast, slice.runSlice]);
+
+  const traceStringCreation = useCallback(async (record: StringRecordDto) => {
+    const sourceSpec = `mem:${record.addr}:${record.byte_len}@${record.seq + 1}`;
+    try {
+      const result = await slice.runSlice([sourceSpec], undefined, record.seq, record.seq, true);
+      const warningCount = result?.warnings.length ?? 0;
+      showToast(
+        warningCount > 0
+          ? `String trace completed with ${warningCount} warning${warningCount === 1 ? "" : "s"}`
+          : "String creation traced",
+        { type: warningCount > 0 ? "info" : "success" },
+      );
+      handleJumpToSeq(record.seq);
+    } catch (error) {
+      const info = explainTaintError(error);
+      showToast(`${info.title}. ${info.suggestion}`, { duration: 6000, type: "error" });
+    }
+  }, [handleJumpToSeq, showToast, slice.runSlice]);
+
+  const traceStringCreationRef = useRef(traceStringCreation);
+  traceStringCreationRef.current = traceStringCreation;
+
+  useEffect(() => {
+    const unlisten = listen<StringRecordDto>("action:trace-string-creation", (event) => {
+      traceStringCreationRef.current(event.payload);
+    });
+    return () => { unlisten.then(fn => fn()); };
+  }, []);
+
+  const traceMemoryValue = useCallback(async (request: { addr: string; size: number; seq: number }) => {
+    const sourceSpec = `mem:${request.addr}:${request.size}@${request.seq + 1}`;
+    try {
+      const result = await slice.runSlice([sourceSpec], undefined, request.seq, request.seq, true);
+      const warningCount = result?.warnings.length ?? 0;
+      showToast(
+        warningCount > 0
+          ? `Memory trace completed with ${warningCount} warning${warningCount === 1 ? "" : "s"}`
+          : "Memory value traced",
+        { type: warningCount > 0 ? "info" : "success" },
+      );
+      handleJumpToSeq(request.seq);
+    } catch (error) {
+      const info = explainTaintError(error);
+      showToast(`${info.title}. ${info.suggestion}`, { duration: 6000, type: "error" });
+    }
+  }, [handleJumpToSeq, showToast, slice.runSlice]);
+
+  const traceMemoryValueRef = useRef(traceMemoryValue);
+  traceMemoryValueRef.current = traceMemoryValue;
+
+  useEffect(() => {
+    const unlisten = listen<{ addr: string; size: number; seq: number }>("action:trace-memory-value", (event) => {
+      traceMemoryValueRef.current(event.payload);
+    });
+    return () => { unlisten.then(fn => fn()); };
+  }, []);
 
   const cancelScanStrings = useCallback(async () => {
     if (!stringsScanningSessionId) return;
@@ -1188,8 +1263,13 @@ function App() {
                 sliceDuration={slice.sliceDuration}
                 sliceError={slice.sliceError}
                 stringsScanning={stringsScanningSessionId != null && stringsScanningSessionId === activeSessionId}
+                hasStringIndex={hasStringIndexMap.get(activeSessionId ?? "") ?? false}
                 cryptoResults={cryptoResults}
                 cryptoScanning={cryptoScanningSessionId != null && cryptoScanningSessionId === activeSessionId}
+                onScanStrings={scanStrings}
+                onTraceDigestInput={traceDigestInput}
+                onTraceStringCreation={traceStringCreation}
+                onTraceMemory={traceMemoryValue}
                 onSearch={handleSearch}
                 showSoName={preferences.showSoName}
                 showAbsAddress={preferences.showAbsAddress}
@@ -1249,7 +1329,8 @@ function App() {
               setScrollTrigger(c => c + 1);
               navigationStore.navigate(sourceSeq);
             } catch (e) {
-              showToast(`Taint analysis failed: ${e}`, { duration: 5000, type: "error" });
+              const info = explainTaintError(e);
+              showToast(`${info.title}. ${info.suggestion}`, { duration: 6000, type: "error" });
             }
           }}
           onClose={() => setTaintDialogSeq(null)}

@@ -1,5 +1,5 @@
-use serde::Deserialize;
 use schemars::JsonSchema;
+use serde::Deserialize;
 
 // ── 会话管理 ──
 
@@ -15,6 +15,12 @@ pub struct OpenTraceRequest {
     pub skip_strings: bool,
 }
 
+#[derive(Debug, Deserialize, JsonSchema)]
+pub struct CloseTraceRequest {
+    #[schemars(description = "Session ID to close (optional if only one session is open)")]
+    pub session_id: Option<String>,
+}
+
 // ── 数据查看 ──
 
 #[derive(Debug, Deserialize, JsonSchema)]
@@ -26,12 +32,16 @@ pub struct GetTraceLinesRequest {
     #[schemars(description = "Number of lines to retrieve (default: 20, max: 100)")]
     #[serde(default = "default_line_count")]
     pub count: u32,
-    #[schemars(description = "Return full TraceLine fields including raw, reg_before, so_offset, mem_size (default: false)")]
+    #[schemars(
+        description = "Return full TraceLine fields including raw, reg_before, so_offset, mem_size (default: false)"
+    )]
     #[serde(default)]
     pub full: bool,
 }
 
-fn default_line_count() -> u32 { 20 }
+fn default_line_count() -> u32 {
+    20
+}
 
 #[derive(Debug, Deserialize, JsonSchema)]
 pub struct GetMemoryRequest {
@@ -46,7 +56,9 @@ pub struct GetMemoryRequest {
     pub length: u32,
 }
 
-fn default_mem_length() -> u32 { 64 }
+fn default_mem_length() -> u32 {
+    64
+}
 
 // ── 搜索与分析 ──
 
@@ -54,7 +66,9 @@ fn default_mem_length() -> u32 { 64 }
 pub struct SearchInstructionsRequest {
     #[schemars(description = "Session ID (optional if only one session is open)")]
     pub session_id: Option<String>,
-    #[schemars(description = "Search query. Plain text or regex (wrap in /pattern/ for auto-regex). Use regex for complex patterns like 'bl.*0x[0-9a-f]+'")]
+    #[schemars(
+        description = "Search query. Plain text or regex (wrap in /pattern/ for auto-regex). Use regex for complex patterns like 'bl.*0x[0-9a-f]+'"
+    )]
     pub query: String,
     #[schemars(description = "Use regex matching")]
     #[serde(default)]
@@ -64,12 +78,16 @@ pub struct SearchInstructionsRequest {
     pub case_sensitive: bool,
     #[schemars(description = "Max results to return (default: 30, max: 200)")]
     pub max_results: Option<u32>,
-    #[schemars(description = "Return full TraceLine fields including raw, reg_before, so_offset, mem_size (default: false)")]
+    #[schemars(
+        description = "Return full TraceLine fields including raw, reg_before, so_offset, mem_size (default: false)"
+    )]
     #[serde(default)]
     pub full: bool,
     #[schemars(description = "Limit search to seq range, e.g. '3000-6000'")]
     pub seq_range: Option<String>,
-    #[schemars(description = "Filter results by SO offset address range, e.g. '0x246F00-0x249800'")]
+    #[schemars(
+        description = "Filter results by SO offset address range, e.g. '0x246F00-0x249800'"
+    )]
     pub addr_range: Option<String>,
 }
 
@@ -83,21 +101,31 @@ pub struct GetTaintedLinesRequest {
     #[schemars(description = "Max lines to return (default: 50, max: 200)")]
     #[serde(default = "default_taint_limit")]
     pub limit: u32,
-    #[schemars(description = "Return full TraceLine fields including raw, reg_before, so_offset, mem_size (default: false)")]
+    #[schemars(
+        description = "Return full TraceLine fields including raw, reg_before, so_offset, mem_size (default: false)"
+    )]
     #[serde(default)]
     pub full: bool,
-    #[schemars(description = "Filter out lines that only modify stack/frame pointer registers (sp, x29). Default: true")]
+    #[schemars(
+        description = "Filter out lines that only modify stack/frame pointer registers (sp, x29). Default: true"
+    )]
     #[serde(default = "default_true")]
     pub ignore_stack_ops: bool,
     #[schemars(description = "Filter by SO offset address range, e.g. '0x246F00-0x249800'")]
     pub addr_range: Option<String>,
-    #[schemars(description = "Include N non-tainted context lines before/after each tainted line (default: 0, max: 5)")]
+    #[schemars(
+        description = "Include N non-tainted context lines before/after each tainted line (default: 0, max: 5)"
+    )]
     #[serde(default)]
     pub context_lines: u32,
 }
 
-fn default_taint_limit() -> u32 { 50 }
-fn default_true() -> bool { true }
+fn default_taint_limit() -> u32 {
+    50
+}
+fn default_true() -> bool {
+    true
+}
 
 // ── 结构信息 ──
 
@@ -105,16 +133,24 @@ fn default_true() -> bool { true }
 pub struct GetCallTreeRequest {
     #[schemars(description = "Session ID (optional if only one session is open)")]
     pub session_id: Option<String>,
-    #[schemars(description = "Node ID to get children for (0 = root). Use this for lazy loading of large call trees")]
+    #[schemars(
+        description = "Node ID to get children for (0 = root). Use this for lazy loading of large call trees"
+    )]
     pub node_id: u32,
-    #[schemars(description = "Number of levels to expand (default: 1, max: 3). depth=1 returns node + direct children")]
+    #[schemars(
+        description = "Number of levels to expand (default: 1, max: 3). depth=1 returns node + direct children"
+    )]
     #[serde(default = "default_depth")]
     pub depth: u32,
 }
 
-fn default_depth() -> u32 { 1 }
+fn default_depth() -> u32 {
+    1
+}
 
-fn default_func_list_limit() -> u32 { 30 }
+fn default_func_list_limit() -> u32 {
+    30
+}
 
 #[derive(Debug, Deserialize, JsonSchema)]
 pub struct GetStringsRequest {
@@ -133,8 +169,12 @@ pub struct GetStringsRequest {
     pub limit: u32,
 }
 
-fn default_min_str_len() -> u32 { 4 }
-fn default_strings_limit() -> u32 { 50 }
+fn default_min_str_len() -> u32 {
+    4
+}
+fn default_strings_limit() -> u32 {
+    50
+}
 
 // ── Batch 2 新增工具请求类型 ──
 
@@ -142,37 +182,354 @@ fn default_strings_limit() -> u32 { 50 }
 pub struct TaintAnalysisRequest {
     #[schemars(description = "Session ID (optional if only one session is open)")]
     pub session_id: Option<String>,
-    #[schemars(description = "Taint sources (case-insensitive register names): \
-        'reg:X0@1234' (register at line), 'mem:0xbffff000@1234' (memory at line), \
-        '@last' for last definition. Examples: ['reg:X0@last'], ['mem:0xbffff000@5930']")]
+    #[schemars(description = "Taint sources. The line after @ is 1-based: \
+        'reg:X0@1234' traces a register at display line 1234; \
+        'mem:0xbffff000:32@5930' traces a 32-byte memory range at display line 5930; \
+        '@last' uses the last definition. Memory size defaults to 1 byte for compatibility, \
+        but AI callers should always provide :SIZE (1-4096).")]
     pub from_specs: Vec<String>,
-    #[schemars(description = "Only track data dependencies, ignore control flow (recommended for reducing noise)")]
+    #[schemars(
+        description = "Only track data dependencies, ignore control flow (recommended for reducing noise)"
+    )]
     #[serde(default)]
     pub data_only: bool,
     #[schemars(description = "Restrict analysis to lines >= this seq")]
     pub start_seq: Option<u32>,
     #[schemars(description = "Restrict analysis to lines <= this seq")]
     pub end_seq: Option<u32>,
-    #[schemars(description = "Number of tainted lines to include in result (default: 30, 0=stats only, max: 200)")]
+    #[schemars(
+        description = "Number of tainted lines to include in result (default: 30, 0=stats only, max: 200)"
+    )]
     #[serde(default = "default_inline_lines")]
     pub include_lines: u32,
-    #[schemars(description = "Filter results by SO offset address range, e.g. '0x246F00-0x249800'")]
+    #[schemars(
+        description = "Filter results by SO offset address range, e.g. '0x246F00-0x249800'"
+    )]
     pub addr_range: Option<String>,
-    #[schemars(description = "Filter out lines that only modify stack/frame pointer registers (default: true)")]
+    #[schemars(
+        description = "Filter out lines that only modify stack/frame pointer registers (default: true)"
+    )]
     #[serde(default = "default_true")]
     pub ignore_stack_ops: bool,
 }
 
-fn default_inline_lines() -> u32 { 30 }
+#[derive(Debug, Deserialize, JsonSchema)]
+pub struct ForwardTaintAnalysisRequest {
+    #[schemars(description = "Session ID (optional if only one session is open)")]
+    pub session_id: Option<String>,
+    #[schemars(description = "Forward taint sources. The line after @ is 1-based: \
+        'reg:X0@1234' follows consumers of the register value available at display line 1234; \
+        'mem:0xbffff000:32@5930' follows consumers of the latest definitions for that 32-byte range. \
+        Memory size must be 1-4096 bytes.")]
+    pub from_specs: Vec<String>,
+    #[schemars(
+        description = "Only follow data dependencies and ignore control dependencies (default: true)"
+    )]
+    #[serde(default = "default_true")]
+    pub data_only: bool,
+    #[schemars(description = "Restrict affected instructions to 0-based sequences >= this value")]
+    pub start_seq: Option<u32>,
+    #[schemars(description = "Restrict affected instructions to 0-based sequences <= this value")]
+    pub end_seq: Option<u32>,
+    #[schemars(description = "Maximum affected dependency nodes (default: 10000, max: 100000)")]
+    #[serde(default = "default_forward_nodes")]
+    pub max_nodes: u32,
+    #[schemars(
+        description = "Maximum affected instructions included inline (default: 100, max: 500)"
+    )]
+    #[serde(default = "default_forward_lines")]
+    pub include_lines: u32,
+    #[schemars(
+        description = "Maximum source and sink candidates returned per direction (default: 100, max: 500)"
+    )]
+    #[serde(default = "default_forward_sinks")]
+    pub max_sinks: u32,
+}
+
+fn default_forward_nodes() -> u32 {
+    10_000
+}
+
+fn default_forward_lines() -> u32 {
+    100
+}
+
+fn default_forward_sinks() -> u32 {
+    100
+}
+
+fn default_inline_lines() -> u32 {
+    30
+}
+
+#[derive(Clone, Copy, Debug, Default, Deserialize, JsonSchema)]
+#[serde(rename_all = "lowercase")]
+pub enum KnownDigestAlgorithm {
+    #[default]
+    Auto,
+    Crc32,
+    Md5,
+    Sha1,
+    Sha256,
+    Sha384,
+    Sha512,
+}
+
+#[derive(Debug, Deserialize, JsonSchema)]
+pub struct AnalyzeKnownDigestRequest {
+    #[schemars(description = "Session ID (optional if only one session is open)")]
+    pub session_id: Option<String>,
+    #[schemars(
+        description = "Known CRC32, MD5, SHA-1, SHA-256, SHA-384, or SHA-512 digests. One array item per digest."
+    )]
+    pub digests: Vec<String>,
+    #[schemars(description = "Digest algorithm. Use auto to infer it from digest length.")]
+    #[serde(default)]
+    pub algorithm: KnownDigestAlgorithm,
+    #[schemars(description = "Hash extracted runtime strings as UTF-8 candidates (default: true)")]
+    #[serde(default = "default_true")]
+    pub search_strings: bool,
+    #[schemars(
+        description = "Reconstruct binary memory writes and search for digest output buffers (default: true)"
+    )]
+    #[serde(default = "default_true")]
+    pub search_memory: bool,
+    #[schemars(
+        description = "Build the string index automatically when string matching needs it (default: true)"
+    )]
+    #[serde(default = "default_true")]
+    pub auto_scan_strings: bool,
+    #[schemars(description = "Also test UTF-8 bytes followed by one NUL byte")]
+    #[serde(default)]
+    pub utf8_nul: bool,
+    #[schemars(description = "Also test UTF-16LE encoded candidate strings")]
+    #[serde(default)]
+    pub utf16le: bool,
+    #[schemars(description = "Also test UTF-16LE encoded strings followed by a UTF-16 NUL")]
+    #[serde(default)]
+    pub utf16le_nul: bool,
+    #[schemars(description = "Maximum matches returned per search mode (default: 100, max: 500)")]
+    #[serde(default = "default_digest_results")]
+    pub max_results: u32,
+    #[schemars(
+        description = "Automatically run backward data-flow analysis for top matches (default: true)"
+    )]
+    #[serde(default = "default_true")]
+    pub trace_matches: bool,
+    #[schemars(
+        description = "Maximum digest/string matches to trace automatically (default: 3, max: 10)"
+    )]
+    #[serde(default = "default_digest_traces")]
+    pub max_trace_matches: u32,
+    #[schemars(
+        description = "Only follow data dependencies during automatic tracing (default: true)"
+    )]
+    #[serde(default = "default_true")]
+    pub data_only: bool,
+    #[schemars(
+        description = "Optional 0-based earliest sequence included in automatic taint results"
+    )]
+    pub start_seq: Option<u32>,
+    #[schemars(
+        description = "Maximum dependency nodes returned per traced match (default: 1000, max: 5000)"
+    )]
+    #[serde(default = "default_dependency_nodes")]
+    pub max_dependency_nodes: u32,
+}
+
+fn default_digest_results() -> u32 {
+    100
+}
+fn default_digest_traces() -> u32 {
+    3
+}
+fn default_dependency_nodes() -> u32 {
+    1000
+}
+
+#[derive(Debug, Deserialize, JsonSchema)]
+pub struct ListAnalysesRequest {
+    #[schemars(description = "Session ID (optional if only one session is open)")]
+    pub session_id: Option<String>,
+    #[schemars(
+        description = "Optional analysis kind filter, such as known_digest, crypto_flow, backward_taint, or forward_taint"
+    )]
+    pub kind: Option<String>,
+    #[schemars(description = "Maximum records to return (default: 20, max: 100)")]
+    #[serde(default = "default_analysis_limit")]
+    pub limit: u32,
+}
+
+#[derive(Debug, Deserialize, JsonSchema)]
+pub struct GetAnalysisRequest {
+    #[schemars(description = "Session ID (optional if only one session is open)")]
+    pub session_id: Option<String>,
+    #[schemars(description = "Analysis ID returned by an analysis tool")]
+    pub analysis_id: String,
+}
+
+#[derive(Debug, Deserialize, JsonSchema)]
+pub struct CompareAnalysesRequest {
+    #[schemars(description = "Session ID (optional if only one session is open)")]
+    pub session_id: Option<String>,
+    #[schemars(description = "Two to ten analysis IDs from the same trace session")]
+    pub analysis_ids: Vec<String>,
+}
+
+#[derive(Debug, Deserialize, JsonSchema)]
+pub struct DeleteAnalysisRequest {
+    #[schemars(description = "Session ID (optional if only one session is open)")]
+    pub session_id: Option<String>,
+    #[schemars(description = "Analysis ID to delete")]
+    pub analysis_id: String,
+}
+
+fn default_analysis_limit() -> u32 {
+    20
+}
+
+#[derive(Debug, Deserialize, JsonSchema)]
+pub struct InvestigateCryptoFlowRequest {
+    #[schemars(description = "Session ID (optional if only one session is open)")]
+    pub session_id: Option<String>,
+    #[schemars(description = "Optional known digests to correlate with crypto detections")]
+    #[serde(default)]
+    pub digests: Vec<String>,
+    #[schemars(description = "Digest algorithm. Use auto to infer it from digest length.")]
+    #[serde(default)]
+    pub algorithm: KnownDigestAlgorithm,
+    #[schemars(
+        description = "Instruction context lines around crypto detections (default: 3, max: 10)"
+    )]
+    #[serde(default = "default_crypto_context")]
+    pub context_lines: u32,
+    #[schemars(description = "Maximum crypto detections to return (default: 50, max: 200)")]
+    #[serde(default = "default_crypto_matches")]
+    pub max_crypto_matches: u32,
+    #[schemars(description = "Automatically trace top digest matches (default: true)")]
+    #[serde(default = "default_true")]
+    pub trace_matches: bool,
+    #[schemars(description = "Maximum digest matches to trace (default: 3, max: 10)")]
+    #[serde(default = "default_digest_traces")]
+    pub max_trace_matches: u32,
+    #[schemars(
+        description = "Only follow data dependencies during automatic tracing (default: true)"
+    )]
+    #[serde(default = "default_true")]
+    pub data_only: bool,
+    #[schemars(description = "Also test UTF-8 strings followed by NUL")]
+    #[serde(default)]
+    pub utf8_nul: bool,
+    #[schemars(description = "Also test UTF-16LE strings")]
+    #[serde(default)]
+    pub utf16le: bool,
+    #[schemars(description = "Also test UTF-16LE strings followed by NUL")]
+    #[serde(default)]
+    pub utf16le_nul: bool,
+}
+
+fn default_crypto_matches() -> u32 {
+    50
+}
+
+#[derive(Debug, Deserialize, JsonSchema)]
+pub struct GetAnalysisTaskRequest {
+    #[schemars(description = "Session ID (optional if only one session is open)")]
+    pub session_id: Option<String>,
+    #[schemars(description = "Task ID returned by a background analysis starter")]
+    pub task_id: String,
+}
+
+#[derive(Debug, Deserialize, JsonSchema)]
+pub struct ListAnalysisTasksRequest {
+    #[schemars(description = "Session ID (optional if only one session is open)")]
+    pub session_id: Option<String>,
+    #[schemars(description = "Maximum tasks to return (default: 20, max: 100)")]
+    #[serde(default = "default_analysis_limit")]
+    pub limit: u32,
+}
+
+#[derive(Debug, Deserialize, JsonSchema)]
+pub struct CancelAnalysisTaskRequest {
+    #[schemars(description = "Session ID (optional if only one session is open)")]
+    pub session_id: Option<String>,
+    #[schemars(description = "Task ID to cancel")]
+    pub task_id: String,
+}
+
+#[derive(Debug, Deserialize, JsonSchema)]
+pub struct SaveAnalysisRecipeRequest {
+    #[schemars(description = "Session ID (optional if only one session is open)")]
+    pub session_id: Option<String>,
+    #[schemars(description = "Human-readable recipe name")]
+    pub name: String,
+    #[schemars(description = "What this recipe investigates")]
+    #[serde(default)]
+    pub description: String,
+    #[schemars(description = "Recipe workflow: forward_to_sinks, known_digest_flow, or crypto_investigation")]
+    pub workflow: String,
+    #[schemars(description = "Default input object merged with run_analysis_recipe inputs")]
+    #[serde(default)]
+    pub defaults: serde_json::Value,
+}
+
+#[derive(Debug, Deserialize, JsonSchema)]
+pub struct ListAnalysisRecipesRequest {
+    #[schemars(description = "Session ID (optional if only one session is open)")]
+    pub session_id: Option<String>,
+}
+
+#[derive(Debug, Deserialize, JsonSchema)]
+pub struct RunAnalysisRecipeRequest {
+    #[schemars(description = "Session ID (optional if only one session is open)")]
+    pub session_id: Option<String>,
+    #[schemars(description = "Built-in recipe ID or analysis_id returned by save_analysis_recipe")]
+    pub recipe_id: String,
+    #[schemars(description = "Input object merged over the recipe defaults")]
+    #[serde(default)]
+    pub inputs: serde_json::Value,
+}
+
+#[derive(Debug, Deserialize, JsonSchema)]
+pub struct DeleteAnalysisRecipeRequest {
+    #[schemars(description = "Session ID (optional if only one session is open)")]
+    pub session_id: Option<String>,
+    #[schemars(description = "Recipe analysis_id returned by save_analysis_recipe")]
+    pub recipe_id: String,
+}
+
+#[derive(Debug, Deserialize, JsonSchema)]
+pub struct ExportAnalysisReportRequest {
+    #[schemars(description = "Session ID (optional if only one session is open)")]
+    pub session_id: Option<String>,
+    #[schemars(description = "Analysis ID to export")]
+    pub analysis_id: String,
+    #[schemars(description = "Report format: markdown or json (default: markdown)")]
+    #[serde(default = "default_report_format")]
+    pub format: String,
+    #[schemars(description = "Optional output file path. If omitted, report content is returned inline.")]
+    pub output_path: Option<String>,
+    #[schemars(description = "Include report content even when output_path is supplied (default: false)")]
+    #[serde(default)]
+    pub include_content: bool,
+}
+
+fn default_report_format() -> String {
+    "markdown".to_string()
+}
 
 #[derive(Debug, Deserialize, JsonSchema)]
 pub struct AnalyzeFunctionRequest {
     #[schemars(description = "Session ID (optional if only one session is open)")]
     pub session_id: Option<String>,
-    #[schemars(description = "Call tree node ID for detailed analysis of a specific function call (from get_call_tree)")]
+    #[schemars(
+        description = "Call tree node ID for detailed analysis of a specific function call (from get_call_tree)"
+    )]
     pub node_id: Option<u32>,
-    #[schemars(description = "Search for all calls to functions matching this name (partial, case-insensitive). \
-        Omit both node_id and func_name to list all functions.")]
+    #[schemars(
+        description = "Search for all calls to functions matching this name (partial, case-insensitive). \
+        Omit both node_id and func_name to list all functions."
+    )]
     pub func_name: Option<String>,
     #[schemars(description = "Pagination offset when listing functions (default: 0)")]
     #[serde(default)]
@@ -186,9 +543,62 @@ pub struct AnalyzeFunctionRequest {
 pub struct AnalyzeCryptoRequest {
     #[schemars(description = "Session ID (optional if only one session is open)")]
     pub session_id: Option<String>,
-    #[schemars(description = "Number of context lines around each crypto match (default: 3, max: 10)")]
+    #[schemars(
+        description = "Number of context lines around each crypto match (default: 3, max: 10)"
+    )]
     #[serde(default = "default_crypto_context")]
     pub context_lines: u32,
 }
 
-fn default_crypto_context() -> u32 { 3 }
+fn default_crypto_context() -> u32 {
+    3
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn known_digest_request_uses_ai_friendly_defaults() {
+        let request: AnalyzeKnownDigestRequest = serde_json::from_value(serde_json::json!({
+            "digests": ["5d41402abc4b2a76b9719d911017c592"]
+        }))
+        .unwrap();
+
+        assert!(matches!(request.algorithm, KnownDigestAlgorithm::Auto));
+        assert!(request.search_strings);
+        assert!(request.search_memory);
+        assert!(request.auto_scan_strings);
+        assert!(request.trace_matches);
+        assert!(request.data_only);
+        assert_eq!(request.max_results, 100);
+        assert_eq!(request.max_trace_matches, 3);
+        assert_eq!(request.max_dependency_nodes, 1000);
+    }
+
+    #[test]
+    fn crypto_flow_request_defaults_to_saved_focused_analysis() {
+        let request: InvestigateCryptoFlowRequest =
+            serde_json::from_value(serde_json::json!({})).unwrap();
+
+        assert!(request.digests.is_empty());
+        assert!(request.trace_matches);
+        assert!(request.data_only);
+        assert_eq!(request.context_lines, 3);
+        assert_eq!(request.max_crypto_matches, 50);
+        assert_eq!(request.max_trace_matches, 3);
+    }
+
+    #[test]
+    fn forward_taint_request_defaults_are_bounded_and_data_only() {
+        let request: ForwardTaintAnalysisRequest = serde_json::from_value(serde_json::json!({
+            "from_specs": ["reg:X0@1234"]
+        }))
+        .unwrap();
+
+        assert!(request.data_only);
+        assert_eq!(request.max_nodes, 10_000);
+        assert_eq!(request.include_lines, 100);
+        assert_eq!(request.max_sinks, 100);
+    }
+}

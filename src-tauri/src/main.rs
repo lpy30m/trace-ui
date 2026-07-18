@@ -73,6 +73,8 @@ fn main() {
             commands::build_dependency_tree_from_slice,
             commands::get_line_def_registers,
             commands::scan_crypto,
+            commands::match_known_digests,
+            commands::find_digest_memory,
             commands::load_crypto_cache,
             commands::start_mcp,
             commands::stop_mcp,

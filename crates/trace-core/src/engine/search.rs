@@ -5,7 +5,7 @@ use rayon::prelude::*;
 use trace_parser::gumtrace::CallAnnotation;
 use trace_parser::types::TraceFormat;
 
-use crate::api_types::{CallInfoDto, SearchMatch, SearchOptions, SearchResultLite};
+use crate::api_types::{CallArgumentDto, CallInfoDto, SearchMatch, SearchOptions, SearchResultLite};
 use crate::browse::{parse_trace_line, parse_trace_line_gumtrace};
 use crate::error::{Result, TraceError};
 use crate::utils::ascii_contains;
@@ -447,6 +447,15 @@ impl TraceEngine {
                     CallInfoDto {
                         func_name: ann.func_name.clone(),
                         is_jni: ann.is_jni,
+                        args: ann
+                            .args
+                            .iter()
+                            .map(|(index, value)| CallArgumentDto {
+                                index: index.clone(),
+                                value: value.clone(),
+                            })
+                            .collect(),
+                        ret_value: ann.ret_value.clone(),
                         summary,
                         tooltip,
                     }

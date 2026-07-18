@@ -1,6 +1,6 @@
 import { useState, useEffect, useCallback, useRef, useMemo } from "react";
 import { invoke } from "@tauri-apps/api/core";
-import { listen } from "@tauri-apps/api/event";
+import { emit, listen } from "@tauri-apps/api/event";
 import type { MemorySnapshot, TraceLine } from "../types/trace";
 import { useSelectedSeq } from "../stores/selectedSeqStore";
 import type { ResolvedRow } from "../hooks/useFoldState";
@@ -32,6 +32,7 @@ interface Props {
   onJumpToSeq: (seq: number) => void;
   sessionId: string | null;
   resetKey?: number;
+  onTraceMemory?: (request: { addr: string; size: number; seq: number }) => Promise<void> | void;
 }
 
 const BYTES_PER_LINE = 16;
@@ -69,7 +70,7 @@ function alignHexAddr16(hex: string): string {
   return bigIntToHex(hexToBigInt(hex) & ~0xFn);
 }
 
-export default function MemoryPanel({ selectedSeq: selectedSeqProp, isPhase2Ready, memAddr: memAddrProp, memRw: memRwProp, memSize: memSizeProp, onJumpToSeq, sessionId, resetKey }: Props) {
+export default function MemoryPanel({ selectedSeq: selectedSeqProp, isPhase2Ready, memAddr: memAddrProp, memRw: memRwProp, memSize: memSizeProp, onJumpToSeq, sessionId, resetKey, onTraceMemory }: Props) {
   const selectedSeqFromStore = useSelectedSeq();
   const selectedSeq = selectedSeqProp !== undefined ? selectedSeqProp : selectedSeqFromStore;
 
@@ -601,6 +602,27 @@ export default function MemoryPanel({ selectedSeq: selectedSeqProp, isPhase2Read
     setHexContextMenu(null);
   }, [hexContextMenu]);
 
+  const traceRange = useMemo(() => {
+    if (selectedSeq === null) return null;
+    const addr = memAddr || currentAddr;
+    if (!addr) return null;
+    return {
+      addr,
+      size: Math.max(1, Math.min(memSize || hexLength, 4096)),
+      seq: selectedSeq,
+    };
+  }, [selectedSeq, memAddr, currentAddr, memSize, hexLength]);
+
+  const handleTraceMemory = useCallback(() => {
+    if (!traceRange) return;
+    setHexContextMenu(null);
+    if (onTraceMemory) {
+      onTraceMemory(traceRange);
+    } else {
+      emit("action:trace-memory-value", traceRange);
+    }
+  }, [traceRange, onTraceMemory]);
+
   if (!isPhase2Ready) {
     return (
       <div style={{ height: "100%", display: "flex", alignItems: "center", justifyContent: "center" }}>
@@ -885,6 +907,8 @@ export default function MemoryPanel({ selectedSeq: selectedSeqProp, isPhase2Read
             <ContextMenuItem label="Copy Hexdump" onClick={handleCopyHexdump} disabled={hexLines.length === 0} />
             <ContextMenuItem label="Copy Hex" onClick={handleCopyHex} disabled={hexLines.length === 0} />
             <ContextMenuItem label="Copy ASCII" onClick={handleCopyAscii} disabled={hexLines.length === 0} />
+            <ContextMenuSeparator />
+            <ContextMenuItem label="Trace Memory Value" onClick={handleTraceMemory} disabled={!traceRange} />
             <ContextMenuSeparator />
             <ContextMenuItem label="Copy Selected Text" onClick={handleCopySelection} disabled={!hexContextMenu.selText} />
           </ContextMenu>

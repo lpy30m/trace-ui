@@ -1,4 +1,4 @@
-use serde::{Serialize, Deserialize};
+use serde::{Deserialize, Serialize};
 use trace_parser::types::TraceFormat;
 
 // ── Progress ──
@@ -53,9 +53,17 @@ pub struct BuildResult {
 // ── Browse ──
 
 #[derive(Serialize, Clone)]
+pub struct CallArgumentDto {
+    pub index: String,
+    pub value: String,
+}
+
+#[derive(Serialize, Clone)]
 pub struct CallInfoDto {
     pub func_name: String,
     pub is_jni: bool,
+    pub args: Vec<CallArgumentDto>,
+    pub ret_value: Option<String>,
     pub summary: String,
     pub tooltip: String,
 }
@@ -121,6 +129,48 @@ pub struct SliceResult {
     pub marked_count: u32,
     pub total_lines: u32,
     pub percentage: f64,
+    pub warnings: Vec<SliceWarning>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SliceWarning {
+    pub code: String,
+    pub message: String,
+    pub source_spec: String,
+    pub missing_ranges: Vec<SliceMissingRange>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SliceMissingRange {
+    pub start_addr: String,
+    pub end_addr: String,
+    pub size: u32,
+}
+
+#[derive(Clone, Debug)]
+pub struct ForwardSliceOptions {
+    pub start_seq: Option<u32>,
+    pub end_seq: Option<u32>,
+    pub data_only: bool,
+    pub max_nodes: u32,
+}
+
+#[derive(Clone, Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ForwardSliceResult {
+    pub source_specs: Vec<String>,
+    pub source_seqs: Vec<u32>,
+    pub affected_seqs: Vec<u32>,
+    pub terminal_seqs: Vec<u32>,
+    pub affected_count: u32,
+    pub total_lines: u32,
+    pub traversed_edges: u64,
+    pub forward_index_edges: u64,
+    pub forward_index_reused: bool,
+    pub truncated: bool,
+    pub warnings: Vec<SliceWarning>,
 }
 
 #[derive(Deserialize)]

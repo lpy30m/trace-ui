@@ -1,5 +1,5 @@
 use crate::error::{TraceError, Result};
-use crate::api_types::{TraceLine, CallInfoDto};
+use crate::api_types::{CallArgumentDto, CallInfoDto, TraceLine};
 use crate::scan_unified::bytes_to_hex_escaped;
 use trace_parser::types::TraceFormat;
 
@@ -26,6 +26,15 @@ impl super::TraceEngine {
                         line.call_info = Some(CallInfoDto {
                             func_name: ann.func_name.clone(),
                             is_jni: ann.is_jni,
+                            args: ann
+                                .args
+                                .iter()
+                                .map(|(index, value)| CallArgumentDto {
+                                    index: index.clone(),
+                                    value: value.clone(),
+                                })
+                                .collect(),
+                            ret_value: ann.ret_value.clone(),
                             summary: ann.summary(),
                             tooltip: ann.tooltip(),
                         });

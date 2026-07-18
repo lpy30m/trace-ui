@@ -5,18 +5,29 @@ import { useResizableColumn } from "../hooks/useResizableColumn";
 import VirtualScrollArea from "./VirtualScrollArea";
 import ContextMenu, { ContextMenuItem } from "./ContextMenu";
 import Minimap, { MINIMAP_WIDTH } from "./Minimap";
-import type { CryptoMatch, CryptoScanResult, TraceLine } from "../types/trace";
+import KnownDigestPanel from "./KnownDigestPanel";
+import type { CryptoMatch, CryptoScanResult, HashMatchResult, TraceLine } from "../types/trace";
 import type { ResolvedRow } from "../hooks/useFoldState";
 
 const ROW_HEIGHT = 22;
 
 interface Props {
+  sessionId: string | null;
+  hasStringIndex: boolean;
+  cryptoResults: CryptoScanResult | null;
+  cryptoScanning: boolean;
+  onJumpToSeq: (seq: number) => void;
+  onScanStrings?: () => Promise<void> | void;
+  onTraceInput?: (match: HashMatchResult) => Promise<void> | void;
+}
+
+interface DetectionProps {
   cryptoResults: CryptoScanResult | null;
   cryptoScanning: boolean;
   onJumpToSeq: (seq: number) => void;
 }
 
-export default function CryptoPanel({ cryptoResults, cryptoScanning, onJumpToSeq }: Props) {
+function DetectionPanel({ cryptoResults, cryptoScanning, onJumpToSeq }: DetectionProps) {
   const seqCol = useResizableColumn(70, "right", 40, "crypto:seq");
   const algoCol = useResizableColumn(100, "left", 50, "crypto:algo");
   const magicCol = useResizableColumn(110, "left", 60, "crypto:magic");
@@ -282,6 +293,62 @@ export default function CryptoPanel({ cryptoResults, cryptoScanning, onJumpToSeq
           <ContextMenuItem label="Copy Disasm" onClick={handleCopyDisasm} />
         </ContextMenu>
       )}
+    </div>
+  );
+}
+
+export default function CryptoPanel(props: Props) {
+  const [view, setView] = useState<"detection" | "known-digest">("detection");
+
+  const segmentStyle = (active: boolean): React.CSSProperties => ({
+    height: 26,
+    padding: "0 12px",
+    border: "none",
+    borderRight: "1px solid var(--border-color)",
+    background: active ? "var(--bg-selected)" : "var(--bg-input)",
+    color: active ? "var(--text-primary)" : "var(--text-secondary)",
+    cursor: "pointer",
+    fontSize: 12,
+    fontFamily: "inherit",
+  });
+
+  return (
+    <div style={{ flex: 1, minWidth: 0, minHeight: 0, display: "flex", flexDirection: "column", overflow: "hidden" }}>
+      <div style={{
+        height: 35, padding: "4px 8px", display: "flex", alignItems: "center",
+        borderBottom: "1px solid var(--border-color)", flexShrink: 0,
+      }}>
+        <div style={{ display: "flex", border: "1px solid var(--border-color)", borderRadius: 4, overflow: "hidden" }}>
+          <button type="button" style={segmentStyle(view === "detection")} onClick={() => setView("detection")}>
+            Detection
+          </button>
+          <button
+            type="button"
+            style={{ ...segmentStyle(view === "known-digest"), borderRight: "none" }}
+            onClick={() => setView("known-digest")}
+          >
+            Known Digest
+          </button>
+        </div>
+      </div>
+      <div style={{ flex: 1, minHeight: 0, display: "flex", overflow: "hidden" }}>
+        <div style={{ flex: 1, minWidth: 0, minHeight: 0, display: view === "detection" ? "flex" : "none" }}>
+          <DetectionPanel
+            cryptoResults={props.cryptoResults}
+            cryptoScanning={props.cryptoScanning}
+            onJumpToSeq={props.onJumpToSeq}
+          />
+        </div>
+        <div style={{ flex: 1, minWidth: 0, minHeight: 0, display: view === "known-digest" ? "flex" : "none" }}>
+          <KnownDigestPanel
+            sessionId={props.sessionId}
+            hasStringIndex={props.hasStringIndex}
+            onJumpToSeq={props.onJumpToSeq}
+            onScanStrings={props.onScanStrings}
+            onTraceInput={props.onTraceInput}
+          />
+        </div>
+      </div>
     </div>
   );
 }

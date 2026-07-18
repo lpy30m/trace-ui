@@ -1,6 +1,8 @@
 export interface CallInfoDto {
   func_name: string;
   is_jni: boolean;
+  args?: Array<{ index: string; value: string }>;
+  ret_value?: string | null;
   summary: string;
   tooltip: string;
 }
@@ -86,6 +88,20 @@ export interface SliceResult {
   markedCount: number;
   totalLines: number;
   percentage: number;
+  warnings: SliceWarning[];
+}
+
+export interface SliceWarning {
+  code: string;
+  message: string;
+  sourceSpec: string;
+  missingRanges: SliceMissingRange[];
+}
+
+export interface SliceMissingRange {
+  startAddr: string;
+  endAddr: string;
+  size: number;
 }
 
 export interface StringRecordDto {
@@ -135,6 +151,11 @@ export interface NodeInfo {
   isLeaf: boolean;
   value: string | null;
   depth: number;
+  address: string;
+  module: string | null;
+  memAddr: string | null;
+  memRw: string | null;
+  functionName: string | null;
 }
 
 export interface DependencyGraph {
@@ -159,4 +180,74 @@ export interface CryptoScanResult {
   algorithms_found: string[];
   total_lines_scanned: number;
   scan_duration_ms: number;
+}
+
+export type HashAlgorithm = "crc32" | "md5" | "sha1" | "sha256" | "sha384" | "sha512";
+
+export type HashTransform = "utf8" | "utf8Nul" | "utf16le" | "utf16leNul";
+
+export interface HashTransformOptions {
+  utf8Nul: boolean;
+  utf16le: boolean;
+  utf16leNul: boolean;
+}
+
+export interface HashMatchRequest {
+  digests: string[];
+  algorithm: HashAlgorithm | null;
+  transforms: HashTransformOptions;
+  maxResults: number | null;
+}
+
+export interface HashDigestQueryResult {
+  input: string;
+  normalizedDigest: string | null;
+  algorithm: HashAlgorithm | null;
+  error: string | null;
+  matchCount: number;
+}
+
+export interface HashMatchResult {
+  queryIndex: number;
+  inputDigest: string;
+  normalizedDigest: string;
+  algorithm: HashAlgorithm;
+  stringIndex: number;
+  content: string;
+  addr: string;
+  seq: number;
+  encoding: string;
+  byteLen: number;
+  hashedByteLen: number;
+  xrefCount: number;
+  rw: string;
+  transform: HashTransform;
+}
+
+export interface HashMatchResponse {
+  queries: HashDigestQueryResult[];
+  matches: HashMatchResult[];
+  candidateCount: number;
+  totalMatches: number;
+  truncated: boolean;
+}
+
+export interface HashMemoryMatchResult {
+  queryIndex: number;
+  inputDigest: string;
+  normalizedDigest: string;
+  algorithm: HashAlgorithm;
+  addr: string;
+  byteLen: number;
+  firstWriteSeq: number;
+  lastWriteSeq: number;
+  writeSeqs: number[];
+}
+
+export interface HashMemoryMatchResponse {
+  queries: HashDigestQueryResult[];
+  matches: HashMemoryMatchResult[];
+  writesScanned: number;
+  totalMatches: number;
+  truncated: boolean;
 }

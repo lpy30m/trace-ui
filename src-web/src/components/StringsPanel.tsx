@@ -21,9 +21,10 @@ interface Props {
   isPhase2Ready: boolean;
   onJumpToSeq: (seq: number) => void;
   stringsScanning?: boolean;
+  onTraceCreation?: (record: StringRecordDto) => Promise<void> | void;
 }
 
-export default function StringsPanel({ sessionId, isPhase2Ready, onJumpToSeq, stringsScanning }: Props) {
+export default function StringsPanel({ sessionId, isPhase2Ready, onJumpToSeq, stringsScanning, onTraceCreation }: Props) {
   const rwCol = useResizableColumn(36, "left", 28, "strings:rw");
   const seqCol = useResizableColumn(70, "right", 40, "strings:seq");
   const addrCol = useResizableColumn(110, "right", 50, "strings:addr");
@@ -284,6 +285,17 @@ export default function StringsPanel({ sessionId, isPhase2Ready, onJumpToSeq, st
       console.error("get_string_xrefs failed:", e);
     }
   }, [contextMenu, sessionId]);
+
+  const handleTraceCreation = useCallback(() => {
+    if (!contextMenu) return;
+    const record = contextMenu.record;
+    setContextMenu(null);
+    if (onTraceCreation) {
+      onTraceCreation(record);
+    } else {
+      emit("action:trace-string-creation", record);
+    }
+  }, [contextMenu, onTraceCreation]);
 
   // ── Minimap 回调 ──
   const handleScrollbarScroll = useCallback((row: number) => {
@@ -563,6 +575,7 @@ export default function StringsPanel({ sessionId, isPhase2Ready, onJumpToSeq, st
           <ContextMenuItem label="View Detail" onClick={handleViewDetail} />
           <ContextMenuItem label="View in Memory" onClick={handleViewInMemory} />
           <ContextMenuItem label="Show XRefs" onClick={handleShowXrefs} />
+          <ContextMenuItem label="Trace Creation" onClick={handleTraceCreation} />
           <ContextMenuItem label="Copy String" onClick={handleCopyString} />
           <ContextMenuItem label="Copy Address" onClick={handleCopyAddr} />
         </ContextMenu>

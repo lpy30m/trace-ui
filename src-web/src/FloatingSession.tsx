@@ -102,6 +102,7 @@ export default function FloatingSession({
             markedCount: seqs.length,
             totalLines: initialTotalLines,
             percentage: initialTotalLines > 0 ? (seqs.length / initialTotalLines) * 100 : 0,
+            warnings: [],
           });
         }
       })

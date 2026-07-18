@@ -22,6 +22,19 @@ fn simd_lane_reg(reg: RegId, lane_index: u8, elem_width: u8) -> RegId {
     }
 }
 
+fn collect_call_argument_uses(uses: &mut SmallVec<[RegId; 4]>) {
+    uses.extend_from_slice(&[
+        RegId::X0,
+        RegId::X1,
+        RegId::X2,
+        RegId::X3,
+        RegId::X4,
+        RegId::X5,
+        RegId::X6,
+        RegId::X7,
+    ]);
+}
+
 /// Determine the DEF (written) and USE (read) registers for a parsed instruction.
 ///
 /// This function explicitly matches ALL 42 InsnClass variants with no wildcard `_ =>`
@@ -344,10 +357,11 @@ pub fn determine_def_use(
 
         // =====================================================================
         // J: BranchLink — bl
-        // DEF=x30 (link register)
+        // DEF=x30 (link register), USE=x0-x7 (AAPCS64 arguments)
         // =====================================================================
         InsnClass::BranchLink => {
             defs.push(RegId::X30);
+            collect_call_argument_uses(&mut uses);
         }
 
         // =====================================================================
@@ -362,13 +376,14 @@ pub fn determine_def_use(
 
         // =====================================================================
         // K: BranchLinkReg — blr
-        // DEF=x30, USE=Rn
+        // DEF=x30, USE=Rn + x0-x7
         // =====================================================================
         InsnClass::BranchLinkReg => {
             defs.push(RegId::X30);
             if let Some(rn) = first_reg_non_zero(ops) {
                 uses.push(rn);
             }
+            collect_call_argument_uses(&mut uses);
         }
 
         // =====================================================================
@@ -919,7 +934,19 @@ mod tests {
         let line = make_line(&[]);
         let (defs, uses) = determine_def_use(InsnClass::BranchLink, &line);
         assert_eq!(defs.as_slice(), &[RegId::X30]);
-        assert!(uses.is_empty());
+        assert_eq!(
+            uses.as_slice(),
+            &[
+                RegId::X0,
+                RegId::X1,
+                RegId::X2,
+                RegId::X3,
+                RegId::X4,
+                RegId::X5,
+                RegId::X6,
+                RegId::X7,
+            ]
+        );
     }
 
     // =========================================================================
@@ -943,7 +970,8 @@ mod tests {
         let line = make_line(&[Operand::Reg(RegId::X16)]);
         let (defs, uses) = determine_def_use(InsnClass::BranchLinkReg, &line);
         assert_eq!(defs.as_slice(), &[RegId::X30]);
-        assert_eq!(uses.as_slice(), &[RegId::X16]);
+        assert_eq!(uses[0], RegId::X16);
+        assert_eq!(&uses[1..], &[RegId::X0, RegId::X1, RegId::X2, RegId::X3, RegId::X4, RegId::X5, RegId::X6, RegId::X7]);
     }
 
     // =========================================================================
@@ -1291,7 +1319,8 @@ mod tests {
         let line = make_line(&[Operand::Reg(RegId::XZR)]);
         let (defs, uses) = determine_def_use(InsnClass::BranchLinkReg, &line);
         assert_eq!(defs.as_slice(), &[RegId::X30]);
-        assert!(uses.is_empty(), "blr xzr should not USE xzr");
+        assert!(!uses.contains(&RegId::XZR), "blr xzr should not USE xzr");
+        assert_eq!(uses.len(), 8, "call arguments should still be consumed");
     }
 
     // =========================================================================

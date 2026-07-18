@@ -56,7 +56,7 @@ impl SectionWriter {
     pub fn finish(self) -> Vec<u8> {
         let num_sections = self.sections.len() as u32;
         let raw_table_size = 4 + self.sections.len() * 16; // u32 + N * (u64 offset, u64 length)
-        // Pad table to 8-byte alignment so section data stays aligned
+                                                           // Pad table to 8-byte alignment so section data stays aligned
         let table_size = (raw_table_size + 7) & !7;
 
         let mut result = Vec::with_capacity(table_size + self.buf.len());
@@ -95,8 +95,12 @@ impl<'a> SectionReader<'a> {
             return None;
         }
         let num_sections = u32::from_le_bytes(data[0..4].try_into().ok()?) as usize;
-        let table_end = 4 + num_sections * 16;
+        let table_end = 4usize.checked_add(num_sections.checked_mul(16)?)?;
         if data.len() < table_end {
+            return None;
+        }
+        let data_start = table_end.checked_add(7)? & !7;
+        if data.len() < data_start {
             return None;
         }
 
@@ -105,36 +109,49 @@ impl<'a> SectionReader<'a> {
             let base = 4 + i * 16;
             let offset = u64::from_le_bytes(data[base..base + 8].try_into().ok()?);
             let length = u64::from_le_bytes(data[base + 8..base + 16].try_into().ok()?);
+            let offset_usize = usize::try_from(offset).ok()?;
+            let length_usize = usize::try_from(length).ok()?;
+            let end = offset_usize.checked_add(length_usize)?;
+            if offset_usize < data_start || end > data.len() {
+                return None;
+            }
             sections.push((offset, length));
         }
         Some(Self { data, sections })
     }
 
     /// Get section data as a typed slice.
-    pub fn slice<T: Copy>(&self, idx: usize) -> &'a [T] {
-        let (offset, length) = self.sections[idx];
-        let bytes = &self.data[offset as usize..(offset + length) as usize];
-        unsafe {
-            std::slice::from_raw_parts(
-                bytes.as_ptr() as *const T,
-                bytes.len() / std::mem::size_of::<T>(),
-            )
+    pub fn slice<T: Copy>(&self, idx: usize) -> Option<&'a [T]> {
+        let &(offset, length) = self.sections.get(idx)?;
+        let offset = usize::try_from(offset).ok()?;
+        let length = usize::try_from(length).ok()?;
+        let element_size = std::mem::size_of::<T>();
+        if element_size == 0 || length % element_size != 0 {
+            return None;
         }
+        let end = offset.checked_add(length)?;
+        let bytes = self.data.get(offset..end)?;
+        if (bytes.as_ptr() as usize) % std::mem::align_of::<T>() != 0 {
+            return None;
+        }
+        Some(unsafe {
+            std::slice::from_raw_parts(bytes.as_ptr() as *const T, length / element_size)
+        })
     }
 
     /// Get a single u32 from a section.
-    pub fn u32_val(&self, idx: usize) -> u32 {
-        self.slice::<u32>(idx)[0]
+    pub fn u32_val(&self, idx: usize) -> Option<u32> {
+        self.slice::<u32>(idx)?.first().copied()
     }
 
     /// Get a single u64 from a section.
     #[allow(dead_code)]
-    pub fn u64_val(&self, idx: usize) -> u64 {
-        self.slice::<u64>(idx)[0]
+    pub fn u64_val(&self, idx: usize) -> Option<u64> {
+        self.slice::<u64>(idx)?.first().copied()
     }
 
     /// Get section data as raw bytes (for bincode deserialization).
-    pub fn bytes(&self, idx: usize) -> &'a [u8] {
+    pub fn bytes(&self, idx: usize) -> Option<&'a [u8]> {
         self.slice::<u8>(idx)
     }
 
@@ -157,7 +174,7 @@ mod tests {
 
         let r = SectionReader::new(&bytes).unwrap();
         assert_eq!(r.num_sections(), 1);
-        let out: &[u32] = r.slice(0);
+        let out: &[u32] = r.slice(0).unwrap();
         assert_eq!(out, &[1, 2, 3, 42, 100]);
     }
 
@@ -169,7 +186,7 @@ mod tests {
         let bytes = w.finish();
 
         let r = SectionReader::new(&bytes).unwrap();
-        let out: &[u64] = r.slice(0);
+        let out: &[u64] = r.slice(0).unwrap();
         assert_eq!(out, &[0xDEAD_BEEF, 0xCAFE_BABE]);
     }
 
@@ -182,8 +199,8 @@ mod tests {
 
         let r = SectionReader::new(&bytes).unwrap();
         assert_eq!(r.num_sections(), 2);
-        assert_eq!(r.u32_val(0), 42);
-        assert_eq!(r.u64_val(1), 9999);
+        assert_eq!(r.u32_val(0), Some(42));
+        assert_eq!(r.u64_val(1), Some(9999));
     }
 
     #[test]
@@ -194,24 +211,24 @@ mod tests {
         let bytes = w.finish();
 
         let r = SectionReader::new(&bytes).unwrap();
-        assert_eq!(r.bytes(0), b"hello world");
+        assert_eq!(r.bytes(0), Some(b"hello world".as_slice()));
     }
 
     #[test]
     fn test_multiple_sections() {
         let mut w = SectionWriter::new();
         w.write_slice(&[1u32, 2, 3]); // 0
-        w.write_slice(&[10u64, 20]);   // 1
-        w.write_u32(99);               // 2
-        w.write_bytes(b"test");        // 3
+        w.write_slice(&[10u64, 20]); // 1
+        w.write_u32(99); // 2
+        w.write_bytes(b"test"); // 3
         let bytes = w.finish();
 
         let r = SectionReader::new(&bytes).unwrap();
         assert_eq!(r.num_sections(), 4);
-        assert_eq!(r.slice::<u32>(0), &[1, 2, 3]);
-        assert_eq!(r.slice::<u64>(1), &[10, 20]);
-        assert_eq!(r.u32_val(2), 99);
-        assert_eq!(r.bytes(3), b"test");
+        assert_eq!(r.slice::<u32>(0), Some(&[1, 2, 3][..]));
+        assert_eq!(r.slice::<u64>(1), Some(&[10, 20][..]));
+        assert_eq!(r.u32_val(2), Some(99));
+        assert_eq!(r.bytes(3), Some(b"test".as_slice()));
     }
 
     #[test]
@@ -222,7 +239,7 @@ mod tests {
         let bytes = w.finish();
 
         let r = SectionReader::new(&bytes).unwrap();
-        assert_eq!(r.slice::<u32>(0).len(), 0);
+        assert_eq!(r.slice::<u32>(0).unwrap().len(), 0);
     }
 
     #[test]
@@ -231,5 +248,29 @@ mod tests {
         assert!(SectionReader::new(&[0, 0, 0]).is_none());
         // num_sections = 1 but no table data
         assert!(SectionReader::new(&[1, 0, 0, 0]).is_none());
+    }
+
+    #[test]
+    fn rejects_out_of_bounds_and_overflowing_sections() {
+        let mut out_of_bounds = vec![1, 0, 0, 0];
+        out_of_bounds.extend_from_slice(&100u64.to_le_bytes());
+        out_of_bounds.extend_from_slice(&8u64.to_le_bytes());
+        assert!(SectionReader::new(&out_of_bounds).is_none());
+
+        let mut overflowing = vec![1, 0, 0, 0];
+        overflowing.extend_from_slice(&u64::MAX.to_le_bytes());
+        overflowing.extend_from_slice(&16u64.to_le_bytes());
+        assert!(SectionReader::new(&overflowing).is_none());
+    }
+
+    #[test]
+    fn typed_slice_rejects_invalid_length_and_index() {
+        let mut writer = SectionWriter::new();
+        writer.write_bytes(&[1, 2, 3]);
+        let bytes = writer.finish();
+        let reader = SectionReader::new(&bytes).unwrap();
+        assert!(reader.slice::<u32>(0).is_none());
+        assert!(reader.slice::<u8>(1).is_none());
+        assert!(reader.u32_val(0).is_none());
     }
 }

@@ -4,22 +4,22 @@ use std::collections::{HashMap, HashSet, VecDeque};
 use crate::flat::line_index::LineIndexView;
 use crate::flat::scan_view::ScanView;
 use crate::scanner::{CONTROL_DEP_BIT, LINE_MASK, PAIR_HALF2_BIT, PAIR_SHARED_BIT};
+use rustc_hash::FxHashMap;
 use trace_parser::gumtrace as gumtrace_parser;
 use trace_parser::insn_class;
 use trace_parser::insn_class::InsnClass;
 use trace_parser::parser;
 use trace_parser::types::{Operand, ParsedLine, TraceFormat};
-use rustc_hash::FxHashMap;
 
 /// 扁平 DAG：节点数组 + 边列表，无递归嵌套
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct DependencyGraph {
     pub nodes: Vec<NodeInfo>,
-    pub edges: Vec<[u32; 2]>,   // [parent_seq, child_seq]
+    pub edges: Vec<[u32; 2]>, // [parent_seq, child_seq]
     pub root_seq: u32,
-    pub total_reachable: u32,   // BFS 可达的总节点数
-    pub truncated: bool,        // 是否因超出 max_nodes 而截断
+    pub total_reachable: u32, // BFS 可达的总节点数
+    pub truncated: bool,      // 是否因超出 max_nodes 而截断
 }
 
 #[derive(Serialize)]
@@ -27,16 +27,36 @@ pub struct DependencyGraph {
 pub struct NodeInfo {
     pub seq: u32,
     pub expression: String,
-    pub asm: String,           // 新增：原始汇编文本
+    pub asm: String, // 新增：原始汇编文本
     pub operation: String,
     pub is_leaf: bool,
     pub value: Option<String>,
+    pub address: String,
+    pub module: Option<String>,
+    pub mem_addr: Option<String>,
+    pub mem_rw: Option<String>,
+    pub function_name: Option<String>,
     pub depth: u32, // BFS 最短深度
 }
 
 /// 构建扁平依赖图：BFS 遍历依赖关系，输出去重的节点数组和边列表。
 /// `max_nodes` 限制收集的节点数量，超出后仅计数不再收集。
-pub fn build_graph(view: &ScanView, start_index: u32, data_only: bool, max_nodes: u32) -> DependencyGraph {
+pub fn build_graph(
+    view: &ScanView,
+    start_index: u32,
+    data_only: bool,
+    max_nodes: u32,
+) -> DependencyGraph {
+    build_graph_multi(view, &[start_index], data_only, max_nodes)
+}
+
+/// Build one dependency graph from multiple independent roots.
+pub fn build_graph_multi(
+    view: &ScanView,
+    start_indices: &[u32],
+    data_only: bool,
+    max_nodes: u32,
+) -> DependencyGraph {
     let n = view.line_count as usize;
     let mut visited = bitvec::prelude::bitvec![0; n];
     let mut pair_visited: FxHashMap<u32, u8> = FxHashMap::default();
@@ -51,8 +71,8 @@ pub fn build_graph(view: &ScanView, start_index: u32, data_only: bool, max_nodes
     let mut children_exist: HashSet<u32> = HashSet::new();
     let mut collecting = true; // 是否仍在收集节点（未超限）
 
-    let root_line = start_index & LINE_MASK;
-    if (root_line as usize) >= n {
+    let root_line = start_indices.first().copied().unwrap_or(0) & LINE_MASK;
+    if start_indices.is_empty() || max_nodes == 0 {
         return DependencyGraph {
             nodes: vec![],
             edges: vec![],
@@ -62,16 +82,61 @@ pub fn build_graph(view: &ScanView, start_index: u32, data_only: bool, max_nodes
         };
     }
 
-    visited.set(root_line as usize, true);
-    queue.push_back(start_index);
-    node_seqs.push(root_line);
-    node_set.insert(root_line);
-    depth_map.insert(root_line, 0);
-    let mut total_reachable: u32 = 1;
+    let mut total_reachable: u32 = 0;
+    for &start_index in start_indices {
+        let line = start_index & LINE_MASK;
+        if (line as usize) >= n {
+            continue;
+        }
+
+        let is_new = if view.pair_split.contains_key(&line) {
+            let visit_bit = if (start_index & PAIR_SHARED_BIT) != 0 {
+                4u8
+            } else if (start_index & PAIR_HALF2_BIT) != 0 {
+                2u8
+            } else {
+                1u8
+            };
+            let entry = pair_visited.entry(line).or_insert(0);
+            let is_new = *entry & visit_bit == 0;
+            *entry |= visit_bit;
+            is_new
+        } else if visited[line as usize] {
+            false
+        } else {
+            visited.set(line as usize, true);
+            true
+        };
+
+        if !is_new {
+            continue;
+        }
+
+        queue.push_back(start_index);
+        total_reachable += 1;
+        if node_set.insert(line) {
+            node_seqs.push(line);
+            depth_map.insert(line, 0);
+        }
+    }
+
+    if total_reachable == 0 {
+        return DependencyGraph {
+            nodes: vec![],
+            edges: vec![],
+            root_seq: root_line,
+            total_reachable: 0,
+            truncated: false,
+        };
+    }
 
     while let Some(raw) = queue.pop_front() {
         let parent_line = raw & LINE_MASK;
-        let parent_depth = if collecting { depth_map.get(&parent_line).copied().unwrap_or(0) } else { 0 };
+        let parent_depth = if collecting {
+            depth_map.get(&parent_line).copied().unwrap_or(0)
+        } else {
+            0
+        };
         let deps = collect_deps(raw, view, data_only);
 
         for dep_raw in deps {
@@ -146,6 +211,11 @@ pub fn build_graph(view: &ScanView, start_index: u32, data_only: bool, max_nodes
             operation: String::new(),
             is_leaf: !children_exist.contains(&seq),
             value: None,
+            address: String::new(),
+            module: None,
+            mem_addr: None,
+            mem_rw: None,
+            function_name: None,
             depth: depth_map.get(&seq).copied().unwrap_or(0),
         })
         .collect();
@@ -161,6 +231,98 @@ pub fn build_graph(view: &ScanView, start_index: u32, data_only: bool, max_nodes
     }
 }
 
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::flat::convert;
+    use crate::scanner;
+
+    #[test]
+    fn multi_root_graph_keeps_all_dependency_chains() {
+        let trace = [
+            r#"[00:00:00 001][lib.so 0x100] [d2800028] 0x40000100: "mov x8, #1" => x8=0x1"#,
+            r#"[00:00:00 001][lib.so 0x104] [aa0803e0] 0x40000104: "mov x0, x8" x8=0x1 => x0=0x1"#,
+            r#"[00:00:00 001][lib.so 0x108] [d2800049] 0x40000108: "mov x9, #2" => x9=0x2"#,
+            r#"[00:00:00 001][lib.so 0x10c] [aa0903e1] 0x4000010c: "mov x1, x9" x9=0x2 => x1=0x2"#,
+        ]
+        .join("\n");
+        let state = scanner::scan_from_string(&trace, false).unwrap();
+        let deps = convert::deps_to_flat(&state.deps);
+        let pair_split = convert::pair_split_to_flat(&state.pair_split);
+        let view = ScanView {
+            deps: deps.view(),
+            pair_split: pair_split.view(),
+            line_count: state.line_count,
+        };
+
+        let graph = build_graph_multi(&view, &[1, 3], true, 100);
+
+        assert_eq!(graph.root_seq, 1);
+        assert_eq!(graph.total_reachable, 4);
+        assert_eq!(graph.nodes.len(), 4);
+        assert!(graph.edges.contains(&[1, 0]));
+        assert!(graph.edges.contains(&[3, 2]));
+        assert_eq!(
+            graph.nodes.iter().find(|node| node.seq == 1).unwrap().depth,
+            0
+        );
+        assert_eq!(
+            graph.nodes.iter().find(|node| node.seq == 3).unwrap().depth,
+            0
+        );
+    }
+
+    #[test]
+    fn assigns_nodes_to_the_innermost_active_call() {
+        let mut graph = DependencyGraph {
+            nodes: vec![NodeInfo {
+                seq: 12,
+                expression: String::new(),
+                asm: String::new(),
+                operation: String::new(),
+                is_leaf: true,
+                value: None,
+                depth: 0,
+                address: String::new(),
+                module: None,
+                mem_addr: None,
+                mem_rw: None,
+                function_name: None,
+            }],
+            edges: vec![],
+            root_seq: 12,
+            total_reachable: 1,
+            truncated: false,
+        };
+        let call_tree = crate::query::call_tree::CallTree {
+            nodes: vec![
+                crate::query::call_tree::CallTreeNode {
+                    id: 0,
+                    func_addr: 0x1000,
+                    func_name: Some("root".to_string()),
+                    entry_seq: 0,
+                    exit_seq: 30,
+                    parent_id: None,
+                    children_ids: vec![1],
+                },
+                crate::query::call_tree::CallTreeNode {
+                    id: 1,
+                    func_addr: 0x2000,
+                    func_name: Some("inner".to_string()),
+                    entry_seq: 10,
+                    exit_seq: 20,
+                    parent_id: Some(0),
+                    children_ids: vec![],
+                },
+            ],
+        };
+
+        populate_graph_functions(&mut graph, Some(&call_tree));
+
+        assert_eq!(graph.nodes[0].function_name.as_deref(), Some("inner"));
+    }
+}
+
 /// 填充所有节点的 expression / operation / value 字段
 pub fn populate_graph_info(
     graph: &mut DependencyGraph,
@@ -173,6 +335,30 @@ pub fn populate_graph_info(
     }
 }
 
+pub fn populate_graph_functions(
+    graph: &mut DependencyGraph,
+    call_tree: Option<&crate::query::call_tree::CallTree>,
+) {
+    let Some(call_tree) = call_tree else { return };
+    for node in &mut graph.nodes {
+        let end = call_tree
+            .nodes
+            .partition_point(|frame| frame.entry_seq <= node.seq);
+        if let Some(frame) = call_tree.nodes[..end]
+            .iter()
+            .rev()
+            .find(|frame| node.seq <= frame.exit_seq)
+        {
+            node.function_name = Some(
+                frame
+                    .func_name
+                    .clone()
+                    .unwrap_or_else(|| format!("sub_{:x}", frame.func_addr)),
+            );
+        }
+    }
+}
+
 fn fill_node_info(
     node: &mut NodeInfo,
     mmap: &[u8],
@@ -180,6 +366,16 @@ fn fill_node_info(
     format: TraceFormat,
 ) {
     if let Some(raw_line) = line_index.get_line(mmap, node.seq) {
+        let trace_line = match format {
+            TraceFormat::Unidbg => crate::browse::parse_trace_line(node.seq, raw_line),
+            TraceFormat::Gumtrace => crate::browse::parse_trace_line_gumtrace(node.seq, raw_line),
+        };
+        if let Some(line) = trace_line {
+            node.address = line.address;
+            node.module = line.so_name;
+            node.mem_addr = line.mem_addr;
+            node.mem_rw = line.mem_rw;
+        }
         if let Ok(line_str) = std::str::from_utf8(raw_line) {
             let parsed = match format {
                 TraceFormat::Unidbg => parser::parse_line(line_str),
@@ -270,13 +466,15 @@ fn extract_asm(line_str: &str, format: TraceFormat) -> String {
             } else {
                 return String::new();
             };
-            let insn_start = rest.find('!')
+            let insn_start = rest
+                .find('!')
                 .and_then(|bang| rest[bang + 1..].find(' ').map(|p| bang + 1 + p + 1))
                 .unwrap_or(0);
             if insn_start == 0 || insn_start >= rest.len() {
                 return String::new();
             }
-            let insn_end = rest[insn_start..].find(';')
+            let insn_end = rest[insn_start..]
+                .find(';')
                 .map(|p| insn_start + p)
                 .unwrap_or(rest.len());
             rest[insn_start..insn_end].trim().to_string()
@@ -343,7 +541,11 @@ fn fallback_expr(m: &str, ops: &[Operand]) -> String {
         "{} = {}({})",
         fmt_operand(&ops[0]),
         m,
-        ops[1..].iter().map(fmt_operand).collect::<Vec<_>>().join(", ")
+        ops[1..]
+            .iter()
+            .map(fmt_operand)
+            .collect::<Vec<_>>()
+            .join(", ")
     )
 }
 
@@ -405,13 +607,7 @@ fn to_c_expr(class: InsnClass, p: &ParsedLine) -> String {
             } else if m == "mvn" {
                 format!("{} = ~{}", op(ops, 0), op(ops, 1))
             } else if ops.len() >= 3 {
-                format!(
-                    "{} = {} {} {}",
-                    op(ops, 0),
-                    op(ops, 1),
-                    c_op,
-                    op(ops, 2)
-                )
+                format!("{} = {} {} {}", op(ops, 0), op(ops, 1), c_op, op(ops, 2))
             } else if ops.len() == 2 {
                 format!("{} = {} {}", op(ops, 0), c_op, op(ops, 1))
             } else {
@@ -507,12 +703,9 @@ fn to_c_expr(class: InsnClass, p: &ParsedLine) -> String {
 
         // FlagUse
         InsnClass::FlagUse => match m {
-            "csel" | "fcsel" => format!(
-                "{} = (cond) ? {} : {}",
-                op(ops, 0),
-                op(ops, 1),
-                op(ops, 2)
-            ),
+            "csel" | "fcsel" => {
+                format!("{} = (cond) ? {} : {}", op(ops, 0), op(ops, 1), op(ops, 2))
+            }
             "cset" => format!("{} = (cond) ? 1 : 0", op(ops, 0)),
             "csetm" => format!("{} = (cond) ? -1 : 0", op(ops, 0)),
             "csinc" => format!(
@@ -521,36 +714,16 @@ fn to_c_expr(class: InsnClass, p: &ParsedLine) -> String {
                 op(ops, 1),
                 op(ops, 2)
             ),
-            "csinv" => format!(
-                "{} = (cond) ? {} : ~{}",
-                op(ops, 0),
-                op(ops, 1),
-                op(ops, 2)
-            ),
-            "csneg" => format!(
-                "{} = (cond) ? {} : -{}",
-                op(ops, 0),
-                op(ops, 1),
-                op(ops, 2)
-            ),
+            "csinv" => format!("{} = (cond) ? {} : ~{}", op(ops, 0), op(ops, 1), op(ops, 2)),
+            "csneg" => format!("{} = (cond) ? {} : -{}", op(ops, 0), op(ops, 1), op(ops, 2)),
             "cinc" => format!(
                 "{} = (cond) ? {} + 1 : {}",
                 op(ops, 0),
                 op(ops, 1),
                 op(ops, 1)
             ),
-            "cinv" => format!(
-                "{} = (cond) ? ~{} : {}",
-                op(ops, 0),
-                op(ops, 1),
-                op(ops, 1)
-            ),
-            "cneg" => format!(
-                "{} = (cond) ? -{} : {}",
-                op(ops, 0),
-                op(ops, 1),
-                op(ops, 1)
-            ),
+            "cinv" => format!("{} = (cond) ? ~{} : {}", op(ops, 0), op(ops, 1), op(ops, 1)),
+            "cneg" => format!("{} = (cond) ? -{} : {}", op(ops, 0), op(ops, 1), op(ops, 1)),
             _ => fallback_expr(m, ops),
         },
 
@@ -727,13 +900,7 @@ fn to_c_expr(class: InsnClass, p: &ParsedLine) -> String {
             let stripped = m.trim_start_matches('f');
             let c_op = mnemonic_to_c_op(stripped);
             if c_op != stripped && ops.len() >= 3 {
-                format!(
-                    "{} = {} {} {}",
-                    op(ops, 0),
-                    op(ops, 1),
-                    c_op,
-                    op(ops, 2)
-                )
+                format!("{} = {} {} {}", op(ops, 0), op(ops, 1), c_op, op(ops, 2))
             } else if m == "fneg" {
                 format!("{} = -{}", op(ops, 0), op(ops, 1))
             } else if m == "fabs" {

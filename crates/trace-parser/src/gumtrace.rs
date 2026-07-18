@@ -199,9 +199,18 @@ pub fn parse_special_line(raw: &str) -> Option<SpecialLine> {
 }
 
 fn parse_call_func(rest: &str, is_jni: bool) -> Option<SpecialLine> {
-    let paren_pos = rest.find('(')?;
-    let name = rest[..paren_pos].to_string();
-    Some(SpecialLine::CallFunc { name, is_jni })
+    let name_end = rest
+        .find('(')
+        .or_else(|| rest.find(':'))
+        .unwrap_or(rest.len());
+    let name = rest[..name_end].trim();
+    if name.is_empty() {
+        return None;
+    }
+    Some(SpecialLine::CallFunc {
+        name: name.to_string(),
+        is_jni,
+    })
 }
 
 /// Parse a gumtrace line (lightweight mode — skips arrow register extraction).
@@ -681,6 +690,18 @@ mod tests {
                 assert!(!is_jni);
             }
             _ => panic!("expected CallFunc"),
+        }
+    }
+
+    #[test]
+    fn test_parse_colon_style_call_func() {
+        let sl = parse_special_line("call func: memcpy: dest 0x1000,src 0x2000,len 0x10").unwrap();
+        match sl {
+            SpecialLine::CallFunc { name, is_jni } => {
+                assert_eq!(name, "memcpy");
+                assert!(!is_jni);
+            }
+            _ => panic!("expected colon-style call function"),
         }
     }
 

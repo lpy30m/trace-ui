@@ -6,13 +6,15 @@ import { useDragToFloat } from "../hooks/useDragToFloat";
 import { useSearchMatchCache } from "../hooks/useSearchMatchCache";
 import { useSearchPages } from "../hooks/useSearchPages";
 import { findNearestSeqIndex } from "../utils/binarySearch";
-import type { SearchMatch, SliceResult, CryptoScanResult } from "../types/trace";
+import type { SearchMatch, SliceResult, CryptoScanResult, HashMatchResult, StringRecordDto } from "../types/trace";
 import MemoryPanel from "./MemoryPanel";
 import SearchResultList from "./SearchResultList";
 import SearchBar, { SearchOptions } from "./SearchBar";
 import StringsPanel from "./StringsPanel";
 import CryptoPanel from "./CryptoPanel";
+import TaintResultViews from "./TaintResultViews";
 import { useSelectedSeq } from "../stores/selectedSeqStore";
+import { explainTaintError } from "../utils/taintError";
 
 const TABS = ["Memory", "Accesses", "Taint State", "Search", "Strings", "Crypto"] as const;
 type TabName = typeof TABS[number];
@@ -71,8 +73,13 @@ interface Props {
   sliceDuration: number | null;
   sliceError: string | null;
   stringsScanning?: boolean;
+  hasStringIndex: boolean;
   cryptoResults: CryptoScanResult | null;
   cryptoScanning: boolean;
+  onScanStrings: () => Promise<void> | void;
+  onTraceDigestInput: (match: HashMatchResult) => Promise<void> | void;
+  onTraceStringCreation: (record: StringRecordDto) => Promise<void> | void;
+  onTraceMemory: (request: { addr: string; size: number; seq: number }) => Promise<void> | void;
   onSearch: (query: string, options: SearchOptions) => void;
   showSoName?: boolean;
   showAbsAddress?: boolean;
@@ -86,8 +93,13 @@ export default function TabPanel({
   sliceActive, sliceInfo, sliceFromSpecs,
   isSlicing, sliceDuration, sliceError,
   stringsScanning,
+  hasStringIndex,
   cryptoResults,
   cryptoScanning,
+  onScanStrings,
+  onTraceDigestInput,
+  onTraceStringCreation,
+  onTraceMemory,
   onSearch,
   showSoName = false,
   showAbsAddress = false,
@@ -257,6 +269,7 @@ export default function TabPanel({
   }, []);
 
   const startDrag = useDragToFloat({ onFloat, onActivate: handleActivateTab });
+  const taintErrorInfo = sliceError ? explainTaintError(sliceError) : null;
 
   // 容器样式：所有 tab 用 absolute 堆叠，active 可见，其他 visibility:hidden
   // 不用 display:none —— 浏览器会重置 scrollTop，导致虚拟列表焦点丢失
@@ -305,6 +318,7 @@ export default function TabPanel({
           onJumpToSeq={onJumpToSeq}
           sessionId={sessionId}
           resetKey={memResetKey}
+          onTraceMemory={onTraceMemory}
         />
       </div>
 
@@ -366,7 +380,7 @@ export default function TabPanel({
         )}
       </div>
 
-      <div style={{ ...tabStyle("Taint State"), alignItems: "flex-start", justifyContent: "center", padding: 16 }}>
+      <div style={{ ...tabStyle("Taint State"), alignItems: "flex-start", justifyContent: "center", padding: 16, overflow: "auto" }}>
         {isSlicing ? (
           <div style={{ display: "flex", alignItems: "center", gap: 8, width: "100%", justifyContent: "center" }}>
             <span style={{
@@ -378,12 +392,19 @@ export default function TabPanel({
             }} />
             <span style={{ color: "var(--text-secondary)", fontSize: 12 }}>Analyzing...</span>
           </div>
-        ) : sliceError ? (
-          <div style={{ color: "var(--text-error)", fontSize: 12, lineHeight: 1.6 }}>
-            Analysis failed: {sliceError}
+        ) : taintErrorInfo ? (
+          <div style={{ width: "100%", maxWidth: 760, fontSize: 12, lineHeight: 1.6 }}>
+            <div style={{ color: "var(--text-error)", fontWeight: 600 }}>{taintErrorInfo.title}</div>
+            <div style={{ color: "var(--text-primary)", marginTop: 4 }}>{taintErrorInfo.suggestion}</div>
+            {taintErrorInfo.detail !== taintErrorInfo.title && (
+              <details style={{ color: "var(--text-secondary)", marginTop: 8 }}>
+                <summary style={{ cursor: "pointer" }}>Technical details</summary>
+                <div style={{ marginTop: 4, fontFamily: "monospace", overflowWrap: "anywhere" }}>{taintErrorInfo.detail}</div>
+              </details>
+            )}
           </div>
         ) : sliceActive && sliceInfo ? (
-          <div style={{ fontSize: 12, lineHeight: 2, color: "var(--text-secondary)" }}>
+          <div style={{ width: "100%", minWidth: 0, fontSize: 12, lineHeight: 2, color: "var(--text-secondary)" }}>
             <div>
               <span style={{ color: "var(--text-secondary)", display: "inline-block", width: 52 }}>Source:</span>
               <span style={{ color: "var(--text-primary)" }}>{sliceFromSpecs.join(", ")}</span>
@@ -400,7 +421,48 @@ export default function TabPanel({
                 <span style={{ color: "var(--text-primary)" }}>{(sliceDuration / 1000).toFixed(2)}s</span>
               </div>
             )}
+            {sliceInfo.warnings.length > 0 && (
+              <div style={{
+                marginTop: 8, padding: "7px 9px", maxWidth: 760,
+                border: "1px solid var(--text-changes)", borderRadius: 4,
+                color: "var(--text-changes)", lineHeight: 1.5,
+              }}>
+                {sliceInfo.warnings.map((warning, index) => (
+                  <div key={`${warning.code}-${warning.sourceSpec}-${index}`} style={{ marginBottom: index + 1 < sliceInfo.warnings.length ? 6 : 0 }}>
+                    <div>{warning.message}</div>
+                    {warning.missingRanges.length > 0 && (
+                      <div style={{ color: "var(--text-secondary)", marginTop: 2 }}>
+                        Missing: {warning.missingRanges.map((range) => `${range.startAddr}..${range.endAddr} (${range.size} bytes)`).join(", ")}
+                      </div>
+                    )}
+                    <div style={{ color: "var(--text-primary)", marginTop: 3 }}>
+                      Continue with the available bytes, or move to a later instruction to include the missing writes.
+                    </div>
+                  </div>
+                ))}
+              </div>
+            )}
+            {sliceInfo.percentage > 50 && (
+              <div style={{ marginTop: 6, color: "var(--text-changes)", lineHeight: 1.5 }}>
+                Large result. Use Focused scope or shorten the history range for a clearer dependency chain.
+              </div>
+            )}
+            {sliceInfo.markedCount <= 2 && (
+              <div style={{ marginTop: 6, color: "var(--text-secondary)", lineHeight: 1.5 }}>
+                Short chain. Expand the history range or use Broad scope if earlier inputs are missing.
+              </div>
+            )}
             <DepTreeFromSliceButton sessionId={sessionId} />
+            {sessionId && (
+              <div style={{ marginTop: 12, paddingTop: 10, borderTop: "1px solid var(--border-color)", minWidth: 0 }}>
+                <TaintResultViews
+                  sessionId={sessionId}
+                  sources={sliceFromSpecs}
+                  sliceInfo={sliceInfo}
+                  onJumpToSeq={onJumpToSeq}
+                />
+              </div>
+            )}
           </div>
         ) : (
           <div style={{ width: "100%", textAlign: "center" }}>
@@ -417,14 +479,19 @@ export default function TabPanel({
           isPhase2Ready={isPhase2Ready}
           onJumpToSeq={onJumpToSeq}
           stringsScanning={stringsScanning}
+          onTraceCreation={onTraceStringCreation}
         />
       </div>
 
       <div style={tabStyle("Crypto")}>
         <CryptoPanel
+          sessionId={sessionId}
+          hasStringIndex={hasStringIndex}
           cryptoResults={cryptoResults}
           cryptoScanning={cryptoScanning}
           onJumpToSeq={onJumpToSeq}
+          onScanStrings={onScanStrings}
+          onTraceInput={onTraceDigestInput}
         />
       </div>
 
