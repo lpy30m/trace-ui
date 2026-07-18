@@ -10,7 +10,7 @@
   },
   "dependencies": {
     "@tanstack/react-virtual": "^3.13.21",
-    "@tauri-apps/api": "^2.11.5",
+    "@tauri-apps/api": "^2.11.1",
     "@tauri-apps/plugin-dialog": "^2.7.1",
     "@tauri-apps/plugin-opener": "^2.5.4",
     "react": "^19",
