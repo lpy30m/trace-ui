@@ -545,16 +545,26 @@ export interface AngrSeedMemoryRegion {
   phase: string;
 }
 
+export interface AngrSeedRegister {
+  name: string;
+  value: string;
+}
+
 export interface AngrStateSeed {
   schemaVersion: string;
   sourceEventIndex: number;
+  sourceEvent: string;
   hookId: string;
   callId: string | null;
   moduleName: string | null;
+  moduleBase: string | null;
+  moduleSize: number;
   functionName: string;
   captureTarget: string | null;
+  captureOffset: string | null;
   script: string;
   registersSeeded: string[];
+  registers: AngrSeedRegister[];
   memoryRegions: AngrSeedMemoryRegion[];
   warnings: string[];
 }
@@ -811,7 +821,20 @@ export interface AngrOllvmScript {
   fileName: string;
   script: string;
   schemaVersion: string;
+  fridaSeed: AngrOllvmFridaSeedProvenance | null;
   warnings: string[];
+}
+
+export interface AngrOllvmFridaSeedProvenance {
+  sourceEventIndex: number;
+  hookId: string;
+  callId: string | null;
+  moduleName: string;
+  functionName: string;
+  captureOffset: string;
+  registersSeeded: string[];
+  memoryRegionCount: number;
+  matchedProbeOffsets: string[];
 }
 
 export interface AngrSuccessor {
@@ -837,7 +860,10 @@ export interface AngrBranchProbe {
   status: string;
   seedKind: string | null;
   sourceSeq: number | null;
+  sourceEventIndex: number | null;
+  sourceOffset: string | null;
   seededRegisters: string[];
+  seededMemoryRegions: string[];
   observedSuccessors: string[];
   successors: AngrSuccessor[];
   constraints: string[];
@@ -853,6 +879,7 @@ export interface AngrOllvmResultBundle {
   architecture: string;
   angrVersion: string;
   cfgKind: string;
+  fridaSeed: AngrOllvmFridaSeedProvenance | null;
   blocks: AngrBlockResult[];
   branchProbes: AngrBranchProbe[];
   warnings: string[];

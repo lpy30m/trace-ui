@@ -1100,6 +1100,20 @@ pub struct GenerateAngrOllvmScriptRequest {
     )]
     #[serde(default)]
     pub use_cfg_emulated: bool,
+    #[schemars(
+        description = "Optional absolute path to a user-captured trace-ui/frida-hook-v1 file. Must be paired with frida_event_index; Trace UI reads the file but never executes Frida."
+    )]
+    pub frida_capture_path: Option<String>,
+    #[schemars(
+        description = "Normalized hook-enter event index whose exact module-relative offset must match an opaque branch or recorded condition source"
+    )]
+    pub frida_event_index: Option<u64>,
+    #[schemars(description = "Include captured SP in the embedded Frida seed (default: false)")]
+    #[serde(default)]
+    pub frida_include_sp: bool,
+    #[schemars(description = "Include captured LR/X30 in the embedded Frida seed (default: true)")]
+    #[serde(default = "default_true")]
+    pub frida_include_lr: bool,
 }
 
 #[derive(Debug, Deserialize, JsonSchema)]
@@ -1337,6 +1351,16 @@ mod tests {
         .unwrap();
         assert!(!request.include_sp);
         assert!(request.include_lr);
+    }
+
+    #[test]
+    fn angr_ollvm_frida_seed_defaults_keep_stack_opt_in() {
+        let request: GenerateAngrOllvmScriptRequest =
+            serde_json::from_value(serde_json::json!({})).unwrap();
+        assert!(request.frida_capture_path.is_none());
+        assert!(request.frida_event_index.is_none());
+        assert!(!request.frida_include_sp);
+        assert!(request.frida_include_lr);
     }
 
     #[test]

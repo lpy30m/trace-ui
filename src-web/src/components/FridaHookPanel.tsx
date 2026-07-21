@@ -112,6 +112,7 @@ export default function FridaHookPanel({ seed }: Props) {
       offset: seed.offset,
       functionName: seed.functionName,
       arguments: seed.arguments,
+      captureRegisters: true,
     }));
     setSeedLabel(seed.sourceLabel);
     setError(null);

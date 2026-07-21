@@ -121,8 +121,10 @@ dynamic candidates; unexecuted paths are unknown. For the full workflow, use `$i
 generated Python to the user for manual execution against the exact ELF/shared object. Inspect the
 resulting `trace-ui/angr-ollvm-v1` JSON with `inspect_angr_ollvm_results`. CFGFast/CFGEmulated
 differences, blank-state probes, and automatically emitted trace-register-seeded probes are candidate
-evidence only. Trace snapshots omit memory and may omit architectural state; add memory/input evidence
-to `configure_state(state)` or merge a Frida seed before increasing confidence. For the full workflow, use
+evidence only. For a user-captured Frida seed, generate the Hook at the candidate branch or reported
+condition-source offset, then pass `frida_capture_path` and the exact `hook-enter` event index. The
+generator rejects module/offset mismatches and embeds captured GPR/memory as a separate candidate probe.
+Missing flags, SIMD, memory, and entry-path state still prevent Verified classification. For the full workflow, use
 `$ida-ollvm-analysis`.
 
 **"Does this dispatcher or opaque branch stay stable across runs?"**

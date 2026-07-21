@@ -886,11 +886,30 @@ pub fn generate_angr_ollvm_script(
     report: trace_core::OllvmReport,
     probe_opaque_branches: Option<bool>,
     use_cfg_emulated: Option<bool>,
+    frida_bundle: Option<trace_core::FridaCaptureBundle>,
+    frida_event_index: Option<u64>,
+    frida_include_sp: Option<bool>,
+    frida_include_lr: Option<bool>,
 ) -> Result<trace_core::AngrOllvmScript, String> {
-    trace_core::generate_angr_ollvm_script(
+    let frida_seed =
+        match (frida_bundle.as_ref(), frida_event_index) {
+            (Some(bundle), Some(event_index)) => Some(trace_core::generate_angr_state_seed(
+                bundle,
+                event_index,
+                frida_include_sp.unwrap_or(false),
+                frida_include_lr.unwrap_or(true),
+            )?),
+            (None, None) => None,
+            _ => return Err(
+                "fridaBundle and fridaEventIndex must be provided together for OLLVM seed merging"
+                    .to_string(),
+            ),
+        };
+    trace_core::generate_angr_ollvm_script_with_seed(
         &report,
         probe_opaque_branches.unwrap_or(true),
         use_cfg_emulated.unwrap_or(false),
+        frida_seed.as_ref(),
     )
 }
 
@@ -900,12 +919,30 @@ pub async fn save_angr_ollvm_script(
     report: trace_core::OllvmReport,
     probe_opaque_branches: Option<bool>,
     use_cfg_emulated: Option<bool>,
+    frida_bundle: Option<trace_core::FridaCaptureBundle>,
+    frida_event_index: Option<u64>,
+    frida_include_sp: Option<bool>,
+    frida_include_lr: Option<bool>,
 ) -> Result<String, String> {
     tauri::async_runtime::spawn_blocking(move || {
-        let generated = trace_core::generate_angr_ollvm_script(
+        let frida_seed = match (frida_bundle.as_ref(), frida_event_index) {
+            (Some(bundle), Some(event_index)) => Some(trace_core::generate_angr_state_seed(
+                bundle,
+                event_index,
+                frida_include_sp.unwrap_or(false),
+                frida_include_lr.unwrap_or(true),
+            )?),
+            (None, None) => None,
+            _ => return Err(
+                "fridaBundle and fridaEventIndex must be provided together for OLLVM seed merging"
+                    .to_string(),
+            ),
+        };
+        let generated = trace_core::generate_angr_ollvm_script_with_seed(
             &report,
             probe_opaque_branches.unwrap_or(true),
             use_cfg_emulated.unwrap_or(false),
+            frida_seed.as_ref(),
         )?;
         let trimmed = path.trim();
         if trimmed.is_empty() {

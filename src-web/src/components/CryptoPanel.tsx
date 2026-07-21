@@ -401,6 +401,11 @@ export default function CryptoPanel(props: Props) {
     });
   }, [resolveTargetLine]);
 
+  const createOllvmHook = useCallback((seed: FridaHookSeed) => {
+    setFridaSeed(seed);
+    setView("frida");
+  }, []);
+
   const segmentStyle = (active: boolean): React.CSSProperties => ({
     height: 26,
     padding: "0 12px",
@@ -477,7 +482,7 @@ export default function CryptoPanel(props: Props) {
           <FridaHookPanel seed={fridaSeed} />
         </div>
         <div style={{ flex: 1, minWidth: 0, minHeight: 0, display: view === "ollvm" ? "flex" : "none" }}>
-          <OllvmPanel sessionId={props.sessionId} onJumpToSeq={props.onJumpToSeq} />
+          <OllvmPanel sessionId={props.sessionId} onJumpToSeq={props.onJumpToSeq} onPrepareFridaHook={createOllvmHook} />
         </div>
         <div style={{ flex: 1, minWidth: 0, minHeight: 0, display: view === "detection" ? "flex" : "none" }}>
           <DetectionPanel

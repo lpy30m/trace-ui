@@ -1,6 +1,6 @@
 ---
 name: frida-hook-generation
-description: Generate bounded ARM64 Frida 16.x JavaScript hook scripts, inspect user-captured trace-ui/frida-hook-v1 JSON or NDJSON, index captured crypto materials with bounded deterministic recomputation, and turn selected register/buffer captures into manual angr state seeds through the trace-ui MCP server. Use for native exports or module-relative offsets, X0-X7 arguments, key/salt/digest buffers, strings, returns, backtraces, Stalker events, capture review, or Frida-to-angr handoff. Trace UI never attaches, spawns, loads, or executes Frida; the user controls runtime execution.
+description: Generate bounded ARM64 Frida 16.x JavaScript hook scripts, inspect user-captured trace-ui/frida-hook-v1 JSON or NDJSON, index captured crypto materials, and turn exact-offset register/buffer captures into manual angr or OLLVM state seeds through the trace-ui MCP server. Use for native exports or module-relative offsets, X0-X7 arguments, full ARM64 GPR snapshots, key/salt/digest buffers, strings, returns, backtraces, Stalker events, capture review, or Frida-to-angr handoff. Trace UI never attaches, spawns, loads, or executes Frida; the user controls runtime execution.
 ---
 
 # Generate Frida 16 hooks with trace-ui
@@ -27,6 +27,9 @@ Use `mcp__trace-ui__list_frida_hook_recipes`, `mcp__trace-ui__generate_frida_hoo
    text re-encoding is weaker evidence.
 9. When angr initialization is requested, run `generate_angr_state_seed` for that event. Keep SP
    opt-in and explain that heap/stack addresses are process-specific.
+10. For an OLLVM branch probe, generate the Hook at the reported branch or condition-source module
+    offset, select its `hook-enter` event, and pass `frida_capture_path` plus `frida_event_index` to
+    `generate_angr_ollvm_script`. Do not bypass an exact-offset mismatch.
 
 ## Request fields
 
@@ -49,6 +52,8 @@ Use `mcp__trace-ui__list_frida_hook_recipes`, `mcp__trace-ui__generate_frida_hoo
 - Use `length_pointer_arg` only for an output buffer whose u32 length is written through another X0-X7 pointer before return. It is dereferenced only on leave; a failed dereference emits `readError` and must not fall back to `max_bytes`.
 - Treat `length`, `length_arg`, and `length_pointer_arg` as mutually exclusive.
 - Do not treat JNI references such as `jbyteArray` as native byte pointers. Require a native buffer boundary or a separate Java-layer hook instead.
+- With `capture_registers:true`, expect X0-X28, FP/LR/SP/PC, and best-effort NZCV from the Frida 16
+  ARM64 context. Argument buffer decoding remains limited to X0-X7.
 - Default Stalker to `off`. Enable `calls` first; use `blocks` or `instructions` only for a narrow function and bounded duration.
 - Treat invalid pointers, unreadable memory, and truncated captures as expected runtime conditions.
 - Prefer `byteArray` captures for angr memory seeds. Re-encoded UTF-8/UTF-16 strings do not preserve
@@ -56,6 +61,9 @@ Use `mcp__trace-ui__list_frida_hook_recipes`, `mcp__trace-ui__generate_frida_hoo
 - Match `moduleBase/moduleSize` and the exact binary build before trusting pointer rebasing.
 - A function-entry capture is not automatically valid state for a later opaque branch. Match capture
   point semantics before using a seed in a blank-state branch probe.
+- For OLLVM handoff, require the captured module-relative target to equal the candidate branch offset
+  or one of its recorded condition-source offsets. Exact matching prevents obvious state-point misuse;
+  it does not prove real-entry reachability or completeness of flags, SIMD, or memory.
 
 ## Frida 16 boundary
 

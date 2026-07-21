@@ -80,7 +80,8 @@ Line numbers in taint `@LINE` specs are **1-based**; `start_seq`/`end_seq`/`seq`
   X-register `length_arg`, or output-only leave-time u32 pointer `length_pointer_arg`. Failed output
   length dereferences emit `readError` without reading the target buffer. The script
   emits `trace-ui/frida-hook-v1` messages and `TRACE_UI_JSON` strict-JSON log lines. It is generated
-  only; the user manually attaches and loads it.
+  only; the user manually attaches and loads it. `capture_registers:true` records X0-X28, FP/LR/SP/PC,
+  plus NZCV when the Frida 16 ARM64 context exposes it; buffer argument selection remains X0-X7.
 - **inspect_frida_capture** `{file_path}` reads user-captured JSON objects/arrays, Frida send envelopes,
   NDJSON, or `TRACE_UI_JSON`-prefixed CLI logs. It normalizes call IDs, module metadata, registers,
   buffers, returns, backtraces, and Stalker batch counts without running Frida.
@@ -113,10 +114,16 @@ Line numbers in taint `@LINE` specs are **1-based**; `start_seq`/`end_seq`/`seq`
 - **inspect_ida_annotations** `{file_path}` validates and returns module-relative names/comments from a
   JSON file exported manually by the generated IDAPython bridge.
 - **generate_angr_ollvm_script** accepts the same trace scope plus
-  `probe_opaque_branches?=true` and `use_cfg_emulated?=false`. It returns standalone Python that the
+  `probe_opaque_branches?=true`, `use_cfg_emulated?=false`, and optional
+  `frida_capture_path`, `frida_event_index`, `frida_include_sp?=false`, `frida_include_lr?=true`.
+  The Frida fields must select a user-captured hook-enter event whose module-relative target exactly
+  matches an opaque branch or one of its recorded condition-source offsets; mismatches are rejected.
+  It returns standalone Python that the
   user manually runs against the exact ELF/shared object. The script reconciles angr static CFG
   successors with observed dynamic edges, performs blank-state probes, and performs trace-register-seeded
-  probes when bounded branch snapshots are available. Register-only seeds may omit memory or other state.
+  probes when bounded branch snapshots are available. An exact-offset Frida seed adds captured registers
+  and byteArray memory regions as a separate candidate probe. Missing flags, SIMD, memory, or entry-path
+  constraints can still change feasibility.
   It writes `trace-ui/angr-ollvm-v1` JSON. Trace UI does not install or execute angr.
 - **inspect_angr_ollvm_results** `{file_path}` validates and returns an imported
   `trace-ui/angr-ollvm-v1` bundle, including binary SHA-256, mapped base, CFG kind, unobserved static

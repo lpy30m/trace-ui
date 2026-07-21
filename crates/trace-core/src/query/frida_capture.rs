@@ -105,16 +105,28 @@ pub struct AngrSeedMemoryRegion {
 
 #[derive(Clone, Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
+pub struct AngrSeedRegister {
+    pub name: String,
+    pub value: String,
+}
+
+#[derive(Clone, Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
 pub struct AngrStateSeed {
     pub schema_version: String,
     pub source_event_index: u64,
+    pub source_event: String,
     pub hook_id: String,
     pub call_id: Option<String>,
     pub module_name: Option<String>,
+    pub module_base: Option<String>,
+    pub module_size: u64,
     pub function_name: String,
     pub capture_target: Option<String>,
+    pub capture_offset: Option<String>,
     pub script: String,
     pub registers_seeded: Vec<String>,
+    pub registers: Vec<AngrSeedRegister>,
     pub memory_regions: Vec<AngrSeedMemoryRegion>,
     pub warnings: Vec<String>,
 }
@@ -1190,18 +1202,35 @@ pub fn generate_angr_state_seed(
         "Heap and stack pointers remain process-specific absolute addresses. Module pointers are rebased when moduleBase/moduleSize are available.".to_string(),
     ];
     let mut registers_seeded = Vec::new();
+    let mut registers = Vec::new();
     let mut register_lines = Vec::new();
-    for index in 0..8 {
+    for index in 0..29 {
         let name = format!("x{index}");
         if let Some(value) = event.registers.get(&name) {
             if let Ok(parsed) = parse_hex_addr(value) {
                 register_lines.push(format!(
                     "    state.regs.{name} = _trace_ui_rebase(0x{parsed:x}, state)"
                 ));
-                registers_seeded.push(name);
+                registers_seeded.push(name.clone());
+                registers.push(AngrSeedRegister {
+                    name,
+                    value: format!("0x{parsed:x}"),
+                });
             } else {
                 warnings.push(format!("Ignored non-address register {name}={value}."));
             }
+        }
+    }
+    if let Some(value) = event.registers.get("fp") {
+        if let Ok(parsed) = parse_hex_addr(value) {
+            register_lines.push(format!(
+                "    state.regs.x29 = _trace_ui_rebase(0x{parsed:x}, state)"
+            ));
+            registers_seeded.push("x29/fp".to_string());
+            registers.push(AngrSeedRegister {
+                name: "x29".to_string(),
+                value: format!("0x{parsed:x}"),
+            });
         }
     }
     if include_sp {
@@ -1211,6 +1240,10 @@ pub fn generate_angr_state_seed(
                     "    state.regs.sp = _trace_ui_rebase(0x{parsed:x}, state)"
                 ));
                 registers_seeded.push("sp".to_string());
+                registers.push(AngrSeedRegister {
+                    name: "sp".to_string(),
+                    value: format!("0x{parsed:x}"),
+                });
                 warnings.push(
                     "SP was seeded, but uncaptured stack bytes remain unconstrained unless added as memory regions."
                         .to_string(),
@@ -1225,6 +1258,10 @@ pub fn generate_angr_state_seed(
                     "    state.regs.x30 = _trace_ui_rebase(0x{parsed:x}, state)"
                 ));
                 registers_seeded.push("x30/lr".to_string());
+                registers.push(AngrSeedRegister {
+                    name: "x30".to_string(),
+                    value: format!("0x{parsed:x}"),
+                });
             }
         }
     }
@@ -1315,6 +1352,28 @@ pub fn generate_angr_state_seed(
         .as_deref()
         .and_then(|value| parse_hex_addr(value).ok());
     let module_size = event.module_size.unwrap_or_default();
+    let capture_offset = match (
+        module_base,
+        module_size,
+        event
+            .target
+            .as_deref()
+            .and_then(|value| parse_hex_addr(value).ok()),
+    ) {
+        (Some(base), size, Some(target))
+            if size > 0 && target >= base && target < base.saturating_add(size) =>
+        {
+            Some(format!("0x{:x}", target - base))
+        }
+        (_, _, Some(_)) => {
+            warnings.push(
+                "The captured hook target could not be converted to a module-relative offset; exact OLLVM branch-seed matching is unavailable."
+                    .to_string(),
+            );
+            None
+        }
+        _ => None,
+    };
     if module_base.is_none() || module_size == 0 {
         warnings.push(
             "moduleBase/moduleSize were unavailable, so module-relative pointer rebasing is disabled for this seed. Regenerate the hook with the current Trace UI version for richer metadata."
@@ -1349,13 +1408,18 @@ pub fn generate_angr_state_seed(
     Ok(AngrStateSeed {
         schema_version: ANGR_STATE_SEED_SCHEMA.to_string(),
         source_event_index: event.index,
+        source_event: event.event.clone(),
         hook_id: event.hook_id.clone(),
         call_id: event.call_id.clone(),
         module_name: event.module_name.clone(),
+        module_base: module_base.map(|value| format!("0x{value:x}")),
+        module_size,
         function_name: event.function_name.clone(),
         capture_target: event.target.clone(),
+        capture_offset,
         script,
         registers_seeded,
+        registers,
         memory_regions,
         warnings,
     })
@@ -1368,7 +1432,7 @@ mod tests {
     fn sample_capture() -> Vec<u8> {
         br#"[
           {"type":"send","payload":{"protocol":"trace-ui/frida-hook-v1","hookId":"target","event":"hook-ready","functionName":"target","timestampMs":1,"threadId":7,"module":"libtarget.so","moduleBase":"0x71000000","moduleSize":4096,"target":"0x71000100"}},
-          {"type":"send","payload":{"protocol":"trace-ui/frida-hook-v1","hookId":"target","event":"hook-enter","functionName":"target","timestampMs":2,"threadId":7,"registers":{"x0":"0x71000200","x1":"0x90000000","sp":"0xa0000000","lr":"0x71000300","pc":"0x71000100"},"captures":[{"index":1,"label":"key","kind":"byteArray","direction":"input","phase":"enter","pointer":"0x90000000","value":"00112233","byteLength":4,"requestedLength":4}]}},
+          {"type":"send","payload":{"protocol":"trace-ui/frida-hook-v1","hookId":"target","event":"hook-enter","functionName":"target","timestampMs":2,"threadId":7,"registers":{"x0":"0x71000200","x1":"0x90000000","x8":"0x88","fp":"0x71000340","sp":"0xa0000000","lr":"0x71000300","pc":"0x71000100"},"captures":[{"index":1,"label":"key","kind":"byteArray","direction":"input","phase":"enter","pointer":"0x90000000","value":"00112233","byteLength":4,"requestedLength":4}]}},
           {"type":"send","payload":{"protocol":"trace-ui/frida-hook-v1","hookId":"target","event":"stalker-events","functionName":"target","timestampMs":3,"threadId":7,"mode":"blocks","events":[["block","0x1","0x2"]]}},
           {"type":"send","payload":{"protocol":"trace-ui/frida-hook-v1","hookId":"target","event":"hook-leave","functionName":"target","timestampMs":4,"threadId":7,"returnValue":"0x1","captures":[]}}
         ]"#
@@ -1417,11 +1481,16 @@ TRACE_UI_JSON {"protocol":"trace-ui/frida-hook-v1","eventId":"one:event:2","hook
         let seed = generate_angr_state_seed(&bundle, 1, false, true).unwrap();
         assert_eq!(seed.schema_version, ANGR_STATE_SEED_SCHEMA);
         assert!(seed.script.contains("state.regs.x0"));
+        assert!(seed.script.contains("state.regs.x8"));
+        assert!(seed.script.contains("state.regs.x29"));
         assert!(seed.script.contains("state.regs.x30"));
         assert!(!seed.script.contains("state.regs.pc"));
         assert!(!seed.script.contains("state.regs.sp"));
         assert!(seed.script.contains("bytes.fromhex(\"00112233\")"));
         assert!(seed.script.contains("main_object.mapped_base"));
+        assert_eq!(seed.source_event, "hook-enter");
+        assert_eq!(seed.capture_offset.as_deref(), Some("0x100"));
+        assert!(seed.registers.iter().any(|register| register.name == "x8"));
         assert_eq!(seed.memory_regions.len(), 1);
     }
 

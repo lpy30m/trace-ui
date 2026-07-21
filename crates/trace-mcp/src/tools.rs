@@ -12,7 +12,7 @@ use rmcp::{
 use crate::types::*;
 use trace_core::{
     analyze_frida_crypto_materials as build_frida_crypto_materials, api_types::TraceLine,
-    apply_resource_validation, classify_flow_endpoints, generate_angr_ollvm_script,
+    apply_resource_validation, classify_flow_endpoints, generate_angr_ollvm_script_with_seed,
     generate_angr_state_seed as build_angr_state_seed, generate_frida_hook as build_frida_hook,
     generate_ida_ollvm_script, list_frida_hook_recipes as build_frida_hook_recipes,
     parse_angr_ollvm_result_bundle, parse_frida_capture_bundle, parse_hex_addr,
@@ -4058,7 +4058,7 @@ impl TraceToolHandler {
 
     #[tool(
         name = "generate_frida_hook",
-        description = "Generate a bounded ARM64 Frida 16.x Interceptor hook for a module export or module-relative offset. Captures selected X0-X7 arguments, fixed/register/leave-time pointer-derived lengths, SP/LR/PC, return value, optional backtrace, and optional Stalker calls/blocks/instructions. The script emits structured trace-ui/frida-hook-v1 send() messages and is intended to be loaded manually by the user."
+        description = "Generate a bounded ARM64 Frida 16.x Interceptor hook for a module export or module-relative offset. Decodes selected X0-X7 arguments with fixed/register/leave-time pointer-derived lengths and can snapshot X0-X28, FP/LR/SP/PC plus best-effort NZCV, return value, backtrace, and bounded Stalker events. The script emits trace-ui/frida-hook-v1 messages and is loaded manually by the user."
     )]
     fn generate_frida_hook(
         &self,
@@ -4369,7 +4369,7 @@ impl TraceToolHandler {
 
     #[tool(
         name = "generate_angr_ollvm_script",
-        description = "Analyze a trace-scoped function/range and generate a standalone Python angr bridge for manual execution. The script reconciles angr static CFG successors with observed dynamic edges and can probe opaque-branch candidates from unconstrained blank state. Trace UI does not install or execute angr, and unconstrained probes do not prove real-entry reachability."
+        description = "Analyze a trace-scoped function/range and generate a standalone Python angr bridge for manual execution. The script reconciles static/dynamic CFG evidence, runs blank/trace-register probes, and can embed one user-captured Frida 16 hook-enter seed only when its module-relative offset exactly matches an opaque branch or recorded condition source. Trace UI never executes Frida or angr; all structural results remain Candidate/Related."
     )]
     async fn generate_angr_ollvm_script(
         &self,
@@ -4392,10 +4392,31 @@ impl TraceToolHandler {
                     },
                 )
                 .map_err(|error| error.to_string())?;
-            Ok(json(&generate_angr_ollvm_script(
+            let frida_seed = match (req.frida_capture_path.as_deref(), req.frida_event_index) {
+                (Some(path), Some(event_index)) => {
+                    let bytes = std::fs::read(path)
+                        .map_err(|error| format!("failed to read Frida capture: {error}"))?;
+                    let bundle = parse_frida_capture_bundle(&bytes)?;
+                    Some(build_angr_state_seed(
+                        &bundle,
+                        event_index,
+                        req.frida_include_sp,
+                        req.frida_include_lr,
+                    )?)
+                }
+                (None, None) => None,
+                _ => {
+                    return Err(
+                        "frida_capture_path and frida_event_index must be provided together"
+                            .to_string(),
+                    )
+                }
+            };
+            Ok(json(&generate_angr_ollvm_script_with_seed(
                 &report,
                 req.probe_opaque_branches,
                 req.use_cfg_emulated,
+                frida_seed.as_ref(),
             )?))
         })
         .await

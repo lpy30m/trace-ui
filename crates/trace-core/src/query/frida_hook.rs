@@ -384,11 +384,17 @@ function captureArguments(args, phase) {
 
 function captureRegisters(context) {
   const registers = {};
-  for (let i = 0; i < 8; i++) {
-    try { registers['x' + i] = context['x' + i].toString(); } catch (_) { registers['x' + i] = null; }
+  for (let i = 0; i < 29; i++) {
+    try {
+      const value = context['x' + i];
+      if (value !== null && value !== undefined) registers['x' + i] = value.toString();
+    } catch (_) {}
   }
-  for (const name of ['sp', 'lr', 'pc']) {
-    try { registers[name] = context[name].toString(); } catch (_) { registers[name] = null; }
+  for (const name of ['fp', 'lr', 'sp', 'pc', 'nzcv']) {
+    try {
+      const value = context[name];
+      if (value !== null && value !== undefined) registers[name] = value.toString();
+    } catch (_) {}
   }
   return registers;
 }
@@ -550,6 +556,7 @@ setImmediate(install);
         "The generated agent emits trace-ui/frida-hook-v1 send() messages for the user's Frida host or CLI session.".to_string(),
         "Each event is also printed as a TRACE_UI_JSON-prefixed strict JSON line so redirected Frida CLI output can be imported manually; eventId prevents duplicate send/log records.".to_string(),
         "Pointer reads are best-effort and bounded by max_bytes; unreadable memory is reported as readError rather than guessed.".to_string(),
+        "When register capture is enabled on ARM64, the hook records X0-X28, FP/LR/SP/PC, and NZCV when exposed by the Frida 16 context; argument buffer decoding remains limited to X0-X7.".to_string(),
         "Output length-pointer captures are dereferenced only on function leave and remain bounded by max_bytes.".to_string(),
         "An offset is relative to the loaded module base and must match the target SO/dylib build.".to_string(),
     ];
@@ -616,6 +623,8 @@ mod tests {
         assert!(script.script.contains("lengthArg"));
         assert!(script.script.contains("lengthPointerArg"));
         assert!(script.script.contains("captureRegisters(this.context)"));
+        assert!(script.script.contains("i < 29"));
+        assert!(script.script.contains("'fp', 'lr', 'sp', 'pc', 'nzcv'"));
         assert!(script.script.contains("callId: callId"));
         assert!(script.script.contains("TRACE_UI_JSON"));
         assert!(script.script.contains("eventId:"));

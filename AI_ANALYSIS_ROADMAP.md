@@ -37,6 +37,7 @@
 - [x] Frida Capture → Crypto Materials：按 callId/label/phase 索引密码材料，并确定性验证完整捕获的 MD5/SHA/HMAC/PBKDF2 公式。
 - [x] OLLVM State / Multi-run：重建 dispatcher register snapshots/transitions，保存 branch-time register snapshots，angr 同时生成 blank/trace-seeded probe，并比较 2–16 个受控运行的分支结果。
 - [x] OLLVM Exact ELF Identity：多运行 case 可绑定 ELF，校验 SHA-256/Build ID，拒绝不同二进制之间的 module-offset 对齐。
+- [x] Frida → angr OLLVM Exact-offset Seed：从 branch/condition-source 生成 Frida 16 候选 Hook 配置，导入用户手动捕获的完整 ARM64 GPR/buffer 状态，并仅在 module-relative offset 精确匹配时嵌入 symbolic probe。
 
 ## 3. 当前限制
 

@@ -34,7 +34,8 @@ pub use query::analysis_summary::{
     DependencyAnalysisSummary,
 };
 pub use query::angr::{
-    generate_angr_ollvm_script, parse_angr_ollvm_result_bundle, AngrBlockResult, AngrBranchProbe,
+    generate_angr_ollvm_script, generate_angr_ollvm_script_with_seed,
+    parse_angr_ollvm_result_bundle, AngrBlockResult, AngrBranchProbe, AngrOllvmFridaSeedProvenance,
     AngrOllvmResultBundle, AngrOllvmScript, AngrSuccessor,
 };
 pub use query::crypto_functions::{
@@ -56,7 +57,8 @@ pub use query::evidence_score::{
 };
 pub use query::frida_capture::{
     analyze_frida_crypto_materials, generate_angr_state_seed, parse_frida_capture_bundle,
-    AngrSeedMemoryRegion, AngrStateSeed, FridaCaptureBundle, FridaCaptureEvent, FridaCapturedValue,
+    AngrSeedMemoryRegion, AngrSeedRegister, AngrStateSeed, FridaCaptureBundle, FridaCaptureEvent,
+    FridaCapturedValue,
 };
 pub use query::frida_hook::{
     generate_frida_hook, FridaArgumentKind, FridaArgumentSpec, FridaCaptureDirection,

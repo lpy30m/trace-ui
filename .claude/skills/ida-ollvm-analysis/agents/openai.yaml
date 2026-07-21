@@ -1,13 +1,13 @@
 interface:
   display_name: "IDA and angr OLLVM Analysis"
-  short_description: "Compare OLLVM traces and bridge IDA/angr evidence"
-  default_prompt: "Use $ida-ollvm-analysis to compare OLLVM state and branch evidence, then generate manual IDA or angr bridges."
+  short_description: "Bridge OLLVM trace, Frida, IDA, and angr evidence"
+  default_prompt: "Use $ida-ollvm-analysis to compare OLLVM state and branch evidence, then generate manual IDA/angr bridges with optional exact-offset Frida seeds."
 
 dependencies:
   tools:
     - type: "mcp"
       value: "trace-ui"
-      description: "Local Trace UI dynamic OLLVM, IDA, and angr bridge server"
+      description: "Local Trace UI dynamic OLLVM, exact-offset Frida seed, IDA, and angr bridge server"
       transport: "streamable_http"
       url: "http://127.0.0.1:19821/mcp"
 

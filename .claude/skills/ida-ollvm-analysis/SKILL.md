@@ -1,6 +1,6 @@
 ---
 name: ida-ollvm-analysis
-description: Analyze ARM64 dynamic traces for OLLVM control-flow-flattening and opaque-branch candidates, compare dispatcher/state/branch stability across controlled runs, bridge module-relative evidence to IDA and angr, and inspect results exported back through the trace-ui MCP server. Use for ASLR-stable dynamic CFG evidence, dispatcher state trajectories, opaque predicate leads, trace-seeded symbolic probes, trace-to-IDA annotations, or static/dynamic CFG reconciliation. Treat all OLLVM and angr structural classifications as candidates unless independently proven.
+description: Analyze ARM64 dynamic traces for OLLVM control-flow-flattening and opaque-branch candidates, compare dispatcher/state/branch stability across controlled runs, bridge module-relative evidence and exact-offset Frida captures to IDA and angr, and inspect exported results through the trace-ui MCP server. Use for ASLR-stable dynamic CFG evidence, dispatcher state trajectories, opaque predicate leads, trace/Frida-seeded symbolic probes, trace-to-IDA annotations, or static/dynamic CFG reconciliation. Treat all OLLVM and angr structural classifications as candidates unless independently proven.
 ---
 
 # Analyze OLLVM traces and bridge them to IDA or angr
@@ -32,9 +32,11 @@ Use `mcp__trace-ui__analyze_ollvm`, `mcp__trace-ui__compare_ollvm_traces`, `mcp_
    outcomes remain candidates.
 7. Reconcile dynamic observed successors with angr static successors. Investigate unobserved-static
    and dynamic-only edges, but do not assume either side is complete.
-8. Inspect manually captured Frida JSON with `inspect_frida_capture`, select an exact event, and use
-   `generate_angr_state_seed` to produce a candidate `configure_state(state)` function. Match the
-   capture point to the symbolic state address before increasing confidence.
+8. For a selected opaque branch, generate a Frida 16 Hook at the branch offset or a reported
+   condition-source offset and let the user run it manually. Inspect the capture, select a `hook-enter`
+   event, then call `generate_angr_ollvm_script` with `frida_capture_path` and `frida_event_index`.
+   The tool must reject module or offset mismatches. Use `generate_angr_state_seed` separately when a
+   reusable standalone `configure_state(state)` function is desired.
 
 ## Interpretation rules
 
@@ -51,6 +53,9 @@ Use `mcp__trace-ui__analyze_ollvm`, `mcp__trace-ui__compare_ollvm_traces`, `mcp_
 - The generated angr bridge emits both blank-state probes and trace-register-seeded probes when branch
   snapshots exist. Neither proves real-entry reachability; trace-seeded probes may still lack memory,
   SIMD, flags, or other architectural state.
+- An embedded Frida probe is emitted only when the hook-enter target exactly matches the candidate
+  branch or condition source. It may add X0-X28/FP/LR/SP and byteArray memory, but missing flags, SIMD,
+  unread buffers, or entry-path constraints keep the result Candidate/Related.
 - Require the exact ELF/shared object for every case and enable `require_matching_binary`. A matching
   supplied SHA-256 confirms the selected files are identical, not that the trace format cryptographically
   attests which image was mapped at runtime.
