@@ -12,15 +12,16 @@ use rmcp::{
 use crate::types::*;
 use trace_core::{
     api_types::TraceLine, apply_resource_validation, classify_flow_endpoints,
-    generate_frida_hook as build_frida_hook, generate_ida_ollvm_script, parse_hex_addr,
-    parse_ida_annotation_bundle, score_evidence, summarize_dependency_graph, AnalysisEvidence,
-    BuildOptions, CryptoFunctionsOptions, CryptoMaterialKind, CryptoMaterialMultiTraceRequest,
-    CryptoMaterialOptions, CryptoMaterialTraceCase, DepTreeOptions, EvidenceScoreSignal,
-    ForwardSliceOptions, FridaArgumentKind, FridaArgumentSpec, FridaCaptureDirection,
-    FridaHookRequest, FridaStalkerMode, HashAlgorithm, HashMatchRequest, HashTransformOptions,
-    OllvmAnalysisOptions, SearchOptions, SliceOptions, StringQueryOptions, TraceDiffOptions,
-    TraceEngine, ValueEndian, ValueSearchKind, ValueSearchRequest, WhiteBoxMultiTraceRequest,
-    WhiteBoxOptions, WhiteBoxTraceCaseRequest,
+    generate_angr_ollvm_script, generate_frida_hook as build_frida_hook, generate_ida_ollvm_script,
+    parse_angr_ollvm_result_bundle, parse_hex_addr, parse_ida_annotation_bundle, score_evidence,
+    summarize_dependency_graph, AnalysisEvidence, BuildOptions, CryptoFunctionsOptions,
+    CryptoMaterialKind, CryptoMaterialMultiTraceRequest, CryptoMaterialOptions,
+    CryptoMaterialTraceCase, DepTreeOptions, EvidenceScoreSignal, ForwardSliceOptions,
+    FridaArgumentKind, FridaArgumentSpec, FridaCaptureDirection, FridaHookRequest,
+    FridaStalkerMode, HashAlgorithm, HashMatchRequest, HashTransformOptions, OllvmAnalysisOptions,
+    SearchOptions, SliceOptions, StringQueryOptions, TraceDiffOptions, TraceEngine, ValueEndian,
+    ValueSearchKind, ValueSearchRequest, WhiteBoxMultiTraceRequest, WhiteBoxOptions,
+    WhiteBoxTraceCaseRequest,
 };
 
 fn decode_hex_bytes(value: &str) -> Result<Vec<u8>, String> {
@@ -4203,6 +4204,56 @@ impl TraceToolHandler {
             let bytes = std::fs::read(&req.file_path)
                 .map_err(|error| format!("failed to read IDA annotations: {error}"))?;
             Ok(json(&parse_ida_annotation_bundle(&bytes)?))
+        })
+        .await
+    }
+
+    #[tool(
+        name = "generate_angr_ollvm_script",
+        description = "Analyze a trace-scoped function/range and generate a standalone Python angr bridge for manual execution. The script reconciles angr static CFG successors with observed dynamic edges and can probe opaque-branch candidates from unconstrained blank state. Trace UI does not install or execute angr, and unconstrained probes do not prove real-entry reachability."
+    )]
+    async fn generate_angr_ollvm_script(
+        &self,
+        Parameters(req): Parameters<GenerateAngrOllvmScriptRequest>,
+    ) -> Result<String, String> {
+        let sid = self.resolve_session(req.session_id)?;
+        let engine = self.engine.clone();
+        blocking(move || {
+            let report = engine
+                .analyze_ollvm(
+                    &sid,
+                    OllvmAnalysisOptions {
+                        node_id: req.node_id,
+                        module_name: req.module_name,
+                        start_seq: req.start_seq,
+                        end_seq: req.end_seq,
+                        include_child_calls: req.include_child_calls,
+                        max_blocks: req.max_blocks,
+                        max_edges: req.max_edges,
+                    },
+                )
+                .map_err(|error| error.to_string())?;
+            Ok(json(&generate_angr_ollvm_script(
+                &report,
+                req.probe_opaque_branches,
+                req.use_cfg_emulated,
+            )?))
+        })
+        .await
+    }
+
+    #[tool(
+        name = "inspect_angr_ollvm_results",
+        description = "Read and validate trace-ui/angr-ollvm-v1 JSON produced after the user manually runs a generated angr script against the exact ELF. Returns static/dynamic CFG reconciliation and candidate branch-probe evidence without modifying the trace."
+    )]
+    async fn inspect_angr_ollvm_results(
+        &self,
+        Parameters(req): Parameters<InspectAngrOllvmResultsRequest>,
+    ) -> Result<String, String> {
+        blocking(move || {
+            let bytes = std::fs::read(&req.file_path)
+                .map_err(|error| format!("failed to read angr results: {error}"))?;
+            Ok(json(&parse_angr_ollvm_result_bundle(&bytes)?))
         })
         .await
     }

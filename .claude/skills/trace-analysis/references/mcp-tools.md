@@ -87,6 +87,15 @@ Line numbers in taint `@LINE` specs are **1-based**; `start_seq`/`end_seq`/`seq`
   `trace-ui/ida-ollvm-v1` annotations. The user runs it manually in IDA.
 - **inspect_ida_annotations** `{file_path}` validates and returns module-relative names/comments from a
   JSON file exported manually by the generated IDAPython bridge.
+- **generate_angr_ollvm_script** accepts the same trace scope plus
+  `probe_opaque_branches?=true` and `use_cfg_emulated?=false`. It returns standalone Python that the
+  user manually runs against the exact ELF/shared object. The script reconciles angr static CFG
+  successors with observed dynamic edges and writes `trace-ui/angr-ollvm-v1` JSON. Trace UI does not
+  install or execute angr.
+- **inspect_angr_ollvm_results** `{file_path}` validates and returns an imported
+  `trace-ui/angr-ollvm-v1` bundle, including binary SHA-256, mapped base, CFG kind, unobserved static
+  successors, dynamic-only successors, and optional branch probes. Blank-state probes are candidate
+  evidence and do not prove real-entry reachability.
 
 ## Taint (data-flow slicing)
 

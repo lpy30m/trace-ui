@@ -774,6 +774,75 @@ pub async fn load_ida_annotations(path: String) -> Result<trace_core::IdaAnnotat
 }
 
 #[tauri::command]
+pub fn generate_angr_ollvm_script(
+    report: trace_core::OllvmReport,
+    probe_opaque_branches: Option<bool>,
+    use_cfg_emulated: Option<bool>,
+) -> Result<trace_core::AngrOllvmScript, String> {
+    trace_core::generate_angr_ollvm_script(
+        &report,
+        probe_opaque_branches.unwrap_or(true),
+        use_cfg_emulated.unwrap_or(false),
+    )
+}
+
+#[tauri::command]
+pub async fn save_angr_ollvm_script(
+    path: String,
+    report: trace_core::OllvmReport,
+    probe_opaque_branches: Option<bool>,
+    use_cfg_emulated: Option<bool>,
+) -> Result<String, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        let generated = trace_core::generate_angr_ollvm_script(
+            &report,
+            probe_opaque_branches.unwrap_or(true),
+            use_cfg_emulated.unwrap_or(false),
+        )?;
+        let trimmed = path.trim();
+        if trimmed.is_empty() {
+            return Err("output path must not be empty".to_string());
+        }
+        let mut output_path = std::path::PathBuf::from(trimmed);
+        if output_path.extension().and_then(|value| value.to_str()) != Some("py") {
+            output_path.set_extension("py");
+        }
+        let parent = output_path
+            .parent()
+            .filter(|value| !value.as_os_str().is_empty())
+            .ok_or_else(|| "output path must include a parent directory".to_string())?;
+        if !parent.is_dir() {
+            return Err(format!(
+                "output directory does not exist: {}",
+                parent.display()
+            ));
+        }
+        std::fs::write(&output_path, generated.script.as_bytes())
+            .map_err(|error| format!("failed to save angr script: {error}"))?;
+        Ok(output_path.to_string_lossy().into_owned())
+    })
+    .await
+    .map_err(|error| format!("Task execution failed: {error}"))?
+}
+
+#[tauri::command]
+pub async fn load_angr_ollvm_results(
+    path: String,
+) -> Result<trace_core::AngrOllvmResultBundle, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        let trimmed = path.trim();
+        if trimmed.is_empty() {
+            return Err("angr result path must not be empty".to_string());
+        }
+        let bytes = std::fs::read(trimmed)
+            .map_err(|error| format!("failed to read angr results: {error}"))?;
+        trace_core::parse_angr_ollvm_result_bundle(&bytes)
+    })
+    .await
+    .map_err(|error| format!("Task execution failed: {error}"))?
+}
+
+#[tauri::command]
 pub async fn analyze_whitebox_crypto(
     session_id: String,
     algorithm: Option<String>,

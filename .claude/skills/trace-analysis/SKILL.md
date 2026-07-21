@@ -5,7 +5,7 @@ description: >
   Use for native/.so reverse engineering, crypto key/IV/nonce/salt/material identification,
   MD5/SHA/HMAC/PBKDF2 input matching, backward or forward taint, function I/O inspection, cross-run
   diffing, static ELF-to-trace table reconciliation, software/table-driven/obfuscated/white-box crypto
-  classification, Frida 16 hook-script generation, and dynamic IDA/OLLVM analysis. Trigger on requests
+  classification, Frida 16 hook-script generation, and dynamic IDA/angr/OLLVM analysis. Trigger on requests
   such as analyze this trace, reverse this native function, inspect this .so with its trace, find the key
   or algorithm, isolate a salt, generate a Frida hook, inspect OLLVM, where did this value come from, or
   分析 trace / 逆向 so / 污点 / 加密分析 / Frida hook / OLLVM.
@@ -106,6 +106,14 @@ Then `generate_ida_ollvm_script` for manual execution in IDA. Inspect exported
 `trace-ui/ida-ollvm-v1` JSON with `inspect_ida_annotations`. Dispatcher and opaque-branch findings remain
 dynamic candidates; unexecuted paths are unknown. For the full workflow, use `$ida-ollvm-analysis`.
 
+**"Reconcile this OLLVM trace with angr or probe an opaque branch."**
+→ `analyze_ollvm` on a narrow call-tree node/range, then `generate_angr_ollvm_script`. Give the
+generated Python to the user for manual execution against the exact ELF/shared object. Inspect the
+resulting `trace-ui/angr-ollvm-v1` JSON with `inspect_angr_ollvm_results`. CFGFast/CFGEmulated
+differences and blank-state branch probes are candidate evidence only. Seed `configure_state(state)`
+from trace or Frida captures before increasing confidence. For the full workflow, use
+`$ida-ollvm-analysis`.
+
 **"Is this a real white-box/key-fused implementation?"**
 → Do not decide from one trace or one table. Run `analyze_crypto_implementations` with the exact ELF,
 then compare at least: same SO + different input, same SO + different key, and ideally a second SO version.
@@ -156,7 +164,7 @@ recomputes to a known digest.
 | Functions | `analyze_function` (node_id / name / list) |
 | Diff | `compare_traces`, `start_trace_diff` |
 | Frida | `generate_frida_hook` (Frida 16 script generation only; user executes manually) |
-| IDA / OLLVM | `analyze_ollvm`, `generate_ida_ollvm_script`, `inspect_ida_annotations` |
+| IDA / angr / OLLVM | `analyze_ollvm`, `generate_ida_ollvm_script`, `inspect_ida_annotations`, `generate_angr_ollvm_script`, `inspect_angr_ollvm_results` |
 | Orchestration | `auto_investigate`, `start_auto_investigation`, `start_crypto_investigation` |
 | Evidence store | `list_analyses`, `get_analysis`, `compare_analyses`, `export_analysis_report`, `delete_analysis` |
 | Recipes | `list_analysis_recipes`, `run_analysis_recipe`, `save_analysis_recipe`, `delete_analysis_recipe` |

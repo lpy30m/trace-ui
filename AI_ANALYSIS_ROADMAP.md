@@ -31,8 +31,11 @@
 - [x] 跨 trace salt/nonce 候选隔离：对相同 caller input 的多次运行比较变化字节范围，保持候选级验证边界。
 - [x] Frida 16.x Hook Generator：生成 module symbol/offset、X0-X7、buffer/string、return/backtrace/Stalker 脚本；用户手动 attach/spawn/load。
 - [x] IDA / OLLVM：ASLR 稳定动态 CFG、dispatcher/opaque branch 候选、IDAPython 注释桥和 IDA annotation JSON 回导。
+- [x] angr / OLLVM：生成用户手动执行的 Python bridge，以 exact ELF SHA-256 为锚点，对账静态/动态 CFG，并导回候选级 symbolic branch probe 结果。
 
 ## 3. 当前限制
+
+- angr CFG 恢复与 blank-state probe 都不是完整可达性证明；后续应增加从 trace/Frida 导出的 X0-X7 + memory state seed，帮助用户填写 `configure_state(state)`。
 
 - [x] 分析记录已随 Trace 内容校验持久化，应用重启后可以恢复。
 - [x] Crypto、正向污点和自动调查支持统一后台任务、进度与取消。

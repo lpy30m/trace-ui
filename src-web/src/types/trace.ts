@@ -599,6 +599,54 @@ export interface IdaAnnotationBundle {
   annotations: IdaAnnotation[];
 }
 
+export interface AngrOllvmScript {
+  fileName: string;
+  script: string;
+  schemaVersion: string;
+  warnings: string[];
+}
+
+export interface AngrSuccessor {
+  address: string;
+  offset: string | null;
+  jumpkind: string | null;
+  satisfiable: boolean | null;
+}
+
+export interface AngrBlockResult {
+  offset: string;
+  cfgNodeFound: boolean;
+  functionName: string | null;
+  size: number | null;
+  staticSuccessors: AngrSuccessor[];
+  observedSuccessors: string[];
+  unobservedStaticSuccessors: string[];
+  dynamicOnlySuccessors: string[];
+}
+
+export interface AngrBranchProbe {
+  offset: string;
+  status: string;
+  observedSuccessors: string[];
+  successors: AngrSuccessor[];
+  constraints: string[];
+  limitation: string;
+  error: string | null;
+}
+
+export interface AngrOllvmResultBundle {
+  schema: string;
+  moduleName: string;
+  binarySha256: string;
+  mappedBase: string;
+  architecture: string;
+  angrVersion: string;
+  cfgKind: string;
+  blocks: AngrBlockResult[];
+  branchProbes: AngrBranchProbe[];
+  warnings: string[];
+}
+
 export interface WhiteBoxIoBlock {
   baseAddr: string;
   byteLen: number;

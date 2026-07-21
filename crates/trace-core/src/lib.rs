@@ -33,6 +33,10 @@ pub use query::analysis_summary::{
     summarize_dependency_graph, AnalysisKeyStep, AnalysisOperationCount, AnalysisStringEvidence,
     DependencyAnalysisSummary,
 };
+pub use query::angr::{
+    generate_angr_ollvm_script, parse_angr_ollvm_result_bundle, AngrBlockResult, AngrBranchProbe,
+    AngrOllvmResultBundle, AngrOllvmScript, AngrSuccessor,
+};
 pub use query::crypto_functions::{
     CryptoFamily, CryptoFunctionCandidate, CryptoFunctionIo, CryptoFunctionReport,
     CryptoFunctionsOptions,

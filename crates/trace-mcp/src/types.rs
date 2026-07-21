@@ -991,6 +991,40 @@ pub struct InspectIdaAnnotationsRequest {
     pub file_path: String,
 }
 
+#[derive(Debug, Deserialize, JsonSchema)]
+pub struct GenerateAngrOllvmScriptRequest {
+    #[schemars(description = "Session ID (optional if only one session is open)")]
+    pub session_id: Option<String>,
+    pub node_id: Option<u32>,
+    pub module_name: Option<String>,
+    pub start_seq: Option<u32>,
+    pub end_seq: Option<u32>,
+    #[serde(default)]
+    pub include_child_calls: bool,
+    #[serde(default = "default_ollvm_blocks")]
+    pub max_blocks: u32,
+    #[serde(default = "default_ollvm_edges")]
+    pub max_edges: u32,
+    #[schemars(
+        description = "Include unconstrained single-instruction probes for opaque-branch candidates (default: true). These are hypothesis evidence, not entry-reachability proof."
+    )]
+    #[serde(default = "default_true")]
+    pub probe_opaque_branches: bool,
+    #[schemars(
+        description = "Prefer CFGEmulated and fall back to CFGFast on failure (default: false)"
+    )]
+    #[serde(default)]
+    pub use_cfg_emulated: bool,
+}
+
+#[derive(Debug, Deserialize, JsonSchema)]
+pub struct InspectAngrOllvmResultsRequest {
+    #[schemars(
+        description = "Absolute path to trace-ui/angr-ollvm-v1 JSON produced by a manually executed generated angr script"
+    )]
+    pub file_path: String,
+}
+
 fn default_ollvm_blocks() -> u32 {
     1_000
 }

@@ -910,6 +910,16 @@ fn test_ollvm_dynamic_cfg_and_ida_bridge_on_real_trace() {
     assert!(script.script.contains("idaapi.get_imagebase()"));
     assert!(script.script.contains("def export_ida_annotations"));
     assert!(script.script.contains("ADD_USER_XREFS = False"));
+
+    let angr_script = trace_core::generate_angr_ollvm_script(&report, true, false)
+        .expect("generate manual angr bridge");
+    assert!(angr_script.script.contains("project.analyses.CFGFast"));
+    assert!(angr_script.script.contains("def configure_state(state)"));
+    assert!(angr_script.script.contains("trace-ui/angr-ollvm-v1"));
+    assert!(angr_script
+        .warnings
+        .iter()
+        .any(|warning| warning.contains("does not install or execute angr")));
     engine.close_session(&sid).unwrap();
 }
 

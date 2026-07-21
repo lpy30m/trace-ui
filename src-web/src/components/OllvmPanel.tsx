@@ -2,6 +2,8 @@ import React, { useCallback, useEffect, useMemo, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { useSelectedSeq } from "../stores/selectedSeqStore";
 import type {
+  AngrOllvmResultBundle,
+  AngrOllvmScript,
   DynamicBasicBlock,
   FunctionInspection,
   IdaAnnotationBundle,
@@ -69,19 +71,28 @@ export default function OllvmPanel({ sessionId, onJumpToSeq }: Props) {
   const [report, setReport] = useState<OllvmReport | null>(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const [section, setSection] = useState<"dispatchers" | "opaque" | "blocks" | "edges" | "ida">("dispatchers");
+  const [section, setSection] = useState<"dispatchers" | "opaque" | "blocks" | "edges" | "ida" | "angr">("dispatchers");
   const [openBlock, setOpenBlock] = useState<string | null>(null);
   const [idaImageBase, setIdaImageBase] = useState("");
   const [addUserXrefs, setAddUserXrefs] = useState(false);
   const [idaScript, setIdaScript] = useState<IdaOllvmScript | null>(null);
   const [idaAnnotations, setIdaAnnotations] = useState<IdaAnnotationBundle | null>(null);
   const [savedPath, setSavedPath] = useState<string | null>(null);
+  const [angrProbeOpaque, setAngrProbeOpaque] = useState(true);
+  const [angrCfgEmulated, setAngrCfgEmulated] = useState(false);
+  const [angrScript, setAngrScript] = useState<AngrOllvmScript | null>(null);
+  const [angrResults, setAngrResults] = useState<AngrOllvmResultBundle | null>(null);
+  const [angrSavedPath, setAngrSavedPath] = useState<string | null>(null);
+  const [angrDisplay, setAngrDisplay] = useState<"script" | "results">("script");
 
   useEffect(() => {
     setReport(null);
     setIdaScript(null);
     setIdaAnnotations(null);
     setSavedPath(null);
+    setAngrScript(null);
+    setAngrResults(null);
+    setAngrSavedPath(null);
     setError(null);
   }, [sessionId]);
 
@@ -113,6 +124,8 @@ export default function OllvmPanel({ sessionId, onJumpToSeq }: Props) {
     setLoading(true);
     setError(null);
     setIdaScript(null);
+    setAngrScript(null);
+    setAngrResults(null);
     try {
       const result = await invoke<OllvmReport>("analyze_ollvm", { sessionId, options });
       setReport(result);
@@ -131,6 +144,9 @@ export default function OllvmPanel({ sessionId, onJumpToSeq }: Props) {
   const annotationByOffset = useMemo(() => new Map(
     idaAnnotations?.annotations.map(annotation => [annotation.offset.toLowerCase(), annotation]) || [],
   ), [idaAnnotations]);
+  const angrBlockByOffset = useMemo(() => new Map(
+    angrResults?.blocks.map(block => [block.offset.toLowerCase(), block]) || [],
+  ), [angrResults]);
 
   const jumpBlock = useCallback((block: DynamicBasicBlock | undefined) => {
     const seq = block?.sampleSeqs[0] ?? block?.instructions[0]?.sampleSeq;
@@ -198,6 +214,65 @@ export default function OllvmPanel({ sessionId, onJumpToSeq }: Props) {
     }
   }, []);
 
+  const generateAngrScript = useCallback(async (): Promise<AngrOllvmScript | null> => {
+    if (!report) return null;
+    setError(null);
+    try {
+      const generated = await invoke<AngrOllvmScript>("generate_angr_ollvm_script", {
+        report,
+        probeOpaqueBranches: angrProbeOpaque,
+        useCfgEmulated: angrCfgEmulated,
+      });
+      setAngrScript(generated);
+      setAngrDisplay("script");
+      return generated;
+    } catch (reason) {
+      setError(String(reason));
+      return null;
+    }
+  }, [angrCfgEmulated, angrProbeOpaque, report]);
+
+  const saveAngrScript = useCallback(async () => {
+    if (!report) return;
+    const generated = angrScript || await generateAngrScript();
+    if (!generated) return;
+    const { save } = await import("@tauri-apps/plugin-dialog");
+    const path = await save({
+      defaultPath: generated.fileName,
+      filters: [{ name: "Python", extensions: ["py"] }],
+    });
+    if (typeof path !== "string") return;
+    try {
+      const written = await invoke<string>("save_angr_ollvm_script", {
+        path,
+        report,
+        probeOpaqueBranches: angrProbeOpaque,
+        useCfgEmulated: angrCfgEmulated,
+      });
+      setAngrSavedPath(written);
+    } catch (reason) {
+      setError(String(reason));
+    }
+  }, [angrCfgEmulated, angrProbeOpaque, angrScript, generateAngrScript, report]);
+
+  const importAngrResults = useCallback(async () => {
+    if (!report) return;
+    const { open } = await import("@tauri-apps/plugin-dialog");
+    const path = await open({ multiple: false, directory: false, filters: [{ name: "Trace UI angr results", extensions: ["json"] }] });
+    if (typeof path !== "string") return;
+    try {
+      const bundle = await invoke<AngrOllvmResultBundle>("load_angr_ollvm_results", { path });
+      if (bundle.moduleName !== report.scope.moduleName) {
+        throw new Error(`angr result module ${bundle.moduleName} does not match analyzed module ${report.scope.moduleName}`);
+      }
+      setAngrResults(bundle);
+      setAngrDisplay("results");
+      setError(null);
+    } catch (reason) {
+      setError(String(reason));
+    }
+  }, [report]);
+
   const sectionButton = (key: typeof section, label: string) => (
     <button
       type="button"
@@ -233,6 +308,7 @@ export default function OllvmPanel({ sessionId, onJumpToSeq }: Props) {
         {sectionButton("blocks", `Dynamic blocks${report ? ` (${report.blockCount})` : ""}`)}
         {sectionButton("edges", `Edges${report ? ` (${report.edgeCount})` : ""}`)}
         {sectionButton("ida", "IDA bridge")}
+        {sectionButton("angr", "angr bridge")}
         <label style={{ display: "flex", alignItems: "center", gap: 4, marginLeft: 10, color: "var(--text-secondary)", fontSize: 10, flexShrink: 0, whiteSpace: "nowrap" }}>
           <input type="checkbox" checked={includeChildCalls} onChange={event => setIncludeChildCalls(event.target.checked)} />
           Include child calls
@@ -290,6 +366,7 @@ export default function OllvmPanel({ sessionId, onJumpToSeq }: Props) {
         <div style={{ flex: 1, overflow: "auto" }}>
           {report.blocks.map(block => {
             const annotation = annotationByOffset.get(block.startOffset.toLowerCase());
+            const angrBlock = angrBlockByOffset.get(block.startOffset.toLowerCase());
             const open = openBlock === block.blockId;
             return (
               <div key={block.blockId} style={{ borderBottom: "1px solid var(--border-color)" }}>
@@ -299,6 +376,11 @@ export default function OllvmPanel({ sessionId, onJumpToSeq }: Props) {
                   <span>{block.visitCount} visits</span>
                   <span>{block.predecessorCount} in / {block.successorCount} out</span>
                   <code>{block.terminalOperation}</code>
+                  {angrBlock && (
+                    <span style={{ color: angrBlock.cfgNodeFound ? "#3fb950" : "#d29922", whiteSpace: "nowrap" }}>
+                      angr {angrBlock.staticSuccessors.length} static / {angrBlock.unobservedStaticSuccessors.length} unseen / {angrBlock.dynamicOnlySuccessors.length} dynamic-only
+                    </span>
+                  )}
                   {annotation?.name && <strong style={{ color: "#3fb950" }}>{annotation.name}</strong>}
                   <span style={{ flex: 1, color: "var(--text-tertiary)", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{annotation?.comment || annotation?.repeatableComment || ""}</span>
                 </div>
@@ -360,6 +442,84 @@ export default function OllvmPanel({ sessionId, onJumpToSeq }: Props) {
             {idaScript?.warnings.map((warning, index) => <div key={index} style={{ marginTop: 5, color: "#d29922" }}>{warning}</div>)}
           </div>
           <pre style={{ flex: 1, minWidth: 0, margin: 0, padding: 10, overflow: "auto", background: "var(--bg-primary)", color: "var(--text-primary)", fontSize: 10, lineHeight: 1.45, whiteSpace: "pre" }}>{idaScript?.script || ""}</pre>
+        </div>
+      )}
+
+      {report && section === "angr" && (
+        <div style={{ flex: 1, minHeight: 0, display: "flex", overflow: "hidden" }}>
+          <div style={{ width: 390, padding: 10, borderRight: "1px solid var(--border-color)", overflow: "auto", fontSize: 11 }}>
+            <div style={{ color: "var(--text-secondary)", lineHeight: 1.5 }}>
+              Generates a standalone Python bridge. Trace UI does not install or run angr; execute the saved script manually against the exact ELF/shared object used by this trace.
+            </div>
+            <div style={{ display: "grid", gridTemplateColumns: "150px minmax(0, 1fr)", gap: 7, alignItems: "center", marginTop: 10 }}>
+              <span>Opaque branch probes</span>
+              <label style={{ display: "flex", alignItems: "center", gap: 5 }}>
+                <input type="checkbox" checked={angrProbeOpaque} onChange={event => { setAngrProbeOpaque(event.target.checked); setAngrScript(null); }} />
+                unconstrained candidate probe
+              </label>
+              <span>CFG strategy</span>
+              <label style={{ display: "flex", alignItems: "center", gap: 5 }}>
+                <input type="checkbox" checked={angrCfgEmulated} onChange={event => { setAngrCfgEmulated(event.target.checked); setAngrScript(null); }} />
+                prefer CFGEmulated
+              </label>
+            </div>
+            <div style={{ display: "flex", gap: 6, flexWrap: "wrap", marginTop: 10 }}>
+              <button type="button" style={{ ...buttonStyle, background: "var(--btn-primary)", color: "#fff", border: "none" }} onClick={generateAngrScript}>Generate Python</button>
+              <button type="button" style={buttonStyle} onClick={saveAngrScript}>Save .py</button>
+              <button type="button" style={buttonStyle} onClick={importAngrResults}>Import angr JSON</button>
+              <button type="button" style={{ ...buttonStyle, opacity: angrScript ? 1 : 0.5 }} disabled={!angrScript} onClick={() => angrScript && navigator.clipboard.writeText(angrScript.script)}>Copy script</button>
+            </div>
+            <div style={{ display: "flex", gap: 6, marginTop: 8 }}>
+              <button type="button" style={{ ...buttonStyle, background: angrDisplay === "script" ? "var(--bg-selected)" : "var(--bg-input)" }} onClick={() => setAngrDisplay("script")}>Script</button>
+              <button type="button" style={{ ...buttonStyle, background: angrDisplay === "results" ? "var(--bg-selected)" : "var(--bg-input)", opacity: angrResults ? 1 : 0.5 }} disabled={!angrResults} onClick={() => setAngrDisplay("results")}>Imported results</button>
+            </div>
+            {angrSavedPath && <div title={angrSavedPath} style={{ marginTop: 8, color: "#3fb950", overflow: "hidden", textOverflow: "ellipsis" }}>Saved: {angrSavedPath}</div>}
+            {angrResults && (
+              <div style={{ marginTop: 10, paddingTop: 8, borderTop: "1px solid var(--border-color)", lineHeight: 1.5 }}>
+                <strong>{angrResults.cfgKind} / angr {angrResults.angrVersion}</strong>
+                <div>{angrResults.architecture} mapped at {angrResults.mappedBase}</div>
+                <div title={angrResults.binarySha256} style={{ overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>SHA-256 {angrResults.binarySha256}</div>
+                <div>{angrResults.blocks.length} blocks / {angrResults.branchProbes.length} probes</div>
+              </div>
+            )}
+            {angrScript?.warnings.map((warning, index) => <div key={`script-${index}`} style={{ marginTop: 5, color: "#d29922" }}>{warning}</div>)}
+            {angrResults?.warnings.map((warning, index) => <div key={`result-${index}`} style={{ marginTop: 5, color: "#d29922" }}>{warning}</div>)}
+          </div>
+          {angrDisplay === "script" && (
+            <pre style={{ flex: 1, minWidth: 0, margin: 0, padding: 10, overflow: "auto", background: "var(--bg-primary)", color: "var(--text-primary)", fontSize: 10, lineHeight: 1.45, whiteSpace: "pre" }}>{angrScript?.script || ""}</pre>
+          )}
+          {angrDisplay === "results" && angrResults && (
+            <div style={{ flex: 1, minWidth: 0, overflow: "auto", fontSize: 11 }}>
+              <div style={{ padding: "8px 10px", borderBottom: "1px solid var(--border-color)", color: "var(--text-secondary)" }}>
+                Unobserved static successors may be unexecuted, infeasible, or CFG recovery artifacts. A blank-state probe does not prove reachability from the real entry state.
+              </div>
+              {angrResults.blocks.map(block => (
+                <div key={block.offset} style={{ display: "grid", gridTemplateColumns: "100px 90px 110px 130px minmax(180px, 1fr)", gap: 7, alignItems: "center", padding: "6px 8px", borderBottom: "1px solid var(--border-color)" }}>
+                  <button type="button" style={buttonStyle} onClick={() => jumpOffset(block.offset)}>{block.offset}</button>
+                  <span style={{ color: block.cfgNodeFound ? "#3fb950" : "#d29922" }}>{block.cfgNodeFound ? "CFG node" : "not found"}</span>
+                  <span>{block.staticSuccessors.length} static</span>
+                  <span>{block.unobservedStaticSuccessors.length} unseen / {block.dynamicOnlySuccessors.length} dynamic-only</span>
+                  <span style={{ color: "var(--text-secondary)", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+                    {block.functionName || ""} {block.unobservedStaticSuccessors.length ? `unseen: ${block.unobservedStaticSuccessors.join(", ")}` : ""}
+                  </span>
+                </div>
+              ))}
+              {angrResults.branchProbes.length > 0 && (
+                <div style={{ padding: "9px 10px", borderBottom: "1px solid var(--border-color)", fontWeight: 600 }}>Opaque branch probes</div>
+              )}
+              {angrResults.branchProbes.map(probe => (
+                <div key={probe.offset} style={{ padding: "7px 8px", borderBottom: "1px solid var(--border-color)" }}>
+                  <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+                    <button type="button" style={buttonStyle} onClick={() => jumpOffset(probe.offset)}>{probe.offset}</button>
+                    <code>{probe.status}</code>
+                    <span>{probe.successors.filter(successor => successor.satisfiable).length} satisfiable successors</span>
+                    {probe.error && <span style={{ color: "#e5484d" }}>{probe.error}</span>}
+                  </div>
+                  <div style={{ marginTop: 4, paddingLeft: 108, color: "var(--text-secondary)" }}>{probe.limitation}</div>
+                </div>
+              ))}
+            </div>
+          )}
         </div>
       )}
     </div>

@@ -19,11 +19,12 @@
 - **Crypto Materials 索引** — 统一索引 key、password、salt、IV、nonce、counter、明文/密文、digest/MAC、AAD 和 tag，并对可观察的 AES、MD5/SHA、HMAC、PBKDF2 做确定性复算
 - **Frida 16 Hook 脚本生成** — 按导出符号或 module-relative offset 生成 ARM64 Interceptor/Stalker 脚本；Trace UI 只生成和保存 `.js`，attach/spawn/load/hook 由用户手动执行
 - **IDA / OLLVM 动态桥接** — 按 module offset 构建动态 CFG、排序 dispatcher/opaque branch 候选，并生成可手动运行的 IDAPython 注释/着色/双向 JSON 脚本
+- **angr / OLLVM 静动态对账** — 生成由用户手动运行的 Python/angr 脚本，将 CFGFast/CFGEmulated 静态后继与动态 trace 边对账，并导回候选级 opaque branch 符号探测结果
 - **调用树与函数分析** — 自动识别 BL/BLR/RET 构建函数调用树，支持折叠/展开、函数重命名、函数列表聚合查看
 - **字符串提取** — 自动从内存写操作中提取运行时字符串，支持搜索、XRefs 交叉引用、Hex/Text 详情查看
 - **DEF/USE 箭头连线** — 点击寄存器名可视化数据定义与使用关系，快速追踪值在指令间的传播路径
 - **寄存器 & 内存面板** — 实时查看任意指令处的寄存器值和内存 Hex Dump，支持内存访问历史追溯
-- **AI 辅助分析（MCP）** — 内置 MCP Server，可与 Claude Code、Cursor 等 AI 工具集成，覆盖浏览、搜索、污点、密码材料、Frida 脚本、IDA/OLLVM、跨 trace 对比和证据持久化
+- **AI 辅助分析（MCP）** — 内置 MCP Server，可与 Claude Code、Cursor 等 AI 工具集成，覆盖浏览、搜索、污点、密码材料、Frida 脚本、IDA/angr/OLLVM、跨 trace 对比和证据持久化
 - **14 种编辑器主题** — 内置 Monokai、Dracula、Nord、Catppuccin、Gruvbox、Tokyo Night、Solarized、GitHub Light、High Contrast 等主题，一键切换
 - **沉浸式交互体验** — 双击文本全局高亮同名标记、搜索结果关键词高亮、Minimap 缩略导航
 - **多窗口浮动面板** — 搜索、内存、字符串、依赖树、密码学扫描等面板可独立浮出，支持多文件并行分析
@@ -86,7 +87,7 @@ claude mcp add trace-ui --transport http http://127.0.0.1:19821/mcp
 | 密码分析 | `analyze_crypto_functions`、`analyze_crypto_implementations`、`analyze_crypto_materials`、`analyze_known_digest` |
 | 多 trace 参数隔离 | `compare_crypto_material_traces`、`compare_crypto_table_traces` |
 | Frida 16 脚本 | `generate_frida_hook`（仅生成；用户手动执行） |
-| IDA / OLLVM | `analyze_ollvm`、`generate_ida_ollvm_script`、`inspect_ida_annotations` |
+| IDA / angr / OLLVM | `analyze_ollvm`、`generate_ida_ollvm_script`、`inspect_ida_annotations`、`generate_angr_ollvm_script`、`inspect_angr_ollvm_results` |
 | 证据与编排 | `list_analyses`、`get_analysis`、`compare_analyses`、`auto_investigate` |
 
 > 详细的工具参数和分析套路请参考仓库内的 [trace-analysis MCP 工具表](.claude/skills/trace-analysis/references/mcp-tools.md) 与 [实战案例](.claude/skills/trace-analysis/references/playbook-examples.md)。
@@ -155,15 +156,18 @@ claude mcp add trace-ui --transport http http://127.0.0.1:19821/mcp
 
 ![image-20260323182741064](docs/images/README/image-20260323182741064.png)
 
-### Crypto Materials、Frida 16 与 IDA / OLLVM
+### Crypto Materials、Frida 16、IDA 与 angr / OLLVM
 
-Crypto 面板新增三条面向 native 逆向的工作流：
+Crypto 面板新增四条面向 native 逆向的工作流：
 
 - **Materials**：从调用 ABI、hexdump 和语义复算中汇总 key/input/output/IV/nonce/salt/AAD/tag 等材料。只有确定性复算结果会进入 Verified；仅凭参数位置推断的角色保持 Related。
 - **Frida Hook**：可从 Crypto Function/Material 预填 module、offset 和参数角色，生成 `trace-ui/frida-hook-v1` 的 Frida 16.x JavaScript。支持 X0-X7、SP/LR/PC、返回值、字符串/字节数组、backtrace，以及有界的 Stalker calls/blocks/instructions。应用不会启动 Frida，也不会自动 attach 或 load 脚本。
 - **IDA / OLLVM**：按 ASLR 稳定的 module offset 生成动态 basic blocks/edges，排序控制流平坦化 dispatcher 与 opaque branch 候选，并生成 IDAPython 注释、颜色和可选 user xrefs。动态 trace 只覆盖实际执行路径，因此这些结论始终是候选证据，不代表完整静态 CFG 或自动去混淆。
+- **angr / OLLVM**：基于同一份动态报告生成独立 Python 脚本，用户在自己的 angr 环境中对 exact ELF 手动运行。默认 CFGFast，可选 CFGEmulated 并自动回退；结果对账 static successor、unobserved static successor 与 dynamic-only successor，并可从分支地址做无入口上下文的符号探测。blank-state probe 不证明真实入口可达性，需在生成脚本的 `configure_state(state)` 中用 trace/Frida 证据补寄存器、内存和输入。
 
 IDA 脚本中的 `export_ida_annotations()` 可手动导出 `trace-ui/ida-ollvm-v1` JSON，再导回 Trace UI 显示 IDA 名称与注释。
+
+angr 脚本输出 `trace-ui/angr-ollvm-v1` JSON，并记录 exact ELF 的 SHA-256、mapped base、angr 版本和 CFG 类型。Trace UI 只生成/保存脚本和导入结果，不安装或自动执行 angr。
 
 ### 调用树与函数分析
 
