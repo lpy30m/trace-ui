@@ -1,19 +1,37 @@
 import React, { useState, useEffect, useRef, useCallback, useMemo } from "react";
 import { emit } from "@tauri-apps/api/event";
-import { useVirtualizerNoSync } from "../hooks/useVirtualizerNoSync";
+import { useVirtualScroll } from "../hooks/useVirtualScroll";
 import { useResizableColumn } from "../hooks/useResizableColumn";
+import VirtualScrollArea from "./VirtualScrollArea";
 import ContextMenu, { ContextMenuItem } from "./ContextMenu";
-import type { CryptoMatch, CryptoScanResult } from "../types/trace";
+import Minimap, { MINIMAP_WIDTH } from "./Minimap";
+import KnownDigestPanel from "./KnownDigestPanel";
+import CryptoFunctionsPanel from "./CryptoFunctionsPanel";
+import WhiteBoxPanel from "./WhiteBoxPanel";
+import ValueSearchPanel from "./ValueSearchPanel";
+import type { CryptoMatch, CryptoScanResult, HashMatchResult, TraceLine } from "../types/trace";
+import type { ResolvedRow } from "../hooks/useFoldState";
 
 const ROW_HEIGHT = 22;
 
 interface Props {
+  sessionId: string | null;
+  hasStringIndex: boolean;
+  cryptoResults: CryptoScanResult | null;
+  cryptoScanning: boolean;
+  onJumpToSeq: (seq: number) => void;
+  onScanStrings?: () => Promise<void> | void;
+  onTraceInput?: (match: HashMatchResult) => Promise<void> | void;
+  onTraceMemory?: (request: { addr: string; size: number; seq: number }) => Promise<void> | void;
+}
+
+interface DetectionProps {
   cryptoResults: CryptoScanResult | null;
   cryptoScanning: boolean;
   onJumpToSeq: (seq: number) => void;
 }
 
-export default function CryptoPanel({ cryptoResults, cryptoScanning, onJumpToSeq }: Props) {
+function DetectionPanel({ cryptoResults, cryptoScanning, onJumpToSeq }: DetectionProps) {
   const seqCol = useResizableColumn(70, "right", 40, "crypto:seq");
   const algoCol = useResizableColumn(100, "left", 50, "crypto:algo");
   const magicCol = useResizableColumn(110, "left", 60, "crypto:magic");
@@ -28,8 +46,6 @@ export default function CryptoPanel({ cryptoResults, cryptoScanning, onJumpToSeq
   const [selectedSeq, setSelectedSeq] = useState<number | null>(null);
   const [algoFilter, setAlgoFilter] = useState<string | null>(null);
   const [contextMenu, setContextMenu] = useState<{ x: number; y: number; match: CryptoMatch } | null>(null);
-
-  const parentRef = useRef<HTMLDivElement>(null);
 
   const filtered = useMemo(() => {
     if (!cryptoResults) return [];
@@ -49,13 +65,7 @@ export default function CryptoPanel({ cryptoResults, cryptoScanning, onJumpToSeq
     return items;
   }, [cryptoResults, search, algoFilter]);
 
-  const virtualizer = useVirtualizerNoSync({
-    count: filtered.length,
-    getScrollElement: () => parentRef.current,
-    estimateSize: () => ROW_HEIGHT,
-    overscan: 20,
-  });
-  const virtualItems = virtualizer.getVirtualItems();
+  const vs = useVirtualScroll({ totalCount: filtered.length, rowHeight: ROW_HEIGHT, overscan: 20 });
 
   const handleRowClick = useCallback((match: CryptoMatch) => {
     setSelectedSeq(match.seq);
@@ -84,6 +94,37 @@ export default function CryptoPanel({ cryptoResults, cryptoScanning, onJumpToSeq
     setContextMenu(null);
     emit("action:view-in-memory", { addr: address, seq });
   }, [contextMenu]);
+
+  // ── Minimap callbacks ──
+  const resolveVirtualIndex = useCallback((vi: number): ResolvedRow => {
+    return { type: "line", seq: filtered[vi]?.seq ?? vi } as ResolvedRow;
+  }, [filtered]);
+
+  const getLines = useCallback(async (seqs: number[]): Promise<TraceLine[]> => {
+    const seqMap = new Map<number, CryptoMatch>();
+    for (const m of filtered) seqMap.set(m.seq, m);
+    return seqs
+      .map(seq => seqMap.get(seq))
+      .filter((m): m is CryptoMatch => m !== undefined)
+      .map(m => ({
+        seq: m.seq,
+        address: m.address,
+        so_offset: m.address,
+        so_name: null,
+        disasm: m.disasm,
+        changes: m.algorithm,
+        reg_before: "",
+        mem_rw: null,
+        mem_addr: null,
+        mem_size: null,
+        raw: "",
+        call_info: null,
+      } as TraceLine));
+  }, [filtered]);
+
+  const handleScrollbarScroll = useCallback((row: number) => {
+    vs.scrollToRow(row);
+  }, [vs]);
 
   // Reset filter when results change
   useEffect(() => {
@@ -177,56 +218,76 @@ export default function CryptoPanel({ cryptoResults, cryptoScanning, onJumpToSeq
         <span style={{ width: addrCol.width, flexShrink: 0 }}>Address</span>
         <div onMouseDown={addrCol.onMouseDown} style={HANDLE_STYLE}><div style={{ width: 1, height: "100%", background: "var(--border-color)" }} /></div>
         <span style={{ flex: 1 }}>Disasm</span>
+        <span style={{ width: MINIMAP_WIDTH + 12, flexShrink: 0 }}></span>
       </div>
 
       {/* Virtual list */}
-      <div ref={parentRef} style={{ flex: 1, overflow: "auto" }}>
+      <VirtualScrollArea
+        containerRef={vs.containerRef}
+        containerStyle={vs.containerStyle}
+        containerHeight={vs.containerHeight}
+        scrollbarProps={vs.scrollbarProps}
+        gutterWidth={MINIMAP_WIDTH + 12}
+        gutterContent={
+          <Minimap
+            virtualTotalRows={filtered.length}
+            visibleRows={vs.visibleRows}
+            currentRow={vs.currentRow}
+            maxRow={vs.maxRow}
+            height={vs.containerHeight}
+            onScroll={handleScrollbarScroll}
+            resolveVirtualIndex={resolveVirtualIndex}
+            getLines={getLines}
+            selectedSeq={selectedSeq}
+            rightOffset={12}
+            showSoName={false}
+            showAbsAddress={false}
+          />
+        }
+      >
         {filtered.length === 0 ? (
           <div style={{ padding: 16, textAlign: "center", color: "var(--text-secondary)", fontSize: 12 }}>
             No matches for current filter
           </div>
         ) : (
-          <div style={{ height: virtualizer.getTotalSize(), width: "100%", position: "relative" }}>
-            {virtualItems.map(virtualRow => {
-              const match = filtered[virtualRow.index];
-              if (!match) return null;
-              const isSelected = match.seq === selectedSeq;
-              return (
-                <div
-                  key={virtualRow.key}
-                  data-index={virtualRow.index}
-                  ref={virtualizer.measureElement}
-                  onClick={() => handleRowClick(match)}
-                  onContextMenu={e => handleContextMenu(e, match)}
-                  style={{
-                    position: "absolute", top: 0, left: 0, width: "100%", height: ROW_HEIGHT,
-                    transform: `translateY(${virtualRow.start}px)`,
-                    display: "flex", alignItems: "center", padding: "0 8px",
-                    cursor: "pointer", fontSize: "var(--font-size-sm)",
-                    background: isSelected ? "var(--bg-selected)"
-                      : virtualRow.index % 2 === 0 ? "var(--bg-row-even)" : "var(--bg-row-odd)",
-                  }}
-                  onMouseEnter={(e) => { if (!isSelected) e.currentTarget.style.background = "var(--bg-hover)"; }}
-                  onMouseLeave={(e) => { if (!isSelected) e.currentTarget.style.background = virtualRow.index % 2 === 0 ? "var(--bg-row-even)" : "var(--bg-row-odd)"; }}
-                >
-                  <span style={{ width: seqCol.width, flexShrink: 0, color: "var(--syntax-number)" }}>{match.seq + 1}</span>
-                  <span style={{ width: 8, flexShrink: 0 }} />
-                  <span style={{ width: algoCol.width, flexShrink: 0, color: "var(--syntax-keyword)" }}>{match.algorithm}</span>
-                  <span style={{ width: 8, flexShrink: 0 }} />
-                  <span style={{ width: magicCol.width, flexShrink: 0, color: "var(--syntax-literal)" }}>{match.magic_hex}</span>
-                  <span style={{ width: 8, flexShrink: 0 }} />
-                  <span style={{ width: addrCol.width, flexShrink: 0, color: "var(--syntax-literal)" }}>{match.address}</span>
-                  <span style={{ width: 8, flexShrink: 0 }} />
-                  <span style={{
-                    flex: 1, color: "var(--text-primary)",
-                    overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap",
-                  }}>{match.disasm}</span>
-                </div>
-              );
-            })}
-          </div>
+          Array.from({ length: Math.max(0, vs.endIdx - vs.startIdx + 1) }, (_, i) => {
+            const index = vs.startIdx + i;
+            const match = filtered[index];
+            if (!match) return null;
+            const isSelected = match.seq === selectedSeq;
+            return (
+              <div
+                key={index}
+                onClick={() => handleRowClick(match)}
+                onContextMenu={e => handleContextMenu(e, match)}
+                style={{
+                  position: "absolute", top: 0, left: 0, width: "100%", height: ROW_HEIGHT,
+                  transform: `translateY(${vs.getItemY(index)}px)`,
+                  display: "flex", alignItems: "center", padding: "0 8px",
+                  cursor: "pointer", fontSize: "var(--font-size-sm)",
+                  background: isSelected ? "var(--bg-selected)"
+                    : index % 2 === 0 ? "var(--bg-row-even)" : "var(--bg-row-odd)",
+                }}
+                onMouseEnter={(e) => { if (!isSelected) e.currentTarget.style.background = "var(--bg-hover)"; }}
+                onMouseLeave={(e) => { if (!isSelected) e.currentTarget.style.background = index % 2 === 0 ? "var(--bg-row-even)" : "var(--bg-row-odd)"; }}
+              >
+                <span style={{ width: seqCol.width, flexShrink: 0, color: "var(--syntax-number)" }}>{match.seq + 1}</span>
+                <span style={{ width: 8, flexShrink: 0 }} />
+                <span style={{ width: algoCol.width, flexShrink: 0, color: "var(--syntax-keyword)" }}>{match.algorithm}</span>
+                <span style={{ width: 8, flexShrink: 0 }} />
+                <span style={{ width: magicCol.width, flexShrink: 0, color: "var(--syntax-literal)" }}>{match.magic_hex}</span>
+                <span style={{ width: 8, flexShrink: 0 }} />
+                <span style={{ width: addrCol.width, flexShrink: 0, color: "var(--syntax-literal)" }}>{match.address}</span>
+                <span style={{ width: 8, flexShrink: 0 }} />
+                <span style={{
+                  flex: 1, color: "var(--text-primary)",
+                  overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap",
+                }}>{match.disasm}</span>
+              </div>
+            );
+          })
         )}
-      </div>
+      </VirtualScrollArea>
 
       {/* Context menu */}
       {contextMenu && (
@@ -236,6 +297,98 @@ export default function CryptoPanel({ cryptoResults, cryptoScanning, onJumpToSeq
           <ContextMenuItem label="Copy Disasm" onClick={handleCopyDisasm} />
         </ContextMenu>
       )}
+    </div>
+  );
+}
+
+export default function CryptoPanel(props: Props) {
+  const [view, setView] = useState<"value-search" | "detection" | "known-digest" | "functions" | "whitebox">("value-search");
+
+  const segmentStyle = (active: boolean): React.CSSProperties => ({
+    height: 26,
+    padding: "0 12px",
+    border: "none",
+    borderRight: "1px solid var(--border-color)",
+    background: active ? "var(--bg-selected)" : "var(--bg-input)",
+    color: active ? "var(--text-primary)" : "var(--text-secondary)",
+    cursor: "pointer",
+    fontSize: 12,
+    fontFamily: "inherit",
+  });
+
+  return (
+    <div style={{ flex: 1, minWidth: 0, minHeight: 0, display: "flex", flexDirection: "column", overflow: "hidden" }}>
+      <div style={{
+        height: 35, padding: "4px 8px", display: "flex", alignItems: "center",
+        borderBottom: "1px solid var(--border-color)", flexShrink: 0,
+      }}>
+        <div style={{ display: "flex", border: "1px solid var(--border-color)", borderRadius: 4, overflow: "hidden" }}>
+          <button type="button" style={segmentStyle(view === "value-search")} onClick={() => setView("value-search")}>
+            Value Search
+          </button>
+          <button type="button" style={segmentStyle(view === "detection")} onClick={() => setView("detection")}>
+            Detection
+          </button>
+          <button
+            type="button"
+            style={segmentStyle(view === "known-digest")}
+            onClick={() => setView("known-digest")}
+          >
+            Known Digest
+          </button>
+          <button
+            type="button"
+            style={segmentStyle(view === "functions")}
+            onClick={() => setView("functions")}
+          >
+            Functions
+          </button>
+          <button
+            type="button"
+            style={{ ...segmentStyle(view === "whitebox"), borderRight: "none" }}
+            onClick={() => setView("whitebox")}
+          >
+            Implementations
+          </button>
+        </div>
+      </div>
+      <div style={{ flex: 1, minHeight: 0, display: "flex", overflow: "hidden" }}>
+        <div style={{ flex: 1, minWidth: 0, minHeight: 0, display: view === "value-search" ? "flex" : "none" }}>
+          <ValueSearchPanel
+            sessionId={props.sessionId}
+            onJumpToSeq={props.onJumpToSeq}
+            onTraceMemory={props.onTraceMemory}
+          />
+        </div>
+        <div style={{ flex: 1, minWidth: 0, minHeight: 0, display: view === "detection" ? "flex" : "none" }}>
+          <DetectionPanel
+            cryptoResults={props.cryptoResults}
+            cryptoScanning={props.cryptoScanning}
+            onJumpToSeq={props.onJumpToSeq}
+          />
+        </div>
+        <div style={{ flex: 1, minWidth: 0, minHeight: 0, display: view === "known-digest" ? "flex" : "none" }}>
+          <KnownDigestPanel
+            sessionId={props.sessionId}
+            hasStringIndex={props.hasStringIndex}
+            onJumpToSeq={props.onJumpToSeq}
+            onScanStrings={props.onScanStrings}
+            onTraceInput={props.onTraceInput}
+          />
+        </div>
+        <div style={{ flex: 1, minWidth: 0, minHeight: 0, display: view === "functions" ? "flex" : "none" }}>
+          <CryptoFunctionsPanel
+            sessionId={props.sessionId}
+            onJumpToSeq={props.onJumpToSeq}
+          />
+        </div>
+        <div style={{ flex: 1, minWidth: 0, minHeight: 0, display: view === "whitebox" ? "flex" : "none" }}>
+          <WhiteBoxPanel
+            sessionId={props.sessionId}
+            onJumpToSeq={props.onJumpToSeq}
+          />
+        </div>
+      </div>
     </div>
   );
 }

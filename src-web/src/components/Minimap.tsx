@@ -3,6 +3,7 @@ import type { TraceLine } from "../types/trace";
 import type { ResolvedRow } from "../hooks/useFoldState";
 import { getSharedColors, getMinimapColors } from "../utils/canvasColors";
 import { useThemeId } from "../stores/themeStore";
+import { canvasDpr } from "../utils/platform";
 
 const MINIMAP_WIDTH = 70;
 const MINIMAP_ROW_HEIGHT = 2;
@@ -53,6 +54,8 @@ interface MinimapProps {
   getLines: (seqs: number[]) => Promise<TraceLine[]>;
   selectedSeq: number | null;
   rightOffset?: number;
+  showSoName: boolean;
+  showAbsAddress: boolean;
 }
 
 export { MINIMAP_WIDTH };
@@ -60,6 +63,7 @@ export { MINIMAP_WIDTH };
 export default function Minimap({
   virtualTotalRows, visibleRows, currentRow, maxRow, height,
   onScroll, resolveVirtualIndex, getLines, selectedSeq, rightOffset,
+  showSoName, showAbsAddress,
 }: MinimapProps) {
   const _themeId = useThemeId(); // 触发主题切换时的重绘
   const canvasRef = useRef<HTMLCanvasElement>(null);
@@ -76,7 +80,7 @@ export default function Minimap({
   useEffect(() => {
     const canvas = canvasRef.current;
     if (!canvas || height === 0) return;
-    const dpr = window.devicePixelRatio || 1;
+    const dpr = canvasDpr();
     canvas.width = MINIMAP_WIDTH * dpr;
     canvas.height = height * dpr;
     canvas.style.width = MINIMAP_WIDTH + "px";
@@ -127,7 +131,7 @@ export default function Minimap({
     if (!canvas || height === 0) return;
     const ctx = canvas.getContext("2d");
     if (!ctx) return;
-    const dpr = window.devicePixelRatio || 1;
+    const dpr = canvasDpr();
     ctx.save();
     ctx.scale(dpr, dpr);
 
@@ -169,9 +173,17 @@ export default function Minimap({
         if (!line) continue;
         let curX = MINIMAP_COL_START;
 
-        if (line.address) {
+        if (line.address || line.so_offset) {
+          let addrText = line.so_offset || line.address;
+          if (showSoName && line.so_name) {
+            const prefix = `[${line.so_name}] `;
+            const addrPart = (showAbsAddress && line.address)
+              ? `${line.address}!${line.so_offset}`
+              : line.so_offset;
+            addrText = prefix + addrPart;
+          }
           ctx.fillStyle = MM_COLORS.address;
-          const w = line.address.length * MINIMAP_CHAR_WIDTH;
+          const w = (addrText?.length ?? 0) * MINIMAP_CHAR_WIDTH;
           ctx.fillRect(curX, y, w, MINIMAP_ROW_HEIGHT);
           curX += w + 2;
         }

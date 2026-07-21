@@ -8,6 +8,7 @@
 #   ./build.sh debug     # 构建 debug 版本
 #   ./build.sh release   # 构建 release 版本（LTO 优化）
 #   ./build.sh bundle    # 打包安装程序（.msi / .dmg / .deb）
+#   ./build.sh cli       # 仅构建 trace-cli（MCP Server）
 #   ./build.sh clean     # 清理所有构建产物
 #
 
@@ -119,10 +120,10 @@ build_rust() {
     cd "$SCRIPT_DIR"
 
     if [[ "$mode" == "release" ]]; then
-        cargo build --release --features custom-protocol
+        cargo build --release -p trace-ui --features custom-protocol
         local bin="target/release/trace-ui${BINARY_EXT}"
     else
-        cargo build --features custom-protocol
+        cargo build -p trace-ui --features custom-protocol
         local bin="target/debug/trace-ui${BINARY_EXT}"
     fi
 
@@ -135,9 +136,35 @@ build_rust() {
         exit 1
     fi
 
+    # 同时构建 trace-cli（MCP Server）
+    build_cli "$mode"
+
     # macOS: 创建 .app Bundle 以避免启动时弹出终端
     if [[ "$PLATFORM" == "macos" ]]; then
         create_macos_app "$bin" "$mode"
+    fi
+}
+
+# ── trace-cli 构建 ──
+build_cli() {
+    local mode="$1"  # debug | release
+    info "构建 trace-cli（MCP Server）..."
+
+    if [[ "$mode" == "release" ]]; then
+        cargo build --release --bin trace-cli
+        local bin="target/release/trace-cli${BINARY_EXT}"
+    else
+        cargo build --bin trace-cli
+        local bin="target/debug/trace-cli${BINARY_EXT}"
+    fi
+
+    if [[ -f "$bin" ]]; then
+        local size
+        size=$(du -h "$bin" | cut -f1)
+        ok "trace-cli 构建完成 → $bin ($size)"
+    else
+        err "trace-cli 构建产物未找到: $bin"
+        exit 1
     fi
 }
 
@@ -156,13 +183,13 @@ create_macos_app() {
     cp -f "$bin" "$app_dir/Contents/MacOS/trace-ui"
 
     # 复制图标
-    if [[ -f "icons/icon.icns" ]]; then
-        cp -f "icons/icon.icns" "$app_dir/Contents/Resources/icon.icns"
+    if [[ -f "src-tauri/icons/icon.icns" ]]; then
+        cp -f "src-tauri/icons/icon.icns" "$app_dir/Contents/Resources/icon.icns"
     fi
 
     # 从 tauri.conf.json 读取版本号
     local app_version
-    app_version=$(grep '"version"' tauri.conf.json | head -1 | sed 's/.*"\([0-9][0-9.]*\)".*/\1/')
+    app_version=$(grep '"version"' src-tauri/tauri.conf.json | head -1 | sed 's/.*"\([0-9][0-9.]*\)".*/\1/')
     info "App version: $app_version"
 
     # 生成 Info.plist
@@ -285,6 +312,10 @@ main() {
             build_frontend
             build_bundle
             ;;
+        cli)
+            check_deps
+            build_cli release
+            ;;
         clean)
             do_clean
             ;;
@@ -293,9 +324,10 @@ main() {
             echo ""
             echo "命令:"
             echo "  dev       开发模式（Vite HMR + Rust 热重载）"
-            echo "  debug     构建 debug 版本"
-            echo "  release   构建 release 版本（LTO 优化）"
+            echo "  debug     构建 debug 版本（含 trace-cli）"
+            echo "  release   构建 release 版本（含 trace-cli，LTO 优化）"
             echo "  bundle    打包安装程序（.msi / .dmg / .deb）"
+            echo "  cli       仅构建 trace-cli（MCP Server）"
             echo "  clean     清理所有构建产物"
             exit 0
             ;;

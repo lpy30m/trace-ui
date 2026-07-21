@@ -37,6 +37,13 @@ export default function PreferencesDialog({ preferences, onSave, onClose, onClea
   const [clearing, setClearing] = useState(false);
   const [originalTheme] = useState<ThemeId>(preferences.theme);
 
+  const portError = (() => {
+    if (local.mcpPort === null) return null;
+    if (!Number.isInteger(local.mcpPort)) return "Port must be an integer";
+    if (local.mcpPort < 1024 || local.mcpPort > 65535) return "Port must be between 1024 and 65535";
+    return null;
+  })();
+
   const handleClose = useCallback(() => {
     // 取消时恢复原主题
     themeStore.set(originalTheme);
@@ -79,9 +86,13 @@ export default function PreferencesDialog({ preferences, onSave, onClose, onClea
   const handleSave = useCallback(() => {
     const dir = local.cacheDir.trim() || null;
     invoke("set_cache_dir", { path: dir }).catch(console.error);
+    // MCP 端口变更时重启（仅在 autoStart 开启时）
+    if (local.mcpPort !== preferences.mcpPort && local.autoStartMcp) {
+      invoke("start_mcp", { port: local.mcpPort }).catch(console.error);
+    }
     onSave(local);
     onClose();
-  }, [local, onSave, onClose]);
+  }, [local, preferences.mcpPort, onSave, onClose]);
 
   return (
     <div
@@ -237,6 +248,61 @@ export default function PreferencesDialog({ preferences, onSave, onClose, onClea
                     Restore previous session on startup
                   </label>
                 </div>
+
+                {/* MCP Server */}
+                <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
+                  <div style={{ fontSize: 11, color: "var(--text-secondary)", fontWeight: 600 }}>
+                    MCP Server
+                  </div>
+                  <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+                    <label style={{ fontSize: 12, color: "var(--text-primary)", whiteSpace: "nowrap" as const }}>
+                      Port:
+                    </label>
+                    <input
+                      type="number"
+                      min={1024}
+                      max={65535}
+                      value={local.mcpPort ?? ""}
+                      onChange={(e) => {
+                        const val = e.target.value.trim();
+                        setLocal(prev => ({
+                          ...prev,
+                          mcpPort: val === "" ? null : parseInt(val, 10) || null,
+                        }));
+                      }}
+                      placeholder="19821"
+                      style={{
+                        width: 100, padding: "4px 8px", fontSize: 11,
+                        background: "var(--bg-input)",
+                        border: `1px solid ${portError ? "#f87171" : "var(--border-color)"}`,
+                        borderRadius: 4, color: "var(--text-primary)",
+                        fontFamily: "var(--font-mono)", outline: "none",
+                      }}
+                    />
+                  </div>
+                  {portError ? (
+                    <div style={{ fontSize: 10, color: "#f87171", lineHeight: 1.4 }}>
+                      {portError}
+                    </div>
+                  ) : (
+                    <div style={{ fontSize: 10, color: "var(--text-secondary)", lineHeight: 1.4 }}>
+                      Leave empty to use default port (19821). Changes take effect on save.
+                    </div>
+                  )}
+                  <label style={{
+                    display: "flex", alignItems: "center", gap: 8,
+                    fontSize: 12, color: "var(--text-primary)", cursor: "pointer",
+                    marginTop: 4,
+                  }}>
+                    <input
+                      type="checkbox"
+                      checked={local.autoStartMcp}
+                      onChange={(e) => setLocal(prev => ({ ...prev, autoStartMcp: e.target.checked }))}
+                      style={{ accentColor: "var(--btn-primary)" }}
+                    />
+                    Auto-start MCP server on launch
+                  </label>
+                </div>
               </div>
             )}
 
@@ -382,14 +448,18 @@ export default function PreferencesDialog({ preferences, onSave, onClose, onClea
           </button>
           <button
             onClick={handleSave}
-            onMouseEnter={(e) => { e.currentTarget.style.opacity = "0.85"; }}
-            onMouseLeave={(e) => { e.currentTarget.style.opacity = "1"; }}
+            disabled={!!portError}
+            onMouseEnter={(e) => { if (!portError) e.currentTarget.style.opacity = "0.85"; }}
+            onMouseLeave={(e) => { e.currentTarget.style.opacity = portError ? "0.5" : "1"; }}
             style={{
               padding: "5px 16px",
               background: "var(--btn-primary)",
               color: "#fff",
               border: "none",
-              borderRadius: 4, cursor: "pointer", fontSize: 12, fontWeight: 600,
+              borderRadius: 4,
+              cursor: portError ? "default" : "pointer",
+              fontSize: 12, fontWeight: 600,
+              opacity: portError ? 0.5 : 1,
             }}
           >
             Save

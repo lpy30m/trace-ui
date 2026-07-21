@@ -1,7 +1,7 @@
 import { useState, useCallback, useRef, useEffect } from "react";
 import { invoke } from "@tauri-apps/api/core";
-import { listen } from "@tauri-apps/api/event";
-import type { CreateSessionResult, SessionData, SearchMatch, SearchResult } from "../types/trace";
+import { emit, listen } from "@tauri-apps/api/event";
+import type { CreateSessionResult, SessionData, SearchResult } from "../types/trace";
 import { useLineCache } from "./useLineCache";
 import { selectedSeqStore } from "../stores/selectedSeqStore";
 import { navigationStore } from "../stores/navigationStore";
@@ -39,7 +39,7 @@ export function useTraceStore(skipStrings: boolean = false) {
   skipStringsRef.current = skipStrings;
 
   // Search state (top-level, not per-session)
-  const [searchResults, setSearchResults] = useState<SearchMatch[]>([]);
+  const [matchSeqs, setMatchSeqs] = useState<number[]>([]);
   const [searchQuery, setSearchQuery] = useState("");
   const [isSearching, setIsSearching] = useState(false);
   const [searchStatus, setSearchStatus] = useState("");
@@ -68,7 +68,7 @@ export function useTraceStore(skipStrings: boolean = false) {
   }, []);
 
   const clearSearchState = useCallback(() => {
-    setSearchResults([]);
+    setMatchSeqs([]);
     setSearchQuery("");
     setSearchStatus("");
     setSearchTotalMatches(0);
@@ -246,7 +246,12 @@ export function useTraceStore(skipStrings: boolean = false) {
     });
     selectedSeqMapRef.current.delete(sessionId);
     removeSessionCache(sessionId);
-  }, [removeSessionCache]);
+    clearSearchState();
+    navigationStore.reset();
+    selectedSeqStore.set(null);
+    // 通知浮窗清空搜索状态
+    emit("sync:search-state", { matchSeqs: [], query: "", status: "", totalMatches: 0 });
+  }, [removeSessionCache, clearSearchState]);
 
   const closeSession = useCallback(async (sessionId: string) => {
     await removeSessionAndSelectNext(sessionId);
@@ -256,23 +261,21 @@ export function useTraceStore(skipStrings: boolean = false) {
     const sid = activeSessionIdRef.current;
     if (!sid) return;
     await removeSessionAndSelectNext(sid);
-    clearSearchState();
     setSavedScrollSeq(null);
     setIsLoading(false);
     setLoadingMessage("");
-  }, [removeSessionAndSelectNext, clearSearchState]);
+  }, [removeSessionAndSelectNext]);
 
   const cancelLoading = useCallback(async () => {
     const sid = activeSessionIdRef.current;
     if (!sid) return;
     // 关闭正在加载的 session，后端 build_index 线程写入结果时会发现 session 已删除
     await removeSessionAndSelectNext(sid);
-    clearSearchState();
     setSavedScrollSeq(null);
     setIsLoading(false);
     setLoadingMessage("");
     isRebuildingRef.current = false;
-  }, [removeSessionAndSelectNext, clearSearchState]);
+  }, [removeSessionAndSelectNext]);
 
   const switchSession = useCallback((id: string) => {
     setActiveSessionId(id);
@@ -281,6 +284,8 @@ export function useTraceStore(skipStrings: boolean = false) {
     const seq = selectedSeqMapRef.current.get(id) ?? null;
     selectedSeqStore.set(seq);
     setSavedScrollSeq(seq);
+    // 通知浮窗清空搜索状态
+    emit("sync:search-state", { matchSeqs: [], query: "", status: "", totalMatches: 0 });
   }, [clearSearchState]);
 
   const rebuildIndex = useCallback(async () => {
@@ -307,7 +312,7 @@ export function useTraceStore(skipStrings: boolean = false) {
     const sid = activeSessionIdRef.current;
     const origQuery = displayQuery ?? query;
     if (!sid || !query.trim()) {
-      setSearchResults([]);
+      setMatchSeqs([]);
       setSearchQuery("");
       setSearchStatus("");
       return 0;
@@ -318,17 +323,18 @@ export function useTraceStore(skipStrings: boolean = false) {
     try {
       const result = await invoke<SearchResult>("search_trace", {
         sessionId: sid,
-        request: { query, max_results: 10000, case_sensitive: caseSensitive, use_regex: useRegex, fuzzy },
+        request: { query, case_sensitive: caseSensitive, use_regex: useRegex, fuzzy },
       });
-      setSearchResults(result.matches);
+      setMatchSeqs(result.match_seqs);
       setSearchTotalMatches(result.total_matches);
-      setSearchStatus(result.total_matches === 0
-        ? `No results found for "${origQuery}"`
-        : `${result.total_matches.toLocaleString()} results`);
+      const statusText = result.total_matches === 0
+          ? `No results found for "${origQuery}"`
+          : `${result.total_matches.toLocaleString()} results`;
+      setSearchStatus(statusText);
       return result.total_matches;
     } catch (e) {
       setSearchStatus(`Search failed: ${e}`);
-      setSearchResults([]);
+      setMatchSeqs([]);
       return 0;
     } finally {
       setIsSearching(false);
@@ -336,8 +342,8 @@ export function useTraceStore(skipStrings: boolean = false) {
   }, []);
 
   // 从浮动窗口同步搜索结果回来
-  const syncSearchState = useCallback((results: SearchMatch[], query: string, status: string, totalMatches: number) => {
-    setSearchResults(results);
+  const syncSearchState = useCallback((seqs: number[], query: string, status: string, totalMatches: number) => {
+    setMatchSeqs(seqs);
     setSearchQuery(query);
     setSearchStatus(status);
     setSearchTotalMatches(totalMatches);
@@ -365,7 +371,7 @@ export function useTraceStore(skipStrings: boolean = false) {
     openTrace,
     closeTrace,
     getLines,
-    searchResults,
+    matchSeqs,
     searchQuery,
     isSearching,
     searchStatus,

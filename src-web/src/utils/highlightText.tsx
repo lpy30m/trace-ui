@@ -8,6 +8,55 @@ const MARK_STYLE: React.CSSProperties = {
 };
 
 /**
+ * 构建搜索高亮用的正则表达式。
+ * 支持 /regex/ 包裹、正则 toggle、模糊多关键词、普通文本等模式。
+ * 无效正则返回 null。
+ */
+function buildHighlightRegex(
+  query: string,
+  caseSensitive: boolean,
+  fuzzy: boolean,
+  useRegex: boolean,
+): RegExp | null {
+  try {
+    if (query.startsWith("/") && query.endsWith("/") && query.length > 2) {
+      const pattern = query.slice(1, -1);
+      return new RegExp(pattern, caseSensitive ? "g" : "gi");
+    } else if (useRegex) {
+      return new RegExp(query, caseSensitive ? "g" : "gi");
+    } else if (fuzzy && query.includes(" ")) {
+      const tokens = query.split(/\s+/).filter(Boolean);
+      if (tokens.length === 0) return null;
+      const escaped = tokens.map(t => t.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"));
+      return new RegExp(`(${escaped.join("|")})`, caseSensitive ? "g" : "gi");
+    } else {
+      const escaped = query.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+      return new RegExp(escaped, caseSensitive ? "g" : "gi");
+    }
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * 对高亮区间排序并合并重叠区间。
+ */
+function mergeRanges(highlights: Array<[number, number]>): Array<[number, number]> {
+  if (highlights.length === 0) return [];
+  const sorted = [...highlights].sort((a, b) => a[0] - b[0]);
+  const merged: Array<[number, number]> = [sorted[0]];
+  for (let i = 1; i < sorted.length; i++) {
+    const [s, e] = sorted[i];
+    if (s <= merged[merged.length - 1][1]) {
+      merged[merged.length - 1][1] = Math.max(merged[merged.length - 1][1], e);
+    } else {
+      merged.push([s, e]);
+    }
+  }
+  return merged;
+}
+
+/**
  * 将匹配片段中的非空格字符用 <mark> 高亮，空格保持原样。
  */
 function highlightNonSpaces(matched: string, keyStart: number): React.ReactNode[] {
@@ -42,31 +91,8 @@ export function highlightText(
 ): React.ReactNode {
   if (!text || !query) return text;
 
-  // 构建匹配正则
-  let regex: RegExp;
-  try {
-    if (query.startsWith("/") && query.endsWith("/") && query.length > 2) {
-      // /regex/ 包裹模式
-      const pattern = query.slice(1, -1);
-      regex = new RegExp(pattern, caseSensitive ? "g" : "gi");
-    } else if (useRegex) {
-      // 正则 toggle 开启：query 直接作为正则
-      regex = new RegExp(query, caseSensitive ? "g" : "gi");
-    } else if (fuzzy && query.includes(" ")) {
-      // 模糊匹配：空格分隔多关键词，每个独立高亮
-      const tokens = query.split(/\s+/).filter(Boolean);
-      if (tokens.length === 0) return text;
-      const escaped = tokens.map(t => t.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"));
-      regex = new RegExp(`(${escaped.join("|")})`, caseSensitive ? "g" : "gi");
-    } else {
-      // 普通文本匹配（含空格时作为整体匹配）
-      const escaped = query.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
-      regex = new RegExp(escaped, caseSensitive ? "g" : "gi");
-    }
-  } catch {
-    // 无效正则，不高亮
-    return text;
-  }
+  const regex = buildHighlightRegex(query, caseSensitive, fuzzy, useRegex);
+  if (!regex) return text;
 
   const parts: React.ReactNode[] = [];
   let lastIndex = 0;
@@ -151,15 +177,7 @@ function renderLineWithHighlights(
   const nodes: React.ReactNode[] = [];
   let lastPos = 0;
   let k = key;
-  const sorted = [...highlights].sort((a, b) => a[0] - b[0]);
-  const merged: Array<[number, number]> = [];
-  for (const [s, e] of sorted) {
-    if (merged.length > 0 && s <= merged[merged.length - 1][1]) {
-      merged[merged.length - 1][1] = Math.max(merged[merged.length - 1][1], e);
-    } else {
-      merged.push([s, e]);
-    }
-  }
+  const merged = mergeRanges(highlights);
   for (const [start, end] of merged) {
     if (start > lastPos) {
       nodes.push(text.slice(lastPos, start));
@@ -279,7 +297,10 @@ export function highlightHexdump(
         hexHighlights.get(lineIdx)!.push([absStart, absEnd]);
       }
     }
-  } else {
+  }
+
+  // ASCII 列匹配：非 hex 查询直接走此分支；hex 查询未命中时 fallback 到此分支
+  if (!matchInHex || hexHighlights.size === 0) {
     const escaped = query.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
     const flags = caseSensitive ? "g" : "gi";
     let regex: RegExp;
@@ -301,8 +322,30 @@ export function highlightHexdump(
     }
   }
 
+  // 地址前缀列匹配：在每行的 prefix 部分搜索（如 "7cf8b8e800:"）
+  const prefixHighlights: Map<number, Array<[number, number]>> = new Map();
+  {
+    const escaped = query.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+    const flags = caseSensitive ? "g" : "gi";
+    let regex: RegExp | null = null;
+    try { regex = new RegExp(escaped, flags); } catch { /* skip */ }
+    if (regex) {
+      for (let li = 0; li < hexLines.length; li++) {
+        const hl = hexLines[li];
+        regex.lastIndex = 0;
+        let m: RegExpExecArray | null;
+        while ((m = regex.exec(hl.prefix)) !== null) {
+          if (m[0].length === 0) { regex.lastIndex++; continue; }
+          if (!prefixHighlights.has(li)) prefixHighlights.set(li, []);
+          prefixHighlights.get(li)!.push([m.index, m.index + m[0].length]);
+        }
+      }
+    }
+  }
+
   const resultNodes: React.ReactNode[] = [];
   let globalKey = 0;
+  let hexLineCounter = 0;
 
   for (let pi = 0; pi < parsed.length; pi++) {
     if (pi > 0) resultNodes.push("\n");
@@ -315,10 +358,11 @@ export function highlightHexdump(
         resultNodes.push(<React.Fragment key={`t${pi}`}>{highlighted}</React.Fragment>);
       }
     } else {
-      const lineIdx = hexLines.indexOf(item.data);
+      const lineIdx = hexLineCounter++;
       const hexHL = hexHighlights.get(lineIdx) ?? [];
       const ascHL = asciiHighlights.get(lineIdx) ?? [];
-      const allHL = [...hexHL, ...ascHL];
+      const prefHL = prefixHighlights.get(lineIdx) ?? [];
+      const allHL = [...prefHL, ...hexHL, ...ascHL];
       if (allHL.length === 0) {
         resultNodes.push(lines[item.data.lineIndex]);
       } else {
@@ -330,4 +374,254 @@ export function highlightHexdump(
   }
 
   return <>{resultNodes}</>;
+}
+
+// ── HTML 字符串版本（用于 dangerouslySetInnerHTML，避免大文本 React 元素爆炸） ──
+
+const MARK_STYLE_STR = 'background:transparent;color:rgba(255,210,0,1);border-radius:0;padding:0';
+
+function escapeHTML(text: string): string {
+  return text.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;");
+}
+
+/**
+ * highlightText 的 HTML 字符串版本。
+ * 返回带 <mark> 标签的 HTML 字符串，用于 dangerouslySetInnerHTML。
+ */
+export function highlightTextHTML(
+  text: string,
+  query: string,
+  caseSensitive: boolean = false,
+  fuzzy: boolean = false,
+  useRegex: boolean = false,
+): string {
+  if (!text || !query) return escapeHTML(text ?? "");
+
+  const regex = buildHighlightRegex(query, caseSensitive, fuzzy, useRegex);
+  if (!regex) return escapeHTML(text);
+
+  const parts: string[] = [];
+  let lastIndex = 0;
+  let match: RegExpExecArray | null;
+
+  regex.lastIndex = 0;
+  while ((match = regex.exec(text)) !== null) {
+    if (match[0].length === 0) { regex.lastIndex++; continue; }
+    if (match.index > lastIndex) {
+      parts.push(escapeHTML(text.slice(lastIndex, match.index)));
+    }
+    // 高亮匹配部分，空格不包裹 mark
+    const matched = match[0];
+    const segments = matched.split(/( +)/);
+    for (const seg of segments) {
+      if (!seg) continue;
+      if (/^ +$/.test(seg)) {
+        parts.push(seg);
+      } else {
+        parts.push(`<mark style="${MARK_STYLE_STR}">${escapeHTML(seg)}</mark>`);
+      }
+    }
+    lastIndex = regex.lastIndex;
+  }
+
+  if (parts.length === 0) return escapeHTML(text);
+  if (lastIndex < text.length) {
+    parts.push(escapeHTML(text.slice(lastIndex)));
+  }
+  return parts.join("");
+}
+
+/**
+ * highlightHexdump 的 HTML 字符串版本。
+ * 返回带 <mark> 标签的 HTML 字符串，用于 dangerouslySetInnerHTML。
+ */
+export function highlightHexdumpHTML(
+  text: string,
+  query: string,
+  caseSensitive: boolean,
+  fuzzy: boolean = false,
+  useRegex: boolean = false,
+): string {
+  if (!text || !query) return escapeHTML(text ?? "");
+
+  const lines = text.split("\n");
+  const parsed: Array<{ type: "hex"; data: HexdumpLine } | { type: "text"; line: string; lineIndex: number }> = [];
+  const hexLines: HexdumpLine[] = [];
+
+  for (let i = 0; i < lines.length; i++) {
+    const hd = parseHexdumpLine(lines[i], i);
+    if (hd) {
+      parsed.push({ type: "hex", data: hd });
+      hexLines.push(hd);
+    } else {
+      parsed.push({ type: "text", line: lines[i], lineIndex: i });
+    }
+  }
+
+  if (hexLines.length === 0) {
+    return highlightTextHTML(text, query, caseSensitive, fuzzy, useRegex);
+  }
+
+  // 正则模式：每行独立高亮
+  if (useRegex || (query.startsWith("/") && query.endsWith("/") && query.length > 2)) {
+    const resultParts: string[] = [];
+    for (let pi = 0; pi < parsed.length; pi++) {
+      if (pi > 0) resultParts.push("\n");
+      const item = parsed[pi];
+      const line = item.type === "text" ? item.line : lines[item.data.lineIndex];
+      resultParts.push(highlightTextHTML(line, query, caseSensitive, fuzzy, useRegex));
+    }
+    return resultParts.join("");
+  }
+
+  const hexStreamParts: string[] = [];
+  const byteMap: Array<{ lineIdx: number; localByteIdx: number }> = [];
+  let asciiStream = "";
+  const asciiMap: Array<{ lineIdx: number; localCharIdx: number }> = [];
+
+  for (let li = 0; li < hexLines.length; li++) {
+    const hl = hexLines[li];
+    const bytes = hl.hexPart.split(/\s+/).filter(Boolean);
+    for (let bi = 0; bi < bytes.length; bi++) {
+      byteMap.push({ lineIdx: li, localByteIdx: bi });
+    }
+    hexStreamParts.push(bytes.join(" "));
+    for (let ci = 0; ci < hl.asciiPart.length; ci++) {
+      asciiMap.push({ lineIdx: li, localCharIdx: ci });
+    }
+    asciiStream += hl.asciiPart;
+  }
+
+  const hexStream = hexStreamParts.join(" ");
+  const hexHighlights: Map<number, Array<[number, number]>> = new Map();
+  const asciiHighlights: Map<number, Array<[number, number]>> = new Map();
+
+  let matchQuery = query;
+  let matchInHex = false;
+
+  if (isSpacedHex(query)) {
+    matchInHex = true;
+    matchQuery = query;
+  } else if (isCompactHex(query)) {
+    matchInHex = true;
+    matchQuery = compactToSpaced(query);
+  }
+
+  if (matchInHex) {
+    const escaped = matchQuery.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+    const flags = caseSensitive ? "g" : "gi";
+    let regex: RegExp;
+    try { regex = new RegExp(escaped, flags); } catch { return highlightTextHTML(text, query, caseSensitive, fuzzy, useRegex); }
+
+    regex.lastIndex = 0;
+    let m: RegExpExecArray | null;
+    while ((m = regex.exec(hexStream)) !== null) {
+      if (m[0].length === 0) { regex.lastIndex++; continue; }
+      const startByteIdx = Math.floor(m.index / 3);
+      const endByteIdx = Math.ceil((m.index + m[0].length) / 3);
+      for (let bi = startByteIdx; bi < endByteIdx && bi < byteMap.length; bi++) {
+        const { lineIdx, localByteIdx } = byteMap[bi];
+        const hl = hexLines[lineIdx];
+        const byteCharStart = localByteIdx * 3;
+        const byteCharEnd = byteCharStart + 2;
+        if (!hexHighlights.has(lineIdx)) hexHighlights.set(lineIdx, []);
+        hexHighlights.get(lineIdx)!.push([hl.hexStart + byteCharStart, hl.hexStart + byteCharEnd]);
+      }
+    }
+  }
+
+  if (!matchInHex || hexHighlights.size === 0) {
+    const escaped = query.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+    const flags = caseSensitive ? "g" : "gi";
+    let regex: RegExp;
+    try { regex = new RegExp(escaped, flags); } catch { return highlightTextHTML(text, query, caseSensitive, fuzzy, useRegex); }
+
+    regex.lastIndex = 0;
+    let m: RegExpExecArray | null;
+    while ((m = regex.exec(asciiStream)) !== null) {
+      if (m[0].length === 0) { regex.lastIndex++; continue; }
+      for (let ci = m.index; ci < m.index + m[0].length && ci < asciiMap.length; ci++) {
+        const { lineIdx, localCharIdx } = asciiMap[ci];
+        const hl = hexLines[lineIdx];
+        const absPos = hl.asciiStart + localCharIdx;
+        if (!asciiHighlights.has(lineIdx)) asciiHighlights.set(lineIdx, []);
+        asciiHighlights.get(lineIdx)!.push([absPos, absPos + 1]);
+      }
+    }
+  }
+
+  // 地址前缀列匹配
+  const prefixHighlights: Map<number, Array<[number, number]>> = new Map();
+  {
+    const escaped = query.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+    const flags = caseSensitive ? "g" : "gi";
+    let regex: RegExp | null = null;
+    try { regex = new RegExp(escaped, flags); } catch { /* skip */ }
+    if (regex) {
+      for (let li = 0; li < hexLines.length; li++) {
+        const hl = hexLines[li];
+        regex.lastIndex = 0;
+        let m: RegExpExecArray | null;
+        while ((m = regex.exec(hl.prefix)) !== null) {
+          if (m[0].length === 0) { regex.lastIndex++; continue; }
+          if (!prefixHighlights.has(li)) prefixHighlights.set(li, []);
+          prefixHighlights.get(li)!.push([m.index, m.index + m[0].length]);
+        }
+      }
+    }
+  }
+
+  // 构建 HTML 字符串
+  const resultParts: string[] = [];
+  let hexLineCounter = 0;
+
+  for (let pi = 0; pi < parsed.length; pi++) {
+    if (pi > 0) resultParts.push("\n");
+    const item = parsed[pi];
+    if (item.type === "text") {
+      resultParts.push(highlightTextHTML(item.line, query, caseSensitive, fuzzy));
+    } else {
+      const lineIdx = hexLineCounter++;
+      const hexHL = hexHighlights.get(lineIdx) ?? [];
+      const ascHL = asciiHighlights.get(lineIdx) ?? [];
+      const prefHL = prefixHighlights.get(lineIdx) ?? [];
+      const allHL = [...prefHL, ...hexHL, ...ascHL];
+      if (allHL.length === 0) {
+        resultParts.push(escapeHTML(lines[item.data.lineIndex]));
+      } else {
+        resultParts.push(renderLineWithHighlightsHTML(lines[item.data.lineIndex], allHL));
+      }
+    }
+  }
+
+  return resultParts.join("");
+}
+
+function renderLineWithHighlightsHTML(text: string, highlights: Array<[number, number]>): string {
+  if (highlights.length === 0) return escapeHTML(text);
+
+  const merged = mergeRanges(highlights);
+  const parts: string[] = [];
+  let lastPos = 0;
+  for (const [start, end] of merged) {
+    if (start > lastPos) {
+      parts.push(escapeHTML(text.slice(lastPos, start)));
+    }
+    const hlText = text.slice(start, end);
+    // 空格不高亮
+    const segments = hlText.split(/( +)/);
+    for (const seg of segments) {
+      if (!seg) continue;
+      if (/^ +$/.test(seg)) {
+        parts.push(seg);
+      } else {
+        parts.push(`<mark style="${MARK_STYLE_STR}">${escapeHTML(seg)}</mark>`);
+      }
+    }
+    lastPos = end;
+  }
+  if (lastPos < text.length) {
+    parts.push(escapeHTML(text.slice(lastPos)));
+  }
+  return parts.join("");
 }

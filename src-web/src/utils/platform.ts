@@ -15,3 +15,8 @@ export function altKey(key: string): string {
 export function isModKey(e: KeyboardEvent | React.KeyboardEvent): boolean {
   return isMac ? e.metaKey : e.ctrlKey;
 }
+
+// Canvas 超采样 DPR：向上取整到整数，消除分数缩放（如 Linux 1.25x/1.5x）导致的字形模糊和像素对齐偏差
+export function canvasDpr(): number {
+  return Math.ceil(window.devicePixelRatio || 1);
+}

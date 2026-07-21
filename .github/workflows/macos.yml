@@ -1,0 +1,83 @@
+name: macOS Bundles
+
+on:
+  push:
+    branches:
+      - main
+  workflow_dispatch:
+
+concurrency:
+  group: macos-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  build-macos:
+    name: ${{ matrix.label }}
+    runs-on: macos-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - target: aarch64-apple-darwin
+            label: macOS-arm64
+          - target: x86_64-apple-darwin
+            label: macOS-x64
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+
+      - name: Cache Rust build
+        uses: Swatinem/rust-cache@v2
+        with:
+          key: ${{ matrix.target }}
+
+      - name: Install Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+          cache-dependency-path: src-web/package-lock.json
+
+      - name: Install frontend dependencies
+        working-directory: src-web
+        run: npm ci
+
+      - name: Install Tauri CLI
+        run: cargo install tauri-cli --version "^2" --locked
+
+      - name: Build Tauri bundle
+        run: cargo tauri build --target ${{ matrix.target }} --ci
+        env:
+          TAURI_SIGNING_PRIVATE_KEY: ""
+
+      - name: Ad-hoc sign app and rebuild DMG
+        shell: bash
+        run: |
+          set -euo pipefail
+          APP_PATH="target/${{ matrix.target }}/release/bundle/macos/Trace UI.app"
+          DMG_DIR="target/${{ matrix.target }}/release/bundle/dmg"
+          DMG_PATH="$DMG_DIR/TraceUI-${{ matrix.target }}.dmg"
+
+          test -d "$APP_PATH"
+          mkdir -p "$DMG_DIR"
+          codesign --force --deep --sign - "$APP_PATH"
+          codesign --verify --deep --strict --verbose=2 "$APP_PATH"
+          rm -f "$DMG_DIR"/*.dmg
+          hdiutil create -volname "Trace UI" -srcfolder "$APP_PATH" -ov -format UDZO "$DMG_PATH"
+          test -s "$DMG_PATH"
+
+      - name: Upload DMG
+        uses: actions/upload-artifact@v4
+        with:
+          name: TraceUI-${{ matrix.label }}-${{ github.sha }}
+          path: target/${{ matrix.target }}/release/bundle/dmg/*.dmg
+          if-no-files-found: error
+          retention-days: 14

@@ -1,0 +1,14 @@
+[package]
+name = "trace-cli"
+version = "0.1.0"
+edition = "2021"
+
+[[bin]]
+name = "trace-cli"
+path = "src/main.rs"
+
+[dependencies]
+trace-core = { path = "../trace-core" }
+trace-mcp = { path = "../trace-mcp" }
+tokio = { version = "1", features = ["macros", "rt-multi-thread"] }
+anyhow = "1"

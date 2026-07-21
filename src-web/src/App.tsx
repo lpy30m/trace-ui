@@ -27,9 +27,12 @@ import { useFoldState } from "./hooks/useFoldState";
 import { useFuncRenameStore } from "./hooks/useFuncRenameStore";
 import { usePreferences, saveSessionSnapshot, loadSessionSnapshot } from "./hooks/usePreferences";
 import { useHighlights } from "./hooks/useHighlights";
+import { useMcpStatus } from "./hooks/useMcpStatus";
+import McpIndicator from "./components/McpIndicator";
 import type { SessionSnapshot } from "./hooks/usePreferences";
-import type { CallTreeNodeDto, SearchMatch, CryptoScanResult } from "./types/trace";
+import type { CallTreeNodeDto, SearchMatch, CryptoScanResult, HashMatchResult, StringRecordDto } from "./types/trace";
 import type { SearchOptions } from "./components/SearchBar";
+import { explainTaintError } from "./utils/taintError";
 
 const PANEL_SIZES: Record<string, { width: number; height: number }> = {
   memory: { width: 1100, height: 390 },
@@ -61,6 +64,7 @@ const PANEL_WINDOW_TITLES: Record<string, string> = {
 function App() {
   const { toasts, showToast } = useToast();
   const { preferences, updatePreferences } = usePreferences();
+  const { mcpStatus, startMcp, stopMcp } = useMcpStatus();
 
   const {
     totalLines,
@@ -73,7 +77,7 @@ function App() {
     openTrace,
     closeTrace,
     getLines,
-    searchResults,
+    matchSeqs,
     searchQuery,
     isSearching,
     searchStatus,
@@ -103,6 +107,7 @@ function App() {
   const [stringsScanningSessionId, setStringsScanningSessionId] = useState<string | null>(null);
   const [cryptoScanningSessionId, setCryptoScanningSessionId] = useState<string | null>(null);
   const [cryptoResults, setCryptoResults] = useState<CryptoScanResult | null>(null);
+  const cryptoCache = useRef<Map<string, CryptoScanResult>>(new Map());
   const [leftTab, setLeftTab] = useState<"tree" | "list">("tree");
   const [callInfoExpandRequest, setCallInfoExpandRequest] = useState<{ seq: number; nonce: number } | null>(null);
 
@@ -112,8 +117,23 @@ function App() {
   // 文件切换时加载高亮
   useEffect(() => { loadForFile(filePath); }, [filePath, loadForFile]);
 
-  // 切换 session 时清除 crypto 结果
-  useEffect(() => { setCryptoResults(null); }, [activeSessionId]);
+  // 切换 session 时恢复 crypto 缓存（前端内存 → 后端磁盘）
+  useEffect(() => {
+    if (!activeSessionId) { setCryptoResults(null); return; }
+    const cached = cryptoCache.current.get(activeSessionId);
+    if (cached) { setCryptoResults(cached); return; }
+    // 尝试从后端磁盘缓存加载
+    invoke<CryptoScanResult | null>("load_crypto_cache", { sessionId: activeSessionId })
+      .then(result => {
+        if (result) {
+          cryptoCache.current.set(activeSessionId, result);
+          setCryptoResults(result);
+        } else {
+          setCryptoResults(null);
+        }
+      })
+      .catch(() => setCryptoResults(null));
+  }, [activeSessionId]);
 
   // 控制 TraceTable 滚动对齐方式：back/forward 用 "auto"，其他用 "center"
   const scrollAlignRef = useRef<"center" | "auto" | "end">("center");
@@ -387,6 +407,15 @@ function App() {
     }
   }, []); // eslint-disable-line react-hooks/exhaustive-deps
 
+  // 启动 MCP 服务器（根据偏好设置）
+  useEffect(() => {
+    if (preferences.autoStartMcp) {
+      const port = preferences.mcpPort ?? undefined;
+      startMcp(port).catch(console.error);
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- 仅启动时执行一次
+  }, []);
+
   // 启动时恢复上次的会话
   const hasAutoOpened = useRef(false);
   // 待恢复的 taintConfig：filePath → TaintConfig
@@ -533,16 +562,20 @@ function App() {
   }, [foldState.ensureSeqVisible]);
 
   const callInfoExpandNonceRef = useRef(0);
-  const handleJumpToSearchMatch = useCallback((match: SearchMatch) => {
+  const handleJumpToSearchMatch = useCallback((seq: number, hasCallInfo: boolean) => {
     callInfoExpandNonceRef.current += 1;
-    if (match.call_info) {
-      setCallInfoExpandRequest({ seq: match.seq, nonce: callInfoExpandNonceRef.current });
+    if (hasCallInfo) {
+      setCallInfoExpandRequest({ seq, nonce: callInfoExpandNonceRef.current });
     } else {
       setCallInfoExpandRequest({ seq: -1, nonce: callInfoExpandNonceRef.current });
     }
-    foldState.ensureSeqVisible(match.seq);
-    navigationStore.navigate(match.seq);
+    foldState.ensureSeqVisible(seq);
+    navigationStore.navigate(seq);
   }, [foldState.ensureSeqVisible]);
+
+  const handleJumpToSearchMatchFromTab = useCallback((match: SearchMatch) => {
+    handleJumpToSearchMatch(match.seq, !!match.call_info);
+  }, [handleJumpToSearchMatch]);
 
   // 搜索路由：Search 已浮动时转发，否则本地搜索
   const handleSearch = useCallback(async (query: string, options?: SearchOptions) => {
@@ -577,6 +610,80 @@ function App() {
     }
   }, [activeSessionId, setHasStringIndexMap, showToast]);
 
+  const traceDigestInput = useCallback(async (match: HashMatchResult) => {
+    const sourceSpec = `mem:${match.addr}:${match.byteLen}@${match.seq + 1}`;
+    try {
+      const result = await slice.runSlice([sourceSpec], undefined, match.seq, match.seq, true);
+      const warningCount = result?.warnings.length ?? 0;
+      showToast(
+        warningCount > 0
+          ? `Taint analysis completed with ${warningCount} warning${warningCount === 1 ? "" : "s"}`
+          : "Taint analysis completed",
+        { type: warningCount > 0 ? "info" : "success" },
+      );
+      handleJumpToSeq(match.seq);
+    } catch (error) {
+      const info = explainTaintError(error);
+      showToast(`${info.title}. ${info.suggestion}`, { duration: 6000, type: "error" });
+    }
+  }, [handleJumpToSeq, showToast, slice.runSlice]);
+
+  const traceStringCreation = useCallback(async (record: StringRecordDto) => {
+    const sourceSpec = `mem:${record.addr}:${record.byte_len}@${record.seq + 1}`;
+    try {
+      const result = await slice.runSlice([sourceSpec], undefined, record.seq, record.seq, true);
+      const warningCount = result?.warnings.length ?? 0;
+      showToast(
+        warningCount > 0
+          ? `String trace completed with ${warningCount} warning${warningCount === 1 ? "" : "s"}`
+          : "String creation traced",
+        { type: warningCount > 0 ? "info" : "success" },
+      );
+      handleJumpToSeq(record.seq);
+    } catch (error) {
+      const info = explainTaintError(error);
+      showToast(`${info.title}. ${info.suggestion}`, { duration: 6000, type: "error" });
+    }
+  }, [handleJumpToSeq, showToast, slice.runSlice]);
+
+  const traceStringCreationRef = useRef(traceStringCreation);
+  traceStringCreationRef.current = traceStringCreation;
+
+  useEffect(() => {
+    const unlisten = listen<StringRecordDto>("action:trace-string-creation", (event) => {
+      traceStringCreationRef.current(event.payload);
+    });
+    return () => { unlisten.then(fn => fn()); };
+  }, []);
+
+  const traceMemoryValue = useCallback(async (request: { addr: string; size: number; seq: number }) => {
+    const sourceSpec = `mem:${request.addr}:${request.size}@${request.seq + 1}`;
+    try {
+      const result = await slice.runSlice([sourceSpec], undefined, request.seq, request.seq, true);
+      const warningCount = result?.warnings.length ?? 0;
+      showToast(
+        warningCount > 0
+          ? `Memory trace completed with ${warningCount} warning${warningCount === 1 ? "" : "s"}`
+          : "Memory value traced",
+        { type: warningCount > 0 ? "info" : "success" },
+      );
+      handleJumpToSeq(request.seq);
+    } catch (error) {
+      const info = explainTaintError(error);
+      showToast(`${info.title}. ${info.suggestion}`, { duration: 6000, type: "error" });
+    }
+  }, [handleJumpToSeq, showToast, slice.runSlice]);
+
+  const traceMemoryValueRef = useRef(traceMemoryValue);
+  traceMemoryValueRef.current = traceMemoryValue;
+
+  useEffect(() => {
+    const unlisten = listen<{ addr: string; size: number; seq: number }>("action:trace-memory-value", (event) => {
+      traceMemoryValueRef.current(event.payload);
+    });
+    return () => { unlisten.then(fn => fn()); };
+  }, []);
+
   const cancelScanStrings = useCallback(async () => {
     if (!stringsScanningSessionId) return;
     await invoke("cancel_scan_strings", { sessionId: stringsScanningSessionId });
@@ -597,11 +704,19 @@ function App() {
 
   const scanCrypto = useCallback(async () => {
     if (!activeSessionId) return;
+    // 如果前端已有缓存，直接使用
+    const cached = cryptoCache.current.get(activeSessionId);
+    if (cached) {
+      setCryptoResults(cached);
+      showToast(`Found ${cached.matches.length} crypto constants (${cached.algorithms_found.length} algorithms) (cached)`, { type: "success" });
+      return;
+    }
     setCryptoScanningSessionId(activeSessionId);
     setCryptoResults(null);
     try {
       const result = await invoke<CryptoScanResult>("scan_crypto", { sessionId: activeSessionId });
       setCryptoResults(result);
+      cryptoCache.current.set(activeSessionId, result);
       showToast(`Found ${result.matches.length} crypto constants (${result.algorithms_found.length} algorithms)`, { type: "success" });
     } catch (e) {
       console.warn("scan_crypto:", e);
@@ -703,8 +818,10 @@ function App() {
   filePathRef.current = filePath;
   const handleJumpToSeqRef = useRef(handleJumpToSeq);
   handleJumpToSeqRef.current = handleJumpToSeq;
-  const searchResultsRef = useRef(searchResults);
-  searchResultsRef.current = searchResults;
+  const matchSeqsRef = useRef(matchSeqs);
+  matchSeqsRef.current = matchSeqs;
+  const handleJumpToSearchMatchRef = useRef(handleJumpToSearchMatch);
+  handleJumpToSearchMatchRef.current = handleJumpToSearchMatch;
   const searchQueryRef = useRef(searchQuery);
   searchQueryRef.current = searchQuery;
   const searchStatusRef = useRef(searchStatus);
@@ -729,9 +846,9 @@ function App() {
         filePath: filePathRef.current,
       });
       // search 面板就绪时同步已有搜索结果
-      if (e.payload.panel === "search" && searchResultsRef.current.length > 0) {
+      if (e.payload.panel === "search" && matchSeqsRef.current.length > 0) {
         emit("sync:search-state", {
-          results: searchResultsRef.current,
+          matchSeqs: matchSeqsRef.current,
           query: searchQueryRef.current,
           status: searchStatusRef.current,
           totalMatches: searchTotalMatchesRef.current,
@@ -744,13 +861,8 @@ function App() {
       handleJumpToSeqRef.current(e.payload.seq);
     }));
 
-    unlisteners.push(listen<{ seq: number }>("action:jump-to-search-match", (e) => {
-      const match = searchResultsRef.current.find((item) => item.seq === e.payload.seq);
-      if (match) {
-        handleJumpToSearchMatch(match);
-      } else {
-        handleJumpToSeqRef.current(e.payload.seq);
-      }
+    unlisteners.push(listen<{ seq: number; hasCallInfo: boolean }>("action:jump-to-search-match", (e) => {
+      handleJumpToSearchMatchRef.current(e.payload.seq, e.payload.hasCallInfo);
     }));
 
     // View in Memory：跳转到对应 seq（确定内存时间点）
@@ -758,9 +870,14 @@ function App() {
       handleJumpToSeqRef.current(e.payload.seq);
     }));
 
+    // 依赖树窗口请求跳转到指定行
+    unlisteners.push(listen<{ sessionId: string; seq: number }>("dep-tree:jump-to-seq", (e) => {
+      handleJumpToSeqRef.current(e.payload.seq);
+    }));
+
     // 浮动搜索窗口同步搜索结果回主窗口
-    unlisteners.push(listen<{ results: SearchMatch[]; query: string; status: string; totalMatches: number }>("sync:search-results-back", (e) => {
-      syncSearchStateRef.current(e.payload.results, e.payload.query, e.payload.status, e.payload.totalMatches);
+    unlisteners.push(listen<{ matchSeqs: number[]; query: string; status: string; totalMatches: number }>("sync:search-results-back", (e) => {
+      syncSearchStateRef.current(e.payload.matchSeqs, e.payload.query, e.payload.status, e.payload.totalMatches);
     }));
 
     return () => { unlisteners.forEach(p => p.then(fn => fn())); };
@@ -991,9 +1108,9 @@ function App() {
         }}
         onScanStrings={scanStrings}
         hasStringIndex={hasStringIndexMap.get(activeSessionId ?? "") ?? false}
-        stringsScanning={stringsScanningSessionId === activeSessionId}
+        stringsScanning={stringsScanningSessionId != null && stringsScanningSessionId === activeSessionId}
         onScanCrypto={scanCrypto}
-        cryptoScanning={cryptoScanningSessionId === activeSessionId}
+        cryptoScanning={cryptoScanningSessionId != null && cryptoScanningSessionId === activeSessionId}
         isPhase2Ready={isPhase2Ready}
         onClearCache={() => {
           clearRecent();
@@ -1086,7 +1203,7 @@ function App() {
                     }))}
                   activeSessionId={activeSessionId}
                   onActivate={setActiveSessionId}
-                  onClose={(sid) => { callTreeCache.current.delete(sid); saveTaintBeforeClose(sid); closeSession(sid).catch(console.error); }}
+                  onClose={(sid) => { callTreeCache.current.delete(sid); cryptoCache.current.delete(sid); saveTaintBeforeClose(sid); closeSession(sid).catch(console.error); }}
                   onFloat={handleFloatSession}
                 />
                 <div style={{ flex: 1, overflow: "hidden" }}>
@@ -1119,6 +1236,8 @@ function App() {
                     scrollTrigger={scrollTrigger}
                     consumedSeqs={consumedSeqs}
                     autoExpandCallInfoRequest={callInfoExpandRequest}
+                    preferences={preferences}
+                    updatePreferences={updatePreferences}
                   />
                 </div>
               </div>
@@ -1126,13 +1245,13 @@ function App() {
             <Separator style={{ height: 3 }} />
             <Panel defaultSize={35} minSize={15} panelRef={bottomPanelRef}>
               <TabPanel
-                searchResults={searchResults}
+                matchSeqs={matchSeqs}
                 searchQuery={searchQuery}
                 isSearching={isSearching}
                 searchStatus={searchStatus}
                 searchTotalMatches={searchTotalMatches}
                 onJumpToSeq={handleJumpToSeq}
-                onJumpToSearchMatch={handleJumpToSearchMatch}
+                onJumpToSearchMatch={handleJumpToSearchMatchFromTab}
                 isPhase2Ready={isPhase2Ready}
                 floatedPanels={floatedPanels}
                 onFloat={handleFloat}
@@ -1143,10 +1262,18 @@ function App() {
                 isSlicing={slice.isSlicing}
                 sliceDuration={slice.sliceDuration}
                 sliceError={slice.sliceError}
-                stringsScanning={stringsScanningSessionId === activeSessionId}
+                stringsScanning={stringsScanningSessionId != null && stringsScanningSessionId === activeSessionId}
+                hasStringIndex={hasStringIndexMap.get(activeSessionId ?? "") ?? false}
                 cryptoResults={cryptoResults}
-                cryptoScanning={cryptoScanningSessionId === activeSessionId}
+                cryptoScanning={cryptoScanningSessionId != null && cryptoScanningSessionId === activeSessionId}
+                onScanStrings={scanStrings}
+                onTraceDigestInput={traceDigestInput}
+                onTraceStringCreation={traceStringCreation}
+                onTraceMemory={traceMemoryValue}
                 onSearch={handleSearch}
+                showSoName={preferences.showSoName}
+                showAbsAddress={preferences.showAbsAddress}
+                addrColorHighlight={preferences.addrColorHighlight}
               />
             </Panel>
           </Group>
@@ -1176,7 +1303,15 @@ function App() {
             </>
           )}
         </span>
-        <StatusBarSelection />
+        <span style={{ display: "flex", alignItems: "center", gap: 4 }}>
+          <McpIndicator
+            mcpStatus={mcpStatus}
+            onStart={startMcp}
+            onStop={stopMcp}
+            configuredPort={preferences.mcpPort}
+          />
+          <StatusBarSelection />
+        </span>
       </div>
       {taintDialogSeq !== null && (
         <TaintConfigDialog
@@ -1194,7 +1329,8 @@ function App() {
               setScrollTrigger(c => c + 1);
               navigationStore.navigate(sourceSeq);
             } catch (e) {
-              showToast(`Taint analysis failed: ${e}`, { duration: 5000, type: "error" });
+              const info = explainTaintError(e);
+              showToast(`${info.title}. ${info.suggestion}`, { duration: 6000, type: "error" });
             }
           }}
           onClose={() => setTaintDialogSeq(null)}

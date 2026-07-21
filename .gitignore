@@ -19,13 +19,28 @@ Thumbs.db
 
 # Tauri generated
 gen/schemas/
+src-tauri/gen/schemas/
 
-# Claude
+# Claude Code (keep the reusable trace-analysis skill in the repository)
 CLAUDE.md
+.claude/*
+!.claude/skills/
+.claude/skills/*
+!.claude/skills/trace-analysis/
+!.claude/skills/trace-analysis/**
 
-# Docs（仅允许 docs/images/）
+# Superpowers
+.superpowers/
+
+# AI workflow artifacts
+task_plan.md
+findings.md
+progress.md
+
+# Docs（仅允许 docs/images/ 和 mcp-guide.md）
 docs/*
 !docs/images/
+!docs/mcp-guide.md
 
 # Trace files
 *.trace

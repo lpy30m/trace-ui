@@ -1,4 +1,4 @@
-import React, { useState, useCallback, useRef } from "react";
+import React, { useState, useCallback, useMemo, useRef } from "react";
 import { createPortal } from "react-dom";
 
 interface TaintSource {
@@ -25,13 +25,28 @@ const REGISTERS = [
   "x24", "x25", "x26", "x27", "x28", "x29", "x30", "sp",
 ];
 
-const MEM_SIZES = ["1", "2", "4", "8", "16"];
+const MEM_SIZES = ["1", "2", "4", "8", "16", "20", "32", "48", "64"];
 
 function normalizeReg(token: string): string {
   const t = token.toLowerCase();
   const wMatch = t.match(/^w(\d+)$/);
   if (wMatch) return `x${wMatch[1]}`;
   return t;
+}
+
+function formatMemoryRange(address: string, sizeText: string): string {
+  const normalized = address.trim();
+  const size = Number.parseInt(sizeText, 10);
+  if (!normalized || !Number.isInteger(size) || size < 1) {
+    return `${normalized || "Memory address required"} (${sizeText || "?"} bytes)`;
+  }
+  try {
+    const start = BigInt(normalized.toLowerCase().startsWith("0x") ? normalized : `0x${normalized}`);
+    const end = start + BigInt(size) - 1n;
+    return `0x${start.toString(16)}..0x${end.toString(16)} (${size} bytes)`;
+  } catch {
+    return `${normalized} (${size} bytes)`;
+  }
 }
 
 function createDefaultSources(
@@ -116,14 +131,25 @@ export default function TaintConfigDialog({
   onClose,
 }: Props) {
   const nextIdRef = useRef(1);
+  const [mode, setMode] = useState<"simple" | "advanced">("simple");
+  const [simpleRange, setSimpleRange] = useState<"full" | "recent">("full");
+  const [simpleScope, setSimpleScope] = useState<"focused" | "broad">("focused");
   const [startSeq, setStartSeq] = useState("1");
   const [endSeq, setEndSeq] = useState(String(seq + 1));
   const [controlDep, setControlDep] = useState(true);
+  const [configError, setConfigError] = useState<string | null>(null);
   const [controlTip, setControlTip] = useState<{ x: number; y: number } | null>(null);
   const controlTipTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const [sources, setSources] = useState<TaintSource[]>(() =>
     createDefaultSources(nextIdRef, defaultDefs, defaultMemAddr)
   );
+
+  const sourceSummaries = useMemo(() => sources.map((source) => {
+    if (source.type === "register") {
+      return `Register ${source.register.toUpperCase()} at line ${(seq + 1).toLocaleString()}`;
+    }
+    return `${formatMemoryRange(source.memAddr, source.memSize)} at line ${(seq + 1).toLocaleString()}`;
+  }), [seq, sources]);
 
   const addSource = useCallback(() => {
     setSources(prev => [
@@ -158,25 +184,55 @@ export default function TaintConfigDialog({
         specs.push(`reg:${src.register}@${sourceLineNum}`);
       } else {
         const addr = src.memAddr.trim();
-        if (!addr) continue;
-        const sizeNum = parseInt(src.memSize, 10);
+        if (!addr) {
+          setConfigError("Enter a memory address for every memory source.");
+          return;
+        }
+        const sizeNum = Number.parseInt(src.memSize, 10);
+        if (!Number.isInteger(sizeNum) || sizeNum < 1 || sizeNum > 4096) {
+          setConfigError("Memory size must be an integer from 1 to 4096 bytes.");
+          return;
+        }
         specs.push(`mem:${addr}:${sizeNum}@${sourceLineNum}`);
       }
     }
 
-    if (specs.length > 0) {
-      // Start Seq / End Seq 纯粹是范围过滤器，与污点源行号分离
-      const parsedStartSeq = startSeq.trim() ? parseInt(startSeq.trim(), 10) : undefined;
-      const validStartSeq = parsedStartSeq && !isNaN(parsedStartSeq) && parsedStartSeq >= 1
-        ? parsedStartSeq - 1
-        : undefined;
-      const parsedEndSeq = endSeq.trim() ? parseInt(endSeq.trim(), 10) : undefined;
-      const validEndSeq = parsedEndSeq && !isNaN(parsedEndSeq) && parsedEndSeq >= 1
-        ? parsedEndSeq - 1
-        : undefined;
-      onExecute(specs, validStartSeq, validEndSeq, !controlDep);
+    if (specs.length === 0) {
+      setConfigError("Add at least one analysis target.");
+      return;
     }
-  }, [seq, startSeq, endSeq, sources, controlDep, onExecute]);
+
+    let validStartSeq: number | undefined;
+    let validEndSeq: number | undefined;
+    let dataOnly: boolean;
+    if (mode === "simple") {
+      const startLine = simpleRange === "recent" ? Math.max(1, sourceLineNum - 99_999) : 1;
+      validStartSeq = startLine - 1;
+      validEndSeq = seq;
+      dataOnly = simpleScope === "focused";
+    } else {
+      const parsedStartSeq = startSeq.trim() ? Number.parseInt(startSeq.trim(), 10) : undefined;
+      const parsedEndSeq = endSeq.trim() ? Number.parseInt(endSeq.trim(), 10) : undefined;
+      if (parsedStartSeq !== undefined && (!Number.isInteger(parsedStartSeq) || parsedStartSeq < 1 || parsedStartSeq > totalLines)) {
+        setConfigError(`Start line must be between 1 and ${totalLines.toLocaleString()}.`);
+        return;
+      }
+      if (parsedEndSeq !== undefined && (!Number.isInteger(parsedEndSeq) || parsedEndSeq < 1 || parsedEndSeq > totalLines)) {
+        setConfigError(`End line must be between 1 and ${totalLines.toLocaleString()}.`);
+        return;
+      }
+      if (parsedStartSeq !== undefined && parsedEndSeq !== undefined && parsedStartSeq > parsedEndSeq) {
+        setConfigError("Start line cannot be after the end line.");
+        return;
+      }
+      validStartSeq = parsedStartSeq !== undefined ? parsedStartSeq - 1 : undefined;
+      validEndSeq = parsedEndSeq !== undefined ? parsedEndSeq - 1 : undefined;
+      dataOnly = !controlDep;
+    }
+
+    setConfigError(null);
+    onExecute(specs, validStartSeq, validEndSeq, dataOnly);
+  }, [seq, startSeq, endSeq, sources, controlDep, mode, simpleRange, simpleScope, totalLines, onExecute]);
 
   const handleKeyDown = useCallback((e: React.KeyboardEvent) => {
     if (e.key === "Escape") {
@@ -205,17 +261,19 @@ export default function TaintConfigDialog({
         style={{
           background: "var(--bg-dialog)",
           border: "1px solid var(--border-color)",
-          borderRadius: 12,
+          borderRadius: 8,
           boxShadow: "0 12px 40px rgba(0,0,0,0.5)",
-          padding: "28px 32px",
+          padding: "22px 26px",
           width: Math.min(560, window.innerWidth - 40),
+          maxHeight: "calc(100vh - 40px)",
+          overflowY: "auto",
         }}
         onClick={(e) => e.stopPropagation()}
       >
         {/* ── Title + Close ── */}
-        <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 24 }}>
+        <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 16 }}>
           <div style={{ fontSize: 16, fontWeight: 700, color: "var(--text-primary)" }}>
-            Taint Analysis Configuration
+            Backward Taint Analysis
           </div>
           <button
             onClick={onClose}
@@ -231,10 +289,82 @@ export default function TaintConfigDialog({
           </button>
         </div>
 
+        <div style={{ display: "flex", marginBottom: 18, border: "1px solid var(--border-color)", borderRadius: 4, overflow: "hidden" }}>
+          {(["simple", "advanced"] as const).map((item) => (
+            <button
+              key={item}
+              type="button"
+              onClick={() => { setMode(item); setConfigError(null); }}
+              style={{
+                flex: 1, height: 30, border: "none",
+                borderRight: item === "simple" ? "1px solid var(--border-color)" : "none",
+                background: mode === item ? "var(--bg-selected)" : "var(--bg-input)",
+                color: mode === item ? "var(--text-primary)" : "var(--text-secondary)",
+                cursor: "pointer", fontSize: 12, fontFamily: "inherit", textTransform: "capitalize",
+              }}
+            >
+              {item}
+            </button>
+          ))}
+        </div>
+
+        {mode === "simple" ? (
+          <>
+            <div style={{ ...cardStyle, marginBottom: 12 }}>
+              <label style={labelStyle}>Target</label>
+              <div style={{ display: "flex", flexDirection: "column", gap: 5, color: "var(--text-primary)", fontSize: 13 }}>
+                {sourceSummaries.map((summary, index) => <div key={`${summary}-${index}`}>{summary}</div>)}
+              </div>
+              <button
+                type="button"
+                onClick={() => setMode("advanced")}
+                style={{ marginTop: 8, padding: 0, border: "none", background: "transparent", color: "var(--text-address)", cursor: "pointer", fontSize: 11, fontFamily: "inherit" }}
+              >
+                Edit target
+              </button>
+            </div>
+
+            <div style={{ ...cardStyle, marginBottom: 12 }}>
+              <label style={labelStyle}>History range</label>
+              <select
+                value={simpleRange}
+                onChange={(event) => setSimpleRange(event.target.value as "full" | "recent")}
+                style={{ ...fieldSelectStyle, fontSize: 13 }}
+              >
+                <option value="full">Trace start to line {(seq + 1).toLocaleString()}</option>
+                <option value="recent">Last {Math.min(100_000, seq + 1).toLocaleString()} lines</option>
+              </select>
+            </div>
+
+            <div style={{ ...cardStyle, marginBottom: 22 }}>
+              <label style={labelStyle}>Result scope</label>
+              <div style={{ display: "flex", border: "1px solid var(--border-color)", borderRadius: 4, overflow: "hidden" }}>
+                {(["focused", "broad"] as const).map((scope) => (
+                  <button
+                    key={scope}
+                    type="button"
+                    onClick={() => setSimpleScope(scope)}
+                    style={{
+                      flex: 1, height: 32, border: "none",
+                      borderRight: scope === "focused" ? "1px solid var(--border-color)" : "none",
+                      background: simpleScope === scope ? "var(--bg-selected)" : "transparent",
+                      color: simpleScope === scope ? "var(--text-primary)" : "var(--text-secondary)",
+                      cursor: "pointer", fontFamily: "inherit", fontSize: 12, textTransform: "capitalize",
+                    }}
+                    title={scope === "focused" ? "Follow data dependencies only" : "Also include branch and control-flow influence"}
+                  >
+                    {scope}
+                  </button>
+                ))}
+              </div>
+            </div>
+          </>
+        ) : (
+        <>
         {/* ── Start Seq / End Seq ── */}
         <div style={{ display: "flex", gap: 12, marginBottom: 24 }}>
           <div style={{ ...cardStyle, flex: 1 }}>
-            <label style={labelStyle}>Start Seq</label>
+            <label style={labelStyle}>Start Line</label>
             <input
               type="text"
               value={startSeq}
@@ -243,7 +373,7 @@ export default function TaintConfigDialog({
             />
           </div>
           <div style={{ ...cardStyle, flex: 1 }}>
-            <label style={labelStyle}>End Seq</label>
+            <label style={labelStyle}>End Line</label>
             <input
               type="text"
               value={endSeq}
@@ -276,14 +406,14 @@ export default function TaintConfigDialog({
               onChange={(e) => setControlDep(e.target.checked)}
               style={{ accentColor: "var(--btn-primary)" }}
             />
-            Control
+            Include control flow
           </label>
         </div>
 
         {/* ── Taint Sources Header ── */}
         <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 12 }}>
           <div style={{ fontSize: 14, fontWeight: 600, color: "var(--text-primary)" }}>
-            Taint Sources
+            Analysis Sources
           </div>
           <button
             onClick={addSource}
@@ -299,7 +429,7 @@ export default function TaintConfigDialog({
               cursor: "pointer",
             }}
           >
-            + Add Symbol
+            + Add Source
           </button>
         </div>
 
@@ -345,18 +475,21 @@ export default function TaintConfigDialog({
                       placeholder="0x..."
                       style={{ ...fieldInputStyle, fontSize: 14 }}
                     />
+                    <div style={{ marginTop: 4, color: "var(--text-secondary)", fontSize: 10, whiteSpace: "nowrap" }}>
+                      {formatMemoryRange(src.memAddr, src.memSize)}
+                    </div>
                   </div>
-                  <div style={{ width: 60, flexShrink: 0 }}>
-                    <label style={labelStyle}>Size</label>
-                    <select
+                  <div style={{ width: 76, flexShrink: 0 }}>
+                    <label style={labelStyle}>Bytes</label>
+                    <input
+                      type="number"
+                      min={1}
+                      max={4096}
+                      list="taint-memory-sizes"
                       value={src.memSize}
                       onChange={(e) => updateSource(src.id, { memSize: e.target.value })}
-                      style={{ ...fieldSelectStyle, fontSize: 14 }}
-                    >
-                      {MEM_SIZES.map((s) => (
-                        <option key={s} value={s}>{s}</option>
-                      ))}
-                    </select>
+                      style={{ ...fieldInputStyle, fontSize: 14 }}
+                    />
                   </div>
                 </>
               )}
@@ -381,7 +514,18 @@ export default function TaintConfigDialog({
               </button>
             </div>
           ))}
+          <datalist id="taint-memory-sizes">
+            {MEM_SIZES.map((size) => <option key={size} value={size} />)}
+          </datalist>
         </div>
+        </>
+        )}
+
+        {configError && (
+          <div style={{ marginBottom: 12, color: "var(--reg-changed)", fontSize: 11, lineHeight: 1.5 }}>
+            {configError}
+          </div>
+        )}
 
         {/* ── Buttons ── */}
         <div style={{ display: "flex", justifyContent: "center", gap: 10 }}>

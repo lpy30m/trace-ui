@@ -2,10 +2,13 @@ import React, { useState, useEffect, useRef, useCallback } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { emit, emitTo, listen } from "@tauri-apps/api/event";
 import { WebviewWindow } from "@tauri-apps/api/webviewWindow";
-import { useVirtualizerNoSync } from "../hooks/useVirtualizerNoSync";
+import { useVirtualScroll } from "../hooks/useVirtualScroll";
 import { useResizableColumn } from "../hooks/useResizableColumn";
+import VirtualScrollArea from "./VirtualScrollArea";
+import Minimap, { MINIMAP_WIDTH } from "./Minimap";
 import ContextMenu, { ContextMenuItem } from "./ContextMenu";
-import type { StringRecordDto, StringsResult, StringXRef } from "../types/trace";
+import type { StringRecordDto, StringsResult, StringXRef, TraceLine } from "../types/trace";
+import type { ResolvedRow } from "../hooks/useFoldState";
 
 
 const PAGE_SIZE = 500;
@@ -18,9 +21,11 @@ interface Props {
   isPhase2Ready: boolean;
   onJumpToSeq: (seq: number) => void;
   stringsScanning?: boolean;
+  onTraceCreation?: (record: StringRecordDto) => Promise<void> | void;
 }
 
-export default function StringsPanel({ sessionId, isPhase2Ready, onJumpToSeq, stringsScanning }: Props) {
+export default function StringsPanel({ sessionId, isPhase2Ready, onJumpToSeq, stringsScanning, onTraceCreation }: Props) {
+  const rwCol = useResizableColumn(36, "left", 28, "strings:rw");
   const seqCol = useResizableColumn(70, "right", 40, "strings:seq");
   const addrCol = useResizableColumn(110, "right", 50, "strings:addr");
   const encCol = useResizableColumn(56, "left", 30, "strings:enc");
@@ -32,66 +37,85 @@ export default function StringsPanel({ sessionId, isPhase2Ready, onJumpToSeq, st
     display: "flex", alignItems: "center", justifyContent: "center",
   };
 
-  const [strings, setStrings] = useState<StringRecordDto[]>([]);
   const [total, setTotal] = useState(0);
   const [minLen, setMinLen] = useState(4);
   const [search, setSearch] = useState("");
-  const [loading, setLoading] = useState(false);
   const [selectedIdx, setSelectedIdx] = useState<number | null>(null);
   const [contextMenu, setContextMenu] = useState<{ x: number; y: number; record: StringRecordDto } | null>(null);
+  const [pageVersion, setPageVersion] = useState(0);
+  const loading = total === 0 && pageVersion === 0;
 
   const [searchHistory, setSearchHistory] = useState<string[]>(() => {
     try { return JSON.parse(localStorage.getItem(HISTORY_KEY) || "[]"); } catch { return []; }
   });
   const [showHistory, setShowHistory] = useState(false);
-  const historyBlurTimer = useRef<ReturnType<typeof setTimeout>>(undefined);
   const searchWrapperRef = useRef<HTMLDivElement>(null);
-
-  const parentRef = useRef<HTMLDivElement>(null);
   const searchTimerRef = useRef<ReturnType<typeof setTimeout>>(undefined);
   const minLenTimerRef = useRef<ReturnType<typeof setTimeout>>(undefined);
-  const pendingRef = useRef(0);
 
-  // ── 数据加载 ──
-  const loadStrings = useCallback(async (offset: number, reset: boolean) => {
+  // ── 按页缓存（方案 C：index→seq 映射与详情分离） ──
+  const pageCacheRef = useRef<Map<number, StringRecordDto[]>>(new Map());
+  const loadingPagesRef = useRef<Set<number>>(new Set());
+
+  const getRecordAtIndex = useCallback((index: number): StringRecordDto | undefined => {
+    const page = Math.floor(index / PAGE_SIZE);
+    const records = pageCacheRef.current.get(page);
+    return records?.[index % PAGE_SIZE];
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [pageVersion]);
+
+  const loadPage = useCallback(async (pageNum: number) => {
+    if (pageCacheRef.current.has(pageNum) || loadingPagesRef.current.has(pageNum)) return;
     if (!sessionId || !isPhase2Ready) return;
-    const reqId = ++pendingRef.current;
-    if (reset) setLoading(true);
-
+    loadingPagesRef.current.add(pageNum);
     try {
       const result = await invoke<StringsResult>("get_strings", {
         sessionId,
         minLen,
-        offset,
+        offset: pageNum * PAGE_SIZE,
         limit: PAGE_SIZE,
         search: search || null,
       });
-      if (reqId !== pendingRef.current) return;
-      if (reset) {
-        setStrings(result.strings);
-      } else {
-        setStrings(prev => [...prev, ...result.strings]);
-      }
+      pageCacheRef.current.set(pageNum, result.strings);
       setTotal(result.total);
+      setPageVersion(v => v + 1);
     } catch (e) {
       console.error("get_strings failed:", e);
     } finally {
-      if (reqId === pendingRef.current) setLoading(false);
+      loadingPagesRef.current.delete(pageNum);
     }
   }, [sessionId, isPhase2Ready, minLen, search]);
 
+  const ensureRange = useCallback((startIdx: number, endIdx: number) => {
+    if (total === 0) return;
+    const startPage = Math.floor(Math.max(0, startIdx) / PAGE_SIZE);
+    const endPage = Math.floor(Math.min(endIdx, total - 1) / PAGE_SIZE);
+    for (let p = startPage; p <= endPage; p++) {
+      loadPage(p);
+    }
+  }, [total, loadPage]);
+
+  // ── 初始加载 + 搜索/minLen 变化时重置缓存 ──
   useEffect(() => {
-    loadStrings(0, true);
-  }, [loadStrings]);
+    pageCacheRef.current.clear();
+    loadingPagesRef.current.clear();
+    setPageVersion(v => v + 1);
+    setTotal(0);
+    loadPage(0);
+  }, [loadPage]);
 
   // ── scanning 结束后自动刷新 ──
   const prevScanningRef = useRef(false);
   useEffect(() => {
     if (prevScanningRef.current && !stringsScanning) {
-      loadStrings(0, true);
+      pageCacheRef.current.clear();
+      loadingPagesRef.current.clear();
+      setPageVersion(v => v + 1);
+      setTotal(0);
+      loadPage(0);
     }
     prevScanningRef.current = !!stringsScanning;
-  }, [stringsScanning, loadStrings]);
+  }, [stringsScanning, loadPage]);
 
   // ── 搜索 debounce ──
   const [searchInput, setSearchInput] = useState("");
@@ -150,21 +174,32 @@ export default function StringsPanel({ sessionId, isPhase2Ready, onJumpToSeq, st
   }, [minLenInput]);
 
   // ── 虚拟滚动 ──
-  const virtualizer = useVirtualizerNoSync({
-    count: strings.length,
-    getScrollElement: () => parentRef.current,
-    estimateSize: () => ROW_HEIGHT,
-    overscan: 20,
-  });
+  const vs = useVirtualScroll({ totalCount: total, rowHeight: ROW_HEIGHT, overscan: 20 });
 
-  // ── 无限滚动加载更多 ──
-  const virtualItems = virtualizer.getVirtualItems();
-  const lastVirtualItemIndex = virtualItems.length > 0 ? virtualItems[virtualItems.length - 1].index : -1;
+  // ── 按需加载：可视范围变化时确保对应页已加载 ──
   useEffect(() => {
-    if (lastVirtualItemIndex >= strings.length - 50 && strings.length < total && !loading) {
-      loadStrings(strings.length, false);
+    if (total === 0) return;
+    ensureRange(vs.startIdx, vs.endIdx);
+  }, [vs.startIdx, vs.endIdx, total, ensureRange]);
+
+  // ── Minimap 采样页预加载：逐页加载 minimap 需要的稀疏页 ──
+  useEffect(() => {
+    if (total === 0 || vs.containerHeight === 0) return;
+    const mmRows = Math.floor(vs.containerHeight / 2); // MINIMAP_ROW_HEIGHT = 2
+    if (mmRows === 0) return;
+    const neededPages = new Set<number>();
+    for (let i = 0; i < mmRows; i++) {
+      const vi = Math.round(i * total / mmRows);
+      if (vi >= total) break;
+      neededPages.add(Math.floor(vi / PAGE_SIZE));
     }
-  }, [lastVirtualItemIndex, strings.length, total, loading, loadStrings]);
+    for (const p of neededPages) {
+      if (!pageCacheRef.current.has(p) && !loadingPagesRef.current.has(p)) {
+        loadPage(p);
+        return; // 每次只加载一页，加载完成后 pageVersion 变化会重新触发此 effect
+      }
+    }
+  }, [total, vs.containerHeight, pageVersion, loadPage]);
 
   // ── 点击行：选中 + 跳转 trace 表 ──
   const handleRowClick = useCallback((record: StringRecordDto) => {
@@ -250,6 +285,65 @@ export default function StringsPanel({ sessionId, isPhase2Ready, onJumpToSeq, st
       console.error("get_string_xrefs failed:", e);
     }
   }, [contextMenu, sessionId]);
+
+  const handleTraceCreation = useCallback(() => {
+    if (!contextMenu) return;
+    const record = contextMenu.record;
+    setContextMenu(null);
+    if (onTraceCreation) {
+      onTraceCreation(record);
+    } else {
+      emit("action:trace-string-creation", record);
+    }
+  }, [contextMenu, onTraceCreation]);
+
+  // ── Minimap 回调 ──
+  const handleScrollbarScroll = useCallback((row: number) => {
+    vs.scrollToRow(row);
+  }, [vs.scrollToRow]);
+
+  const resolveVirtualIndex = useCallback((vi: number): ResolvedRow => {
+    const record = getRecordAtIndex(vi);
+    return { type: "line", seq: record?.seq ?? -1 } as ResolvedRow;
+  }, [getRecordAtIndex]);
+
+  const getLines = useCallback(async (seqs: number[]): Promise<TraceLine[]> => {
+    const seqMap = new Map<number, StringRecordDto>();
+    for (const [, records] of pageCacheRef.current) {
+      for (const r of records) seqMap.set(r.seq, r);
+    }
+    return seqs
+      .map(seq => seqMap.get(seq))
+      .filter((r): r is StringRecordDto => r !== undefined)
+      .map(r => ({
+        seq: r.seq,
+        address: r.addr,
+        so_offset: r.addr,
+        so_name: null,
+        disasm: r.content,
+        changes: r.rw,
+        reg_before: "",
+        mem_rw: r.rw,
+        mem_addr: null,
+        mem_size: null,
+        raw: "",
+        call_info: null,
+      }));
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [pageVersion]);
+
+  const selectedSeq = selectedIdx != null
+    ? getRecordAtIndex(
+        // 找到 selectedIdx 对应的全局 index —— 向缓存中查找
+        (() => {
+          for (const [pageNum, records] of pageCacheRef.current) {
+            const idx = records.findIndex(r => r.idx === selectedIdx);
+            if (idx >= 0) return pageNum * PAGE_SIZE + idx;
+          }
+          return -1;
+        })()
+      )?.seq ?? null
+    : null;
 
   if (!isPhase2Ready) {
     return (
@@ -353,6 +447,8 @@ export default function StringsPanel({ sessionId, isPhase2Ready, onJumpToSeq, st
         borderBottom: "1px solid var(--border-color)",
         fontSize: "var(--font-size-sm)", color: "var(--text-secondary)", flexShrink: 0,
       }}>
+        <span style={{ width: rwCol.width, flexShrink: 0 }}>R/W</span>
+        <div onMouseDown={rwCol.onMouseDown} style={HANDLE_STYLE}><div style={{ width: 1, height: "100%", background: "var(--border-color)" }} /></div>
         <span style={{ width: seqCol.width, flexShrink: 0 }}>Seq</span>
         <div onMouseDown={seqCol.onMouseDown} style={HANDLE_STYLE}><div style={{ width: 1, height: "100%", background: "var(--border-color)" }} /></div>
         <span style={{ width: addrCol.width, flexShrink: 0 }}>Address</span>
@@ -364,55 +460,91 @@ export default function StringsPanel({ sessionId, isPhase2Ready, onJumpToSeq, st
         <span style={{ width: lenCol.width, flexShrink: 0 }}>Len</span>
         <div onMouseDown={xrefsCol.onMouseDown} style={HANDLE_STYLE}><div style={{ width: 1, height: "100%", background: "var(--border-color)" }} /></div>
         <span style={{ width: xrefsCol.width, flexShrink: 0 }}>XRefs</span>
+        <span style={{ width: MINIMAP_WIDTH + 12, flexShrink: 0 }}></span>
       </div>
 
       {/* 虚拟滚动列表 */}
-      <div ref={parentRef} style={{ flex: 1, overflow: "auto" }}>
-        <div style={{ height: virtualizer.getTotalSize(), width: "100%", position: "relative" }}>
-          {virtualItems.map(virtualRow => {
-            const record = strings[virtualRow.index];
-            if (!record) return null;
-            const isSelected = record.idx === selectedIdx;
+      <VirtualScrollArea
+        containerRef={vs.containerRef}
+        containerStyle={vs.containerStyle}
+        containerHeight={vs.containerHeight}
+        scrollbarProps={vs.scrollbarProps}
+        gutterWidth={MINIMAP_WIDTH + 12}
+        gutterContent={
+          <Minimap
+            virtualTotalRows={total}
+            visibleRows={vs.visibleRows}
+            currentRow={vs.currentRow}
+            maxRow={vs.maxRow}
+            height={vs.containerHeight}
+            onScroll={handleScrollbarScroll}
+            resolveVirtualIndex={resolveVirtualIndex}
+            getLines={getLines}
+            selectedSeq={selectedSeq}
+            rightOffset={12}
+            showSoName={false}
+            showAbsAddress={false}
+          />
+        }
+      >
+        {Array.from({ length: Math.max(0, vs.endIdx - vs.startIdx + 1) }, (_, i) => {
+          const index = vs.startIdx + i;
+          const record = getRecordAtIndex(index);
+          if (!record) {
             return (
               <div
-                key={virtualRow.key}
-                data-index={virtualRow.index}
-                ref={virtualizer.measureElement}
-                onClick={() => handleRowClick(record)}
-                onDoubleClick={() => handleRowDoubleClick(record)}
-                onContextMenu={e => handleContextMenu(e, record)}
+                key={index}
                 style={{
                   position: "absolute", top: 0, left: 0, width: "100%", height: ROW_HEIGHT,
-                  transform: `translateY(${virtualRow.start}px)`,
+                  transform: `translateY(${vs.getItemY(index)}px)`,
                   display: "flex", alignItems: "center", padding: "0 8px",
-                  cursor: "pointer", fontSize: "var(--font-size-sm)",
-                  background: isSelected ? "var(--bg-selected)"
-                    : virtualRow.index % 2 === 0 ? "var(--bg-row-even)" : "var(--bg-row-odd)",
+                  background: index % 2 === 0 ? "var(--bg-row-even)" : "var(--bg-row-odd)",
                 }}
-                onMouseEnter={(e) => { if (!isSelected) e.currentTarget.style.background = "var(--bg-hover)"; }}
-                onMouseLeave={(e) => { if (!isSelected) e.currentTarget.style.background = virtualRow.index % 2 === 0 ? "var(--bg-row-even)" : "var(--bg-row-odd)"; }}
               >
-                <span style={{ width: seqCol.width, flexShrink: 0, color: "var(--syntax-number)" }}>{record.seq + 1}</span>
-                <span style={{ width: 8, flexShrink: 0 }} />
-                <span style={{ width: addrCol.width, flexShrink: 0, color: "var(--syntax-literal)" }}>{record.addr}</span>
-                <span style={{ width: 8, flexShrink: 0 }} />
-                <span style={{
-                  flex: 1, color: "var(--syntax-string)",
-                  overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap",
-                }}>"{record.content}"</span>
-                <span style={{ width: 8, flexShrink: 0 }} />
-                <span style={{ width: encCol.width, flexShrink: 0, color: "var(--text-secondary)" }}>{record.encoding}</span>
-                <span style={{ width: 8, flexShrink: 0 }} />
-                <span style={{ width: lenCol.width, flexShrink: 0 }}>{record.byte_len}</span>
-                <span style={{ width: 8, flexShrink: 0 }} />
-                <span style={{ width: xrefsCol.width, flexShrink: 0, color: record.xref_count > 0 ? "var(--syntax-keyword)" : "var(--text-secondary)" }}>
-                  {record.xref_count}
-                </span>
+                <span style={{ color: "var(--text-disabled, #555)", fontSize: "var(--font-size-sm)" }}>Loading...</span>
               </div>
             );
-          })}
-        </div>
-      </div>
+          }
+          const isSelected = record.idx === selectedIdx;
+          return (
+            <div
+              key={index}
+              onClick={() => handleRowClick(record)}
+              onDoubleClick={() => handleRowDoubleClick(record)}
+              onContextMenu={e => handleContextMenu(e, record)}
+              style={{
+                position: "absolute", top: 0, left: 0, width: "100%", height: ROW_HEIGHT,
+                transform: `translateY(${vs.getItemY(index)}px)`,
+                display: "flex", alignItems: "center", padding: "0 8px",
+                cursor: "pointer", fontSize: "var(--font-size-sm)",
+                background: isSelected ? "var(--bg-selected)"
+                  : index % 2 === 0 ? "var(--bg-row-even)" : "var(--bg-row-odd)",
+              }}
+              onMouseEnter={(e) => { if (!isSelected) e.currentTarget.style.background = "var(--bg-hover)"; }}
+              onMouseLeave={(e) => { if (!isSelected) e.currentTarget.style.background = index % 2 === 0 ? "var(--bg-row-even)" : "var(--bg-row-odd)"; }}
+            >
+              <span style={{ width: rwCol.width, flexShrink: 0, color: record.rw === "R" ? "var(--syntax-keyword)" : "var(--syntax-number)" }}>{record.rw}</span>
+              <span style={{ width: 8, flexShrink: 0 }} />
+              <span style={{ width: seqCol.width, flexShrink: 0, color: "var(--syntax-number)" }}>{record.seq + 1}</span>
+              <span style={{ width: 8, flexShrink: 0 }} />
+              <span style={{ width: addrCol.width, flexShrink: 0, color: "var(--syntax-literal)" }}>{record.addr}</span>
+              <span style={{ width: 8, flexShrink: 0 }} />
+              <span style={{
+                flex: 1, color: "var(--syntax-string)",
+                overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap",
+              }}>"{record.content}"</span>
+              <span style={{ width: 8, flexShrink: 0 }} />
+              <span style={{ width: encCol.width, flexShrink: 0, color: "var(--text-secondary)" }}>{record.encoding}</span>
+              <span style={{ width: 8, flexShrink: 0 }} />
+              <span style={{ width: lenCol.width, flexShrink: 0 }}>{record.byte_len}</span>
+              <span style={{ width: 8, flexShrink: 0 }} />
+              <span style={{ width: xrefsCol.width, flexShrink: 0, color: record.xref_count > 0 ? "var(--syntax-keyword)" : "var(--text-secondary)" }}>
+                {record.xref_count}
+              </span>
+            </div>
+          );
+        })}
+      </VirtualScrollArea>
 
       {loading && (
         <div style={{
@@ -443,6 +575,7 @@ export default function StringsPanel({ sessionId, isPhase2Ready, onJumpToSeq, st
           <ContextMenuItem label="View Detail" onClick={handleViewDetail} />
           <ContextMenuItem label="View in Memory" onClick={handleViewInMemory} />
           <ContextMenuItem label="Show XRefs" onClick={handleShowXrefs} />
+          <ContextMenuItem label="Trace Creation" onClick={handleTraceCreation} />
           <ContextMenuItem label="Copy String" onClick={handleCopyString} />
           <ContextMenuItem label="Copy Address" onClick={handleCopyAddr} />
         </ContextMenu>

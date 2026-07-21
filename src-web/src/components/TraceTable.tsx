@@ -3,6 +3,7 @@ import { createPortal } from "react-dom";
 import { invoke } from "@tauri-apps/api/core";
 import { emitTo, listen } from "@tauri-apps/api/event";
 import { WebviewWindow } from "@tauri-apps/api/webviewWindow";
+import { openDepTreeWindow } from "../utils/openDepTreeWindow";
 import type { TraceLine, CallTreeNodeDto, DefUseChain } from "../types/trace";
 import type { HighlightInfo } from "../hooks/useHighlights";
 import { useResizableColumn } from "../hooks/useResizableColumn";
@@ -12,8 +13,11 @@ import Minimap, { MINIMAP_WIDTH } from "./Minimap";
 import { getSharedColors, getTraceTableColors } from "../utils/canvasColors";
 import { HIGHLIGHT_COLORS } from "../utils/highlightColors";
 import ContextMenu, { ContextMenuItem, ContextMenuSeparator } from "./ContextMenu";
+import { MenuDropdown, MenuItem } from "./MenuDropdown";
 import { useSelectedSeq } from "../stores/selectedSeqStore";
 import { useThemeId } from "../stores/themeStore";
+import type { Preferences } from "../hooks/usePreferences";
+import { canvasDpr } from "../utils/platform";
 
 const ROW_HEIGHT = 22;
 const ARROW_COL_WIDTH = 20;
@@ -62,11 +66,24 @@ function canvasTokenColor(token: string, isFirst: boolean): string {
 function lineToTextColumns(
   seq: number,
   line: TraceLine | undefined,
+  showSoName = false,
+  showAbsAddress = false,
 ): { memRW: string; seqText: string; addr: string; disasm: string; regBefore: string; changes: string } {
+  let addr = "";
+  if (line) {
+    const parts: string[] = [];
+    if (showSoName && line.so_name) parts.push(`[${line.so_name}]`);
+    if (showAbsAddress && line.address) {
+      parts.push(`${line.address}!${line.so_offset}`);
+    } else {
+      parts.push(line.so_offset || line.address);
+    }
+    addr = parts.join(" ");
+  }
   return {
     memRW: line?.mem_rw === "W" || line?.mem_rw === "R" ? line.mem_rw : "",
     seqText: String(seq + 1),
-    addr: line?.address ?? "",
+    addr,
     disasm: line?.disasm ?? "",
     regBefore: line?.reg_before ?? "",
     changes: line?.changes ?? "",
@@ -104,6 +121,8 @@ interface Props {
   scrollTrigger?: number;
   consumedSeqs?: number[];
   autoExpandCallInfoRequest?: { seq: number; nonce: number } | null;
+  preferences: Preferences;
+  updatePreferences: (updates: Partial<Preferences>) => void;
 }
 
 interface ArrowState {
@@ -159,6 +178,8 @@ export default function TraceTable({
   scrollTrigger = 0,
   consumedSeqs,
   autoExpandCallInfoRequest = null,
+  preferences,
+  updatePreferences,
 }: Props) {
   const selectedSeqFromStore = useSelectedSeq();
   const selectedSeq = selectedSeqProp !== undefined ? selectedSeqProp : selectedSeqFromStore;
@@ -183,9 +204,43 @@ export default function TraceTable({
   }
 
   const seqCol = useResizableColumn(DEFAULT_SEQ_WIDTH, "right", 50);
-  const addrCol = useResizableColumn(DEFAULT_ADDR_WIDTH, "right", 50);
+  const addrCol = useResizableColumn(DEFAULT_ADDR_WIDTH, "right", 50, "addr");
   const disasmCol = useResizableColumn(320, "right", 200);
   const regBeforeCol = useResizableColumn(420, "right", 40);
+
+  // 根据可见行中最长地址文本估算合适列宽
+  const estimateAddrWidth = useCallback((showSo: boolean, showAbs: boolean) => {
+    const CHAR_W = 7.2; // 12px JetBrains Mono 等宽字符宽度
+    const PAD = 16; // 左右边距
+    let maxLen = 0;
+    for (const line of visibleLines.values()) {
+      let len = (line.so_offset || line.address || "").length;
+      if (showSo && line.so_name) len += line.so_name.length + 3; // [name] + space
+      if (showAbs && line.address) len += line.address.length + 1; // addr + !
+      if (len > maxLen) maxLen = len;
+    }
+    return Math.max(DEFAULT_ADDR_WIDTH, Math.ceil(maxLen * CHAR_W + PAD));
+  }, [visibleLines]);
+
+  const handleToggleSoName = useCallback(() => {
+    const next = !preferences.showSoName;
+    updatePreferences({
+      showSoName: next,
+      ...(next ? {} : { showAbsAddress: false }),
+    });
+    addrCol.setWidth(next ? estimateAddrWidth(true, false) : DEFAULT_ADDR_WIDTH);
+  }, [preferences.showSoName, updatePreferences, estimateAddrWidth]);
+
+  const handleToggleAbsAddress = useCallback(() => {
+    if (!preferences.showSoName) return;
+    const next = !preferences.showAbsAddress;
+    updatePreferences({ showAbsAddress: next });
+    addrCol.setWidth(next ? estimateAddrWidth(true, true) : estimateAddrWidth(true, false));
+  }, [preferences.showSoName, preferences.showAbsAddress, updatePreferences, estimateAddrWidth]);
+
+  const handleToggleAddrColor = useCallback(() => {
+    updatePreferences({ addrColorHighlight: !preferences.addrColorHighlight });
+  }, [preferences.addrColorHighlight, updatePreferences]);
 
   // 动态列位置（每个拖动手柄占 8px）
   const HANDLE_W = 8;
@@ -360,7 +415,11 @@ export default function TraceTable({
     ? taintedSeqs!.length
     : wrappedVirtualTotalRows;
 
-  const finalResolveVirtualIndex = useCallback(
+  // === Seq 排序 ===
+  const [sortOrder, setSortOrder] = useState<"asc" | "desc">("asc");
+  const toggleSortOrder = useCallback(() => setSortOrder(prev => prev === "asc" ? "desc" : "asc"), []);
+
+  const unsortedResolveVirtualIndex = useCallback(
     (idx: number): ResolvedRow => {
       if (taintFilterActive) {
         const seq = taintedSeqs![idx];
@@ -371,7 +430,7 @@ export default function TraceTable({
     [taintFilterActive, taintedSeqs, wrappedResolveVirtualIndex],
   );
 
-  const finalSeqToVirtualIndex = useCallback(
+  const unsortedSeqToVirtualIndex = useCallback(
     (seq: number): number => {
       if (taintFilterActive) {
         let lo = 0, hi = taintedSeqs!.length - 1;
@@ -388,17 +447,49 @@ export default function TraceTable({
     [taintFilterActive, taintedSeqs, wrappedSeqToVirtualIndex],
   );
 
+  const finalResolveVirtualIndex = useCallback(
+    (idx: number): ResolvedRow => {
+      if (sortOrder === "desc") {
+        return unsortedResolveVirtualIndex(finalVirtualTotalRows - 1 - idx);
+      }
+      return unsortedResolveVirtualIndex(idx);
+    },
+    [sortOrder, unsortedResolveVirtualIndex, finalVirtualTotalRows],
+  );
+
+  const finalSeqToVirtualIndex = useCallback(
+    (seq: number): number => {
+      const vi = unsortedSeqToVirtualIndex(seq);
+      if (sortOrder === "desc") {
+        return finalVirtualTotalRows - 1 - vi;
+      }
+      return vi;
+    },
+    [sortOrder, unsortedSeqToVirtualIndex, finalVirtualTotalRows],
+  );
+
   // === Canvas 核心状态 ===
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const containerRef = useRef<HTMLDivElement>(null);
   const textOverlayRef = useRef<HTMLDivElement>(null);
   const [currentRow, setCurrentRow] = useState(0);
-  // 防抖行号：滚动期间 IPC 和 DOM 重建延迟执行，只有 canvas 重绘使用 currentRow 即时响应
+  // 防抖行号：连续滚动期间 IPC 和 DOM 重建延迟执行，只有 canvas 重绘使用 currentRow 即时响应
+  // 跳转操作通过 flushDebouncedRow 立即同步，绕过 80ms 等待
   const [debouncedRow, setDebouncedRow] = useState(0);
+  const skipDebounceRef = useRef(false);
   useEffect(() => {
+    if (skipDebounceRef.current) {
+      skipDebounceRef.current = false;
+      setDebouncedRow(currentRow);
+      return;
+    }
     const timer = setTimeout(() => setDebouncedRow(currentRow), 80);
     return () => clearTimeout(timer);
   }, [currentRow]);
+  const flushDebouncedRow = useCallback((row: number) => {
+    skipDebounceRef.current = true;
+    setCurrentRow(row);
+  }, []);
   const [canvasSize, setCanvasSize] = useState({ width: 0, height: 0 });
   const [fontReady, setFontReady] = useState(false);
   const hitboxesRef = useRef<TokenHitbox[]>([]);
@@ -407,6 +498,7 @@ export default function TraceTable({
   const rafIdRef = useRef(0);
   const mouseDownPosRef = useRef({ x: 0, y: 0 });
   const hoverRowRef = useRef(-1);
+  const dblClickHighlightRef = useRef("");
 
   // 列宽变化时触发 Canvas 重绘
   const prevSeqW = useRef(seqCol.width);
@@ -598,7 +690,7 @@ export default function TraceTable({
   useLayoutEffect(() => {
     const canvas = canvasRef.current;
     if (!canvas || canvasSize.width === 0) return;
-    const dpr = window.devicePixelRatio || 1;
+    const dpr = canvasDpr();
     const targetW = Math.round(canvasSize.width * dpr);
     const targetH = Math.round(canvasSize.height * dpr);
     // 尺寸未变时跳过：canvas.width/height 赋值即使值相同也会清空画布 + 重新分配 GPU 纹理
@@ -613,21 +705,25 @@ export default function TraceTable({
   }, [canvasSize, isLoaded]);
 
   // === scrollToSeq ===
+  // 跳转操作绕过 debouncedRow 80ms 防抖，立即触发数据加载
   const scrollToSeq = useCallback((seq: number, align: "center" | "auto" | "end") => {
     ensureSeqVisible(seq);
     const vi = finalSeqToVirtualIndex(seq);
     if (align === "center") {
-      setCurrentRow(Math.max(0, Math.min(maxRow, vi - Math.floor(visibleRows / 2))));
+      flushDebouncedRow(Math.max(0, Math.min(maxRow, vi - Math.floor(visibleRows / 2))));
     } else if (align === "end") {
       // 将目标行置于窗口最后一行
-      setCurrentRow(Math.max(0, Math.min(maxRow, vi - visibleRows + 1)));
+      flushDebouncedRow(Math.max(0, Math.min(maxRow, vi - visibleRows + 1)));
     } else {
+      // auto: 已在视口内不滚动，否则居中
+      const target = Math.max(0, Math.min(maxRow, vi - Math.floor(visibleRows / 2)));
       setCurrentRow(prev => {
         if (vi >= prev && vi < prev + visibleRows) return prev;
-        return Math.max(0, Math.min(maxRow, vi - Math.floor(visibleRows / 2)));
+        skipDebounceRef.current = true;
+        return target;
       });
     }
-  }, [ensureSeqVisible, finalSeqToVirtualIndex, maxRow, visibleRows]);
+  }, [ensureSeqVisible, finalSeqToVirtualIndex, maxRow, visibleRows, flushDebouncedRow]);
 
   // === 恢复滚动位置 ===
   useEffect(() => {
@@ -953,6 +1049,11 @@ export default function TraceTable({
     containerRef.current?.focus();
     // 关闭右键菜单
     setCtxMenu(null);
+    // 单击清除双击选词高亮（双击时 detail >= 2，不清除）
+    if (e.detail === 1 && dblClickHighlightRef.current) {
+      dblClickHighlightRef.current = "";
+      dirtyRef.current = true;
+    }
     // 左键拖选准备
     if (e.button === 0) {
       const container = containerRef.current;
@@ -1013,6 +1114,12 @@ export default function TraceTable({
       transparent: true,
     });
   }, []);
+
+  // 打开依赖树浮动窗口（立即创建，只传轻量参数，子窗口自己 invoke 后端）
+  const openDepTree = useCallback((seq: number, target: string) => {
+    if (!sessionId) return;
+    openDepTreeWindow({ sessionId, seq, target: `reg:${target}`, dataOnly: true });
+  }, [sessionId]);
 
   // === Canvas 点击 ===
   const handleCanvasClick = useCallback((e: React.MouseEvent) => {
@@ -1208,7 +1315,7 @@ export default function TraceTable({
     });
   }, [finalSeqToVirtualIndex, highlights]);
 
-  // === 双击选词后去除尾随空格并自动复制 ===
+  // === 双击选词后去除尾随空格并自动复制 + 高亮匹配文本 ===
   const handleOverlayDblClick = useCallback(() => {
     setTimeout(() => {
       const sel = window.getSelection();
@@ -1221,7 +1328,11 @@ export default function TraceTable({
         }
       }
       const finalText = sel.toString().trim();
-      if (finalText) navigator.clipboard.writeText(finalText);
+      if (finalText) {
+        navigator.clipboard.writeText(finalText);
+        dblClickHighlightRef.current = finalText;
+        dirtyRef.current = true;
+      }
     }, 0);
   }, []);
 
@@ -1438,6 +1549,27 @@ export default function TraceTable({
     return [];
   }, [multiSelect, ctrlSelect, selectedSeq, finalResolveVirtualIndex]);
 
+  // 右键菜单：查看依赖树（获取 DEF 寄存器并打开）
+  const handleDepTreeFromMenu = useCallback(async () => {
+    const seqs = getSelectedSeqs();
+    if (seqs.length === 0 || !sessionId) return;
+    const seq = seqs[0];
+    // 如果右键命中了某个寄存器，直接用它
+    const hitReg = ctxRegRef.current;
+    if (hitReg) {
+      openDepTree(seq, hitReg);
+      return;
+    }
+    // 否则查询该行 DEF 寄存器
+    try {
+      const defs = await invoke<string[]>("get_line_def_registers", { sessionId, seq });
+      if (defs.length === 0) return;
+      openDepTree(seq, defs[0]);
+    } catch (e) {
+      console.error("get_line_def_registers failed:", e);
+    }
+  }, [sessionId, getSelectedSeqs, openDepTree]);
+
   // === 复制辅助 ===
   const getSelectedLines = useCallback(async (): Promise<TraceLine[]> => {
     const seqs = getSelectedSeqs();
@@ -1648,6 +1780,23 @@ export default function TraceTable({
       arrowState, visibleRows, maxRow, currentRow, multiSelect, copyAs, getSelectedSeqs,
       onSetHighlight, onToggleStrikethrough, onResetHighlight, onToggleHidden, openCommentEditor, commentEditor, ctrlSelect]);
 
+  // === 双击选词高亮：用高亮颜色重绘匹配子串文字 ===
+  const drawTextMatchHighlight = (
+    ctx: CanvasRenderingContext2D, text: string, x: number, textY: number,
+    charW: number, keyword: string,
+  ) => {
+    if (!keyword || !text) return;
+    const lowerText = text.toLowerCase();
+    const lowerKw = keyword.toLowerCase();
+    let idx = 0;
+    ctx.fillStyle = "#ffff00";
+    while ((idx = lowerText.indexOf(lowerKw, idx)) !== -1) {
+      const hx = x + idx * charW;
+      ctx.fillText(text.slice(idx, idx + keyword.length), hx, textY);
+      idx += keyword.length;
+    }
+  };
+
   // === 主绘制函数 ===
   const drawFrame = useCallback(() => {
     COLORS = getCOLORS(); // 刷新当前主题颜色
@@ -1657,7 +1806,7 @@ export default function TraceTable({
     if (!ctxOrNull) return;
     const ctx: CanvasRenderingContext2D = ctxOrNull;
 
-    const dpr = window.devicePixelRatio || 1;
+    const dpr = canvasDpr();
     ctx.save();
     ctx.scale(dpr, dpr);
     const W = canvasSize.width;
@@ -1671,6 +1820,7 @@ export default function TraceTable({
     ctx.textBaseline = "alphabetic";
     // 等宽字体：所有字符宽度相同，只需测量一次，替代所有 measureText 调用（从 ~1000次/帧 → 1次/帧）
     const charW = ctx.measureText("M").width;
+    const dblHighlight = dblClickHighlightRef.current;
 
     // 亚像素平滑滚动：从 ref 读取精确位置，绕过 React 状态延迟
     const renderStartRow = Math.floor(scrollPosRef.current);
@@ -1899,10 +2049,44 @@ export default function TraceTable({
         ctx.fillText(line.mem_rw, COL_MEMRW, textY);
       }
 
-      // Address
-      if (line.address) {
-        ctx.fillStyle = COLORS.textAddress;
-        ctx.fillText(line.address, COL_ADDR, textY);
+      // Address（裁剪到列宽内，防止溢出到 Disasm 列）
+      if (line.address || line.so_offset) {
+        ctx.save();
+        ctx.beginPath();
+        ctx.rect(COL_ADDR, y, addrCol.width, ROW_HEIGHT);
+        ctx.clip();
+
+        let curX = COL_ADDR;
+        const addrColor = preferences.addrColorHighlight;
+
+        if (preferences.showSoName && line.so_name) {
+          const soText = `[${line.so_name}] `;
+          ctx.fillStyle = addrColor ? COLORS.textSoName : COLORS.textSecondary;
+          ctx.fillText(soText, curX, textY);
+          curX += ctx.measureText(soText).width;
+        }
+
+        if (preferences.showAbsAddress && line.address) {
+          ctx.fillStyle = addrColor ? COLORS.textAbsAddress : COLORS.textSecondary;
+          ctx.fillText(line.address, curX, textY);
+          curX += ctx.measureText(line.address).width;
+          ctx.fillStyle = addrColor ? COLORS.textAddress : COLORS.textSecondary;
+          ctx.fillText("!", curX, textY);
+          curX += ctx.measureText("!").width;
+        }
+
+        const offsetText = line.so_offset || line.address;
+        ctx.fillStyle = addrColor ? COLORS.textAddress : COLORS.textSecondary;
+        ctx.fillText(offsetText, curX, textY);
+
+        // 双击选词高亮：在 clip 内用高亮色覆盖匹配文字
+        if (dblHighlight) {
+          const cols = lineToTextColumns(seq, line, preferences.showSoName, preferences.showAbsAddress);
+          ctx.font = FONT;
+          drawTextMatchHighlight(ctx, cols.addr, COL_ADDR, textY, charW, dblHighlight);
+        }
+
+        ctx.restore();
       }
 
       // Disasm（语法高亮 + hitbox）
@@ -1958,6 +2142,12 @@ export default function TraceTable({
           curX += tail.length * charW;
         }
 
+        // 双击选词高亮：用高亮色覆盖 disasm 中的匹配文字
+        if (dblHighlight) {
+          ctx.font = FONT;
+          drawTextMatchHighlight(ctx, line.disasm, COL_DISASM, textY, charW, dblHighlight);
+        }
+
         // Call info inline rendering (gumtrace external function call summary)
         if (line.call_info) {
           const ci = line.call_info;
@@ -2005,6 +2195,7 @@ export default function TraceTable({
         ctx.rect(colRegBefore, y, effectiveBeforeWidth, ROW_HEIGHT);
         ctx.clip();
         ctx.fillText(line.reg_before, colRegBefore, textY);
+        if (dblHighlight) drawTextMatchHighlight(ctx, line.reg_before, colRegBefore, textY, charW, dblHighlight);
         ctx.restore();
       }
 
@@ -2017,6 +2208,7 @@ export default function TraceTable({
         ctx.rect(colChanges, y, effectiveChangesWidth, ROW_HEIGHT);
         ctx.clip();
         ctx.fillText(line.changes, colChanges, textY);
+        if (dblHighlight) drawTextMatchHighlight(ctx, line.changes, colChanges, textY, charW, dblHighlight);
         ctx.restore();
       }
 
@@ -2277,7 +2469,7 @@ export default function TraceTable({
       visibleLines, selectedSeq, arrowState, effectiveChangesWidth, effectiveDisasmWidth, effectiveBeforeWidth, fontReady,
       blLineMap, isFolded, finalSeqToVirtualIndex, toggleFold, multiSelect, ctrlSelect, highlights,
       sliceActive, sliceStatuses, sliceSourceSeq, taintFilterActive,
-      COL_ADDR, COL_DISASM, _themeId]);
+      COL_ADDR, COL_DISASM, _themeId, preferences.showSoName, preferences.showAbsAddress, preferences.addrColorHighlight]);
 
   // drawFrame 通过 ref 暴露给 RAF 循环，避免 RAF useEffect 因 drawFrame 重建而重启导致掉帧
   const drawFrameRef = useRef(drawFrame);
@@ -2351,7 +2543,7 @@ export default function TraceTable({
         const changesSpan = document.createElement("span");
         rowDiv.appendChild(changesSpan);
       } else {
-        const cols = lineToTextColumns(resolved.seq, visibleLines.get(resolved.seq) ?? prefetchCacheRef.current.get(resolved.seq));
+        const cols = lineToTextColumns(resolved.seq, visibleLines.get(resolved.seq) ?? prefetchCacheRef.current.get(resolved.seq), preferences.showSoName, preferences.showAbsAddress);
 
         const memSpan = document.createElement("span");
         memSpan.textContent = cols.memRW;
@@ -2385,13 +2577,14 @@ export default function TraceTable({
 
       overlay.appendChild(rowDiv);
     }
-  }, [debouncedRow, visibleRows, finalVirtualTotalRows, finalResolveVirtualIndex, visibleLines, canvasSize.width, effectiveChangesWidth, effectiveDisasmWidth, effectiveBeforeWidth, COL_DISASM]);
+  }, [debouncedRow, visibleRows, finalVirtualTotalRows, finalResolveVirtualIndex, visibleLines, canvasSize.width, effectiveChangesWidth, effectiveDisasmWidth, effectiveBeforeWidth, COL_DISASM, preferences.showSoName, preferences.showAbsAddress]);
 
   // === 脏标记（useLayoutEffect 确保在 paint 前同步设置，配合 RAF 实现同帧渲染） ===
   useLayoutEffect(() => { dirtyRef.current = true; }, [
     currentRow, selectedSeq, arrowState, canvasSize, effectiveChangesWidth, effectiveDisasmWidth, effectiveBeforeWidth,
     visibleLines, finalVirtualTotalRows, fontReady, highlights, ctrlSelect,
     sliceActive, sliceStatuses, sliceSourceSeq,
+    preferences.showSoName, preferences.showAbsAddress, preferences.addrColorHighlight,
   ]);
 
   // === rAF 渲染循环（通过 drawFrameRef 解耦，循环永不重启，消除掉帧） ===
@@ -2426,7 +2619,7 @@ export default function TraceTable({
           background: "var(--bg-primary)",
         }}
       >
-        <TableHeader disasmWidth={effectiveDisasmWidth} regBeforeWidth={effectiveBeforeWidth} seqWidth={seqCol.width} addrWidth={addrCol.width} onDisasmResizeMouseDown={disasmCol.onMouseDown} onRegBeforeResizeMouseDown={regBeforeCol.onMouseDown} onSeqResizeMouseDown={seqCol.onMouseDown} onAddrResizeMouseDown={addrCol.onMouseDown} />
+        <TableHeader disasmWidth={effectiveDisasmWidth} regBeforeWidth={effectiveBeforeWidth} seqWidth={seqCol.width} addrWidth={addrCol.width} onDisasmResizeMouseDown={disasmCol.onMouseDown} onRegBeforeResizeMouseDown={regBeforeCol.onMouseDown} onSeqResizeMouseDown={seqCol.onMouseDown} onAddrResizeMouseDown={addrCol.onMouseDown} showSoName={preferences.showSoName} showAbsAddress={preferences.showAbsAddress} addrColorHighlight={preferences.addrColorHighlight} onToggleSoName={handleToggleSoName} onToggleAbsAddress={handleToggleAbsAddress} onToggleAddrColor={handleToggleAddrColor} sortOrder={sortOrder} onToggleSortOrder={toggleSortOrder} />
         <div
           style={{
             flex: 1,
@@ -2445,7 +2638,7 @@ export default function TraceTable({
 
   return (
     <div style={{ height: "100%", display: "flex", flexDirection: "column", background: "var(--bg-primary)" }}>
-      <TableHeader disasmWidth={effectiveDisasmWidth} regBeforeWidth={effectiveBeforeWidth} seqWidth={seqCol.width} addrWidth={addrCol.width} onDisasmResizeMouseDown={disasmCol.onMouseDown} onRegBeforeResizeMouseDown={regBeforeCol.onMouseDown} onSeqResizeMouseDown={seqCol.onMouseDown} onAddrResizeMouseDown={addrCol.onMouseDown} />
+      <TableHeader disasmWidth={effectiveDisasmWidth} regBeforeWidth={effectiveBeforeWidth} seqWidth={seqCol.width} addrWidth={addrCol.width} onDisasmResizeMouseDown={disasmCol.onMouseDown} onRegBeforeResizeMouseDown={regBeforeCol.onMouseDown} onSeqResizeMouseDown={seqCol.onMouseDown} onAddrResizeMouseDown={addrCol.onMouseDown} showSoName={preferences.showSoName} showAbsAddress={preferences.showAbsAddress} addrColorHighlight={preferences.addrColorHighlight} onToggleSoName={handleToggleSoName} onToggleAbsAddress={handleToggleAbsAddress} onToggleAddrColor={handleToggleAddrColor} sortOrder={sortOrder} onToggleSortOrder={toggleSortOrder} />
       <div
         ref={containerRef}
         tabIndex={0}
@@ -2683,6 +2876,21 @@ export default function TraceTable({
                     >Taint Trace</div>
                   </>
                 )}
+                {/* 查看依赖树 */}
+                {sessionId && (
+                  <>
+                    <ContextMenuSeparator />
+                    <div
+                      onClick={() => {
+                        handleDepTreeFromMenu();
+                        setCtxMenu(null);
+                      }}
+                      onMouseEnter={(e) => { (e.currentTarget as HTMLElement).style.background = "var(--bg-selected)"; setHighlightSubmenuOpen(false); }}
+                      onMouseLeave={(e) => { (e.currentTarget as HTMLElement).style.background = "transparent"; }}
+                      style={{ padding: "6px 12px", fontSize: 12, color: "var(--text-primary)", cursor: "pointer", whiteSpace: "nowrap" }}
+                    >Dependency Tree</div>
+                  </>
+                )}
               </>
             )}
           </ContextMenu>
@@ -2864,6 +3072,8 @@ export default function TraceTable({
           resolveVirtualIndex={finalResolveVirtualIndex}
           getLines={getLines}
           selectedSeq={selectedSeq}
+          showSoName={preferences.showSoName}
+          showAbsAddress={preferences.showAbsAddress}
         />
         <CustomScrollbar
           currentRow={currentRow}
@@ -2887,6 +3097,14 @@ interface TableHeaderProps {
   onRegBeforeResizeMouseDown: (e: React.MouseEvent) => void;
   onSeqResizeMouseDown: (e: React.MouseEvent) => void;
   onAddrResizeMouseDown: (e: React.MouseEvent) => void;
+  showSoName: boolean;
+  showAbsAddress: boolean;
+  addrColorHighlight: boolean;
+  onToggleSoName: () => void;
+  onToggleAbsAddress: () => void;
+  onToggleAddrColor: () => void;
+  sortOrder: "asc" | "desc";
+  onToggleSortOrder: () => void;
 }
 
 function ResizeHandle({ onMouseDown }: { onMouseDown: (e: React.MouseEvent) => void }) {
@@ -2894,7 +3112,7 @@ function ResizeHandle({ onMouseDown }: { onMouseDown: (e: React.MouseEvent) => v
     <div
       onMouseDown={onMouseDown}
       style={{
-        width: 8, cursor: "col-resize", flexShrink: 0,
+        width: 8, cursor: "col-resize", flexShrink: 0, alignSelf: "stretch",
         display: "flex", alignItems: "center", justifyContent: "center",
       }}
     >
@@ -2903,11 +3121,12 @@ function ResizeHandle({ onMouseDown }: { onMouseDown: (e: React.MouseEvent) => v
   );
 }
 
-function TableHeader({ disasmWidth, regBeforeWidth, seqWidth, addrWidth, onDisasmResizeMouseDown, onRegBeforeResizeMouseDown, onSeqResizeMouseDown, onAddrResizeMouseDown }: TableHeaderProps) {
+function TableHeader({ disasmWidth, regBeforeWidth, seqWidth, addrWidth, onDisasmResizeMouseDown, onRegBeforeResizeMouseDown, onSeqResizeMouseDown, onAddrResizeMouseDown, showSoName, showAbsAddress, addrColorHighlight, onToggleSoName, onToggleAbsAddress, onToggleAddrColor, sortOrder, onToggleSortOrder }: TableHeaderProps) {
   return (
     <div
       style={{
         display: "flex",
+        alignItems: "center",
         padding: "4px 8px",
         background: "var(--bg-secondary)",
         borderBottom: "1px solid var(--border-color)",
@@ -2918,9 +3137,52 @@ function TableHeader({ disasmWidth, regBeforeWidth, seqWidth, addrWidth, onDisas
       <span style={{ width: COL_FOLD - COL_ARROW, flexShrink: 0 }}></span>
       <span style={{ width: COL_MEMRW - COL_FOLD, flexShrink: 0 }}></span>
       <span style={{ width: COL_SEQ - COL_MEMRW, flexShrink: 0 }}></span>
-      <span style={{ width: seqWidth, flexShrink: 0 }}>Seq</span>
+      <span
+        onClick={onToggleSortOrder}
+        style={{ width: seqWidth, flexShrink: 0, cursor: "pointer", display: "flex", alignItems: "center", gap: 4, userSelect: "none" }}
+      >
+        Seq
+        <span style={{ fontSize: 10, lineHeight: 1 }}>
+          {sortOrder === "asc" ? "▲" : "▼"}
+        </span>
+      </span>
       <ResizeHandle onMouseDown={onSeqResizeMouseDown} />
-      <span style={{ width: addrWidth, flexShrink: 0 }}>Address</span>
+      <span style={{ width: addrWidth, flexShrink: 0 }}>
+      <MenuDropdown
+        label=""
+        minWidth={160}
+        closeOnSelect={false}
+        labelStyle={{
+          padding: "0 4px",
+          fontSize: "inherit",
+          color: "inherit",
+          background: "transparent",
+        }}
+        customLabel={
+          <span style={{ display: "flex", alignItems: "center", gap: 4 }}>
+            Address
+            <span style={{ fontSize: 10, lineHeight: 1 }}>▼</span>
+          </span>
+        }
+      >
+        <MenuItem
+          label="Show Module Name"
+          checked={showSoName}
+          onClick={onToggleSoName}
+        />
+        <MenuItem
+          label="Show Absolute Address"
+          checked={showAbsAddress}
+          disabled={!showSoName}
+          onClick={onToggleAbsAddress}
+        />
+        <MenuItem
+          label="Color Highlight"
+          checked={addrColorHighlight}
+          onClick={onToggleAddrColor}
+        />
+      </MenuDropdown>
+      </span>
       <ResizeHandle onMouseDown={onAddrResizeMouseDown} />
       <span style={{ width: disasmWidth, flexShrink: 0 }}>Disassembly</span>
       <ResizeHandle onMouseDown={onDisasmResizeMouseDown} />

@@ -26,10 +26,12 @@ function collectVisibleFoldRanges(
   nodeMap: Map<number, CallTreeNodeDto>,
 ): FoldRange[] {
   const ranges: FoldRange[] = [];
-
-  function walk(nodeId: number) {
+  // 使用显式栈替代递归 DFS，避免深调用树导致 Maximum call stack size exceeded
+  const stack: number[] = [0];
+  while (stack.length > 0) {
+    const nodeId = stack.pop()!;
     const node = nodeMap.get(nodeId);
-    if (!node) return;
+    if (!node) continue;
 
     if (foldedNodes.has(nodeId) && nodeId !== 0) {
       const hiddenCount = node.exit_seq - node.entry_seq;
@@ -43,15 +45,15 @@ function collectVisibleFoldRanges(
           entrySeq: node.entry_seq,
         });
       }
-      return;
+      continue;
     }
 
-    for (const childId of node.children_ids) {
-      walk(childId);
+    // 逆序入栈以保持遍历顺序（与递归版一致）
+    const children = node.children_ids;
+    for (let i = children.length - 1; i >= 0; i--) {
+      stack.push(children[i]);
     }
   }
-
-  walk(0);
   ranges.sort((a, b) => a.startSeq - b.startSeq);
   return ranges;
 }

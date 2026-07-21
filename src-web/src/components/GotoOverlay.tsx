@@ -93,12 +93,32 @@ export default function GotoOverlay({ onJumpToSeq, onClose, sessionId, totalLine
     searchTimer.current = setTimeout(async () => {
       setSearching(true);
       try {
+        // Phase 1: get matching seqs
         const result = await invoke<SearchResult>("search_trace", {
           sessionId,
           request: { query: input, max_results: 50 },
         });
-        if (version !== searchVersion.current) return; // 过期请求，丢弃
-        setMatches(result.matches);
+        if (version !== searchVersion.current) return;
+
+        if (result.match_seqs.length === 0) {
+          setMatches([]);
+          setSelectedIdx(0);
+          return;
+        }
+
+        // Phase 2: get full details
+        const details = await invoke<SearchMatch[]>("get_search_matches", {
+          sessionId,
+          request: {
+            seqs: result.match_seqs,
+            query: input,
+            case_sensitive: false,
+            use_regex: false,
+            fuzzy: false,
+          },
+        });
+        if (version !== searchVersion.current) return;
+        setMatches(details);
         setSelectedIdx(0);
       } catch {
         if (version !== searchVersion.current) return;

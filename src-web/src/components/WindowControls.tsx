@@ -10,7 +10,7 @@ const MAC_COLORS = {
 };
 const MAC_INACTIVE = "#3d3d3d";
 
-function MacTrafficLights() {
+function MacTrafficLights({ onMaximize }: { onMaximize?: () => void }) {
   const [hovered, setHovered] = useState(false);
   const [focused, setFocused] = useState(true);
 
@@ -24,7 +24,10 @@ function MacTrafficLights() {
 
   const handleClose = useCallback(() => getCurrentWindow().close(), []);
   const handleMinimize = useCallback(() => getCurrentWindow().minimize(), []);
-  const handleMaximize = useCallback(() => getCurrentWindow().toggleMaximize(), []);
+  const handleMaximize = useCallback(() => {
+    if (onMaximize) onMaximize();
+    else getCurrentWindow().toggleMaximize();
+  }, [onMaximize]);
 
   const buttons = [
     { id: "close" as const, action: handleClose, icon: "×" },
@@ -39,7 +42,7 @@ function MacTrafficLights() {
       onMouseLeave={() => setHovered(false)}
     >
       {buttons.map(({ id, action, icon }) => (
-        <div
+        <button
           key={id}
           onClick={action}
           style={{
@@ -55,20 +58,26 @@ function MacTrafficLights() {
             fontWeight: 700,
             lineHeight: 1,
             color: hovered ? MAC_COLORS[id].icon : "transparent",
+            border: "none",
+            padding: 0,
+            margin: 0,
           }}
         >
           {icon}
-        </div>
+        </button>
       ))}
     </div>
   );
 }
 
-function WinControls() {
+function WinControls({ onMaximize }: { onMaximize?: () => void }) {
   const [hovered, setHovered] = useState<string | null>(null);
 
   const handleMinimize = useCallback(() => getCurrentWindow().minimize(), []);
-  const handleToggleMaximize = useCallback(() => getCurrentWindow().toggleMaximize(), []);
+  const handleToggleMaximize = useCallback(() => {
+    if (onMaximize) onMaximize();
+    else getCurrentWindow().toggleMaximize();
+  }, [onMaximize]);
   const handleClose = useCallback(() => getCurrentWindow().close(), []);
 
   const btnStyle = (id: string): React.CSSProperties => ({
@@ -132,6 +141,6 @@ function WinControls() {
   );
 }
 
-export default function WindowControls() {
-  return isMac ? <MacTrafficLights /> : <WinControls />;
+export default function WindowControls({ onMaximize }: { onMaximize?: () => void } = {}) {
+  return isMac ? <MacTrafficLights onMaximize={onMaximize} /> : <WinControls onMaximize={onMaximize} />;
 }

@@ -1,15 +1,51 @@
 import React, { useState, useCallback, useEffect, useMemo, useRef } from "react";
 import { listen } from "@tauri-apps/api/event";
+import { invoke } from "@tauri-apps/api/core";
+import { openDepTreeWindow } from "../utils/openDepTreeWindow";
 import { useDragToFloat } from "../hooks/useDragToFloat";
-import type { SearchMatch, SliceResult, CryptoScanResult } from "../types/trace";
+import { useSearchMatchCache } from "../hooks/useSearchMatchCache";
+import { useSearchPages } from "../hooks/useSearchPages";
+import { findNearestSeqIndex } from "../utils/binarySearch";
+import type { SearchMatch, SliceResult, CryptoScanResult, HashMatchResult, StringRecordDto } from "../types/trace";
 import MemoryPanel from "./MemoryPanel";
 import SearchResultList from "./SearchResultList";
 import SearchBar, { SearchOptions } from "./SearchBar";
 import StringsPanel from "./StringsPanel";
 import CryptoPanel from "./CryptoPanel";
+import AnalysisHistoryPanel from "./AnalysisHistoryPanel";
+import FunctionInspectorPanel from "./FunctionInspectorPanel";
+import TaintResultViews from "./TaintResultViews";
+import { useSelectedSeq } from "../stores/selectedSeqStore";
+import { explainTaintError } from "../utils/taintError";
 
-const TABS = ["Memory", "Accesses", "Taint State", "Search", "Strings", "Crypto"] as const;
+const TABS = ["Memory", "Accesses", "Taint State", "Search", "Strings", "Crypto", "Analyses", "Function"] as const;
 type TabName = typeof TABS[number];
+
+function DepTreeFromSliceButton({ sessionId }: { sessionId: string | null }) {
+  const handleClick = useCallback(() => {
+    if (!sessionId) return;
+    openDepTreeWindow({ sessionId, fromSlice: true });
+  }, [sessionId]);
+
+  return (
+    <div style={{ marginTop: 4 }}>
+      <button
+        onClick={handleClick}
+        style={{
+          padding: "3px 10px",
+          fontSize: 11,
+          background: "var(--btn-secondary, #3e4451)",
+          color: "var(--text-primary)",
+          border: "1px solid var(--border-color)",
+          borderRadius: 4,
+          cursor: "pointer",
+        }}
+      >
+        View as Dependency Tree
+      </button>
+    </div>
+  );
+}
 
 const TAB_TO_PANEL: Record<string, string> = {
   "Memory": "memory",
@@ -18,10 +54,12 @@ const TAB_TO_PANEL: Record<string, string> = {
   "Search": "search",
   "Strings": "strings",
   "Crypto": "crypto",
+  "Analyses": "analyses",
+  "Function": "function",
 };
 
 interface Props {
-  searchResults: SearchMatch[];
+  matchSeqs: number[];
   searchQuery: string;
   isSearching: boolean;
   searchStatus: string;
@@ -39,21 +77,37 @@ interface Props {
   sliceDuration: number | null;
   sliceError: string | null;
   stringsScanning?: boolean;
+  hasStringIndex: boolean;
   cryptoResults: CryptoScanResult | null;
   cryptoScanning: boolean;
+  onScanStrings: () => Promise<void> | void;
+  onTraceDigestInput: (match: HashMatchResult) => Promise<void> | void;
+  onTraceStringCreation: (record: StringRecordDto) => Promise<void> | void;
+  onTraceMemory: (request: { addr: string; size: number; seq: number }) => Promise<void> | void;
   onSearch: (query: string, options: SearchOptions) => void;
+  showSoName?: boolean;
+  showAbsAddress?: boolean;
+  addrColorHighlight?: boolean;
 }
 
 export default function TabPanel({
-  searchResults, searchQuery, isSearching, searchStatus, searchTotalMatches, onJumpToSeq, onJumpToSearchMatch,
+  matchSeqs, searchQuery, isSearching, searchStatus, searchTotalMatches, onJumpToSeq, onJumpToSearchMatch,
   isPhase2Ready,
   floatedPanels, onFloat, sessionId,
   sliceActive, sliceInfo, sliceFromSpecs,
   isSlicing, sliceDuration, sliceError,
   stringsScanning,
+  hasStringIndex,
   cryptoResults,
   cryptoScanning,
+  onScanStrings,
+  onTraceDigestInput,
+  onTraceStringCreation,
+  onTraceMemory,
   onSearch,
+  showSoName = false,
+  showAbsAddress = false,
+  addrColorHighlight = false,
 }: Props) {
   const [active, setActive] = useState<TabName>("Memory");
   const [memResetKey, setMemResetKey] = useState(0);
@@ -78,11 +132,15 @@ export default function TabPanel({
     }
   }, [isSlicing, sliceActive, floatedPanels]);
 
-  // Crypto 扫描完成后自动切换
+  // Crypto 扫描开始和完成时自动切换到 Crypto tab
   const prevCryptoScanningRef = useRef(false);
   useEffect(() => {
-    if (prevCryptoScanningRef.current && !cryptoScanning && cryptoResults && !floatedPanels.has("crypto")) {
-      setActive("Crypto");
+    if (!floatedPanels.has("crypto")) {
+      const scanStarted = !prevCryptoScanningRef.current && cryptoScanning;
+      const scanFinished = prevCryptoScanningRef.current && !cryptoScanning && cryptoResults;
+      if (scanStarted || scanFinished) {
+        setActive("Crypto");
+      }
     }
     prevCryptoScanningRef.current = cryptoScanning;
   }, [cryptoScanning, cryptoResults, floatedPanels]);
@@ -107,10 +165,32 @@ export default function TabPanel({
 
   const searchBadge = searchTotalMatches > 0 ? ` (${searchTotalMatches.toLocaleString()})` : "";
 
+  const currentSeq = useSelectedSeq();
   const searchInputRef = useRef<HTMLInputElement>(null);
   const [localSearchQuery, setLocalSearchQuery] = useState(searchQuery);
   const [selectedSearchIdx, setSelectedSearchIdx] = useState(0);
   const [searchOptions, setSearchOptions] = useState<SearchOptions>({ caseSensitive: false, wholeWord: false, useRegex: false, fuzzyMatch: false });
+
+  const [searchGen, setSearchGen] = useState(0);
+  const searchGenRef = useRef(0);
+
+  // 新搜索开始时递增 generation 并清空缓存（绑定到 searchQuery 变化，而非 matchSeqs）
+  useEffect(() => {
+    searchGenRef.current++;
+    setSearchGen(searchGenRef.current);
+    cache.clear();
+  }, [searchQuery]);
+
+  const queryParams = useMemo(() =>
+    searchQuery ? { query: searchQuery, caseSensitive: searchOptions.caseSensitive, useRegex: searchOptions.useRegex, fuzzy: searchOptions.fuzzyMatch } : null,
+  [searchQuery, searchOptions]);
+
+  const cache = useSearchMatchCache(sessionId, queryParams, searchGen);
+  const searchPages = useSearchPages();
+
+  // 耦合两层加载：seq 页加载完成后通知 prefetch effect 重新请求
+  // 注意：不在此处请求全页详情（5000条会阻塞后端，淹没可见行请求）
+  // pageVersion 变化已自动触发 SearchResultList 的 prefetch effect
 
   // 同步外部 searchQuery 变化
   useEffect(() => { setLocalSearchQuery(searchQuery); }, [searchQuery]);
@@ -129,8 +209,18 @@ export default function TabPanel({
     };
   }, []);
 
-  // 搜索结果变化时重置选中索引
-  useEffect(() => { setSelectedSearchIdx(-1); }, [searchResults]);
+  // 搜索结果变化时，重置分页状态，自动选中距离当前 TraceTable 选中行最近的结果
+  useEffect(() => {
+    if (matchSeqs.length === 0 && searchTotalMatches === 0) {
+      searchPages.reset(0, [], sessionId ?? "");
+      setSelectedSearchIdx(-1);
+      return;
+    }
+    searchPages.reset(searchTotalMatches, matchSeqs, sessionId ?? "");
+    if (currentSeq == null) { setSelectedSearchIdx(0); return; }
+    setSelectedSearchIdx(findNearestSeqIndex(matchSeqs, currentSeq));
+    cache.getMatches(matchSeqs.slice(0, 50));
+  }, [matchSeqs, searchTotalMatches]);
 
   // 监听 action:activate-search-tab 事件
   useEffect(() => {
@@ -154,39 +244,36 @@ export default function TabPanel({
   }, [floatedPanels]);
 
   const handlePrevMatch = useCallback(() => {
-    if (searchResults.length === 0) return;
+    if (searchPages.totalCount === 0) return;
     setSelectedSearchIdx(prev =>
-      prev <= 0 ? searchResults.length - 1 : prev - 1
+      prev <= 0 ? searchPages.totalCount - 1 : prev - 1
     );
-  }, [searchResults.length]);
+  }, [searchPages.totalCount]);
 
   const handleNextMatch = useCallback(() => {
-    if (searchResults.length === 0) return;
+    if (searchPages.totalCount === 0) return;
     setSelectedSearchIdx(prev =>
-      (prev + 1) % searchResults.length
+      (prev + 1) % searchPages.totalCount
     );
-  }, [searchResults.length]);
+  }, [searchPages.totalCount]);
 
   const searchMatchInfo = isSearching
     ? "Searching..."
-    : searchResults.length === 0
+    : searchPages.totalCount === 0
       ? (searchQuery ? "No results" : "")
       : selectedSearchIdx < 0
         ? `${searchTotalMatches.toLocaleString()} results`
         : `${selectedSearchIdx + 1}/${searchTotalMatches.toLocaleString()}`;
 
   // ── 拖拽浮出逻辑 ──
-  const handleFloatPanel = useCallback((panel: string, pos: { x: number; y: number }) => {
-    onFloat(panel, pos);
-  }, [onFloat]);
-
   const handleActivateTab = useCallback((panel: string) => {
     // panel key → TabName 反查
     const tab = TABS.find(t => TAB_TO_PANEL[t] === panel);
     if (tab) setActive(tab);
   }, []);
 
-  const startDrag = useDragToFloat({ onFloat: handleFloatPanel, onActivate: handleActivateTab });
+  const startDrag = useDragToFloat({ onFloat, onActivate: handleActivateTab });
+  const taintErrorInfo = sliceError ? explainTaintError(sliceError) : null;
 
   // 容器样式：所有 tab 用 absolute 堆叠，active 可见，其他 visibility:hidden
   // 不用 display:none —— 浏览器会重置 scrollTop，导致虚拟列表焦点丢失
@@ -235,6 +322,7 @@ export default function TabPanel({
           onJumpToSeq={onJumpToSeq}
           sessionId={sessionId}
           resetKey={memResetKey}
+          onTraceMemory={onTraceMemory}
         />
       </div>
 
@@ -250,11 +338,11 @@ export default function TabPanel({
           initialOptions={searchOptions}
           onOptionsChange={setSearchOptions}
         />
-        {isSearching ? (
+        {isSearching || (searchPages.totalCount > 0 && cache.cacheSize === 0) ? (
           <div style={{ flex: 1, display: "flex", alignItems: "center", justifyContent: "center" }}>
             <span style={{ color: "var(--text-secondary)", fontSize: 12 }}>Searching...</span>
           </div>
-        ) : searchResults.length === 0 ? (
+        ) : searchPages.totalCount === 0 ? (
           <div style={{ flex: 1, display: "flex", alignItems: "center", justifyContent: "center" }}>
             <span style={{ color: "var(--text-secondary)", fontSize: 12 }}>
               {searchQuery ? `No results found for "${searchQuery}"` : "Enter search query and press Enter"}
@@ -263,14 +351,24 @@ export default function TabPanel({
         ) : (
           <>
             <SearchResultList
-              results={searchResults}
-              selectedSeq={searchResults[selectedSearchIdx]?.seq ?? null}
+              totalCount={searchPages.totalCount}
+              getSeqAtIndex={searchPages.getSeqAtIndex}
+              ensureRange={searchPages.ensureRange}
+              findSeqIndex={searchPages.findSeqIndex}
+              getMatchDetail={cache.getMatch}
+              selectedSeq={searchPages.getSeqAtIndex(selectedSearchIdx) ?? null}
               onJumpToSeq={onJumpToSeq}
               onJumpToMatch={onJumpToSearchMatch}
               searchQuery={searchQuery}
               caseSensitive={searchOptions.caseSensitive}
               fuzzy={searchOptions.fuzzyMatch}
               useRegex={searchOptions.useRegex}
+              showSoName={showSoName}
+              showAbsAddress={showAbsAddress}
+              addrColorHighlight={addrColorHighlight}
+              requestDetails={(seqs) => { cache.requestImmediate(seqs); }}
+              cacheVersion={cache.cacheSize}
+              pageVersion={searchPages.pageVersion}
             />
             {searchStatus && (
               <div style={{
@@ -286,7 +384,7 @@ export default function TabPanel({
         )}
       </div>
 
-      <div style={{ ...tabStyle("Taint State"), alignItems: "flex-start", justifyContent: "center", padding: 16 }}>
+      <div style={{ ...tabStyle("Taint State"), alignItems: "flex-start", justifyContent: "center", padding: 16, overflow: "auto" }}>
         {isSlicing ? (
           <div style={{ display: "flex", alignItems: "center", gap: 8, width: "100%", justifyContent: "center" }}>
             <span style={{
@@ -298,12 +396,19 @@ export default function TabPanel({
             }} />
             <span style={{ color: "var(--text-secondary)", fontSize: 12 }}>Analyzing...</span>
           </div>
-        ) : sliceError ? (
-          <div style={{ color: "var(--text-error)", fontSize: 12, lineHeight: 1.6 }}>
-            Analysis failed: {sliceError}
+        ) : taintErrorInfo ? (
+          <div style={{ width: "100%", maxWidth: 760, fontSize: 12, lineHeight: 1.6 }}>
+            <div style={{ color: "var(--text-error)", fontWeight: 600 }}>{taintErrorInfo.title}</div>
+            <div style={{ color: "var(--text-primary)", marginTop: 4 }}>{taintErrorInfo.suggestion}</div>
+            {taintErrorInfo.detail !== taintErrorInfo.title && (
+              <details style={{ color: "var(--text-secondary)", marginTop: 8 }}>
+                <summary style={{ cursor: "pointer" }}>Technical details</summary>
+                <div style={{ marginTop: 4, fontFamily: "monospace", overflowWrap: "anywhere" }}>{taintErrorInfo.detail}</div>
+              </details>
+            )}
           </div>
         ) : sliceActive && sliceInfo ? (
-          <div style={{ fontSize: 12, lineHeight: 2, color: "var(--text-secondary)" }}>
+          <div style={{ width: "100%", minWidth: 0, fontSize: 12, lineHeight: 2, color: "var(--text-secondary)" }}>
             <div>
               <span style={{ color: "var(--text-secondary)", display: "inline-block", width: 52 }}>Source:</span>
               <span style={{ color: "var(--text-primary)" }}>{sliceFromSpecs.join(", ")}</span>
@@ -318,6 +423,48 @@ export default function TabPanel({
               <div>
                 <span style={{ color: "var(--text-secondary)", display: "inline-block", width: 52 }}>Time:</span>
                 <span style={{ color: "var(--text-primary)" }}>{(sliceDuration / 1000).toFixed(2)}s</span>
+              </div>
+            )}
+            {sliceInfo.warnings.length > 0 && (
+              <div style={{
+                marginTop: 8, padding: "7px 9px", maxWidth: 760,
+                border: "1px solid var(--text-changes)", borderRadius: 4,
+                color: "var(--text-changes)", lineHeight: 1.5,
+              }}>
+                {sliceInfo.warnings.map((warning, index) => (
+                  <div key={`${warning.code}-${warning.sourceSpec}-${index}`} style={{ marginBottom: index + 1 < sliceInfo.warnings.length ? 6 : 0 }}>
+                    <div>{warning.message}</div>
+                    {warning.missingRanges.length > 0 && (
+                      <div style={{ color: "var(--text-secondary)", marginTop: 2 }}>
+                        Missing: {warning.missingRanges.map((range) => `${range.startAddr}..${range.endAddr} (${range.size} bytes)`).join(", ")}
+                      </div>
+                    )}
+                    <div style={{ color: "var(--text-primary)", marginTop: 3 }}>
+                      Continue with the available bytes, or move to a later instruction to include the missing writes.
+                    </div>
+                  </div>
+                ))}
+              </div>
+            )}
+            {sliceInfo.percentage > 50 && (
+              <div style={{ marginTop: 6, color: "var(--text-changes)", lineHeight: 1.5 }}>
+                Large result. Use Focused scope or shorten the history range for a clearer dependency chain.
+              </div>
+            )}
+            {sliceInfo.markedCount <= 2 && (
+              <div style={{ marginTop: 6, color: "var(--text-secondary)", lineHeight: 1.5 }}>
+                Short chain. Expand the history range or use Broad scope if earlier inputs are missing.
+              </div>
+            )}
+            <DepTreeFromSliceButton sessionId={sessionId} />
+            {sessionId && (
+              <div style={{ marginTop: 12, paddingTop: 10, borderTop: "1px solid var(--border-color)", minWidth: 0 }}>
+                <TaintResultViews
+                  sessionId={sessionId}
+                  sources={sliceFromSpecs}
+                  sliceInfo={sliceInfo}
+                  onJumpToSeq={onJumpToSeq}
+                />
               </div>
             )}
           </div>
@@ -336,15 +483,29 @@ export default function TabPanel({
           isPhase2Ready={isPhase2Ready}
           onJumpToSeq={onJumpToSeq}
           stringsScanning={stringsScanning}
+          onTraceCreation={onTraceStringCreation}
         />
       </div>
 
       <div style={tabStyle("Crypto")}>
         <CryptoPanel
+          sessionId={sessionId}
+          hasStringIndex={hasStringIndex}
           cryptoResults={cryptoResults}
           cryptoScanning={cryptoScanning}
           onJumpToSeq={onJumpToSeq}
+          onScanStrings={onScanStrings}
+          onTraceInput={onTraceDigestInput}
+          onTraceMemory={onTraceMemory}
         />
+      </div>
+
+      <div style={tabStyle("Analyses")}>
+        <AnalysisHistoryPanel sessionId={sessionId} />
+      </div>
+
+      <div style={tabStyle("Function")}>
+        <FunctionInspectorPanel sessionId={sessionId} onJumpToSeq={onJumpToSeq} active={active === "Function"} />
       </div>
 
       <div style={tabStyle("Accesses")}>

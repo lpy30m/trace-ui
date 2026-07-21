@@ -1,7 +1,9 @@
-import { useState, useMemo, useCallback, useRef } from "react";
+import { useState, useMemo, useCallback, useRef, useEffect } from "react";
 import { createPortal } from "react-dom";
-import { useVirtualizerNoSync } from "../hooks/useVirtualizerNoSync";
+import { useVirtualScroll } from "../hooks/useVirtualScroll";
+import { useSelectedSeq } from "../stores/selectedSeqStore";
 import type { CallTreeNodeDto } from "../types/trace";
+import VirtualScrollArea from "./VirtualScrollArea";
 import ContextMenu, { ContextMenuItem, ContextMenuSeparator } from "./ContextMenu";
 
 interface FlatRow {
@@ -47,20 +49,27 @@ export default function FunctionTree({
   const [expanded, setExpanded] = useState<Set<number>>(new Set([0]));
   const [selectedId, setSelectedId] = useState<number | null>(null);
   const [loadingNodes, setLoadingNodes] = useState<Set<number>>(new Set());
-  const parentRef = useRef<HTMLDivElement>(null);
-
   const [ctxMenu, setCtxMenu] = useState<{ x: number; y: number; row: FlatRow } | null>(null);
   const [renameTarget, setRenameTarget] = useState<{ addr: string; currentName: string } | null>(null);
   const renameInputRef = useRef<HTMLInputElement>(null);
   const [tooltip, setTooltip] = useState<{ x: number; y: number; text: string } | null>(null);
   const tooltipTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const [autoFollow, setAutoFollow] = useState(() => {
+    try { return localStorage.getItem("callTree-autoFollow") === "true"; } catch { return false; }
+  });
+  const globalSelectedSeq = useSelectedSeq();
+  // 用于延迟滚动：rows 变化后再 scrollToRow（同时携带 depth 用于水平定位）
+  const pendingScrollRef = useRef<{ id: number; depth: number } | null>(null);
 
   const rows = useMemo(() => {
     if (nodeMap.size === 0) return [];
     const result: FlatRow[] = [];
-    function walk(id: number, depth: number) {
+    // 使用显式栈替代递归 DFS，避免深调用树导致 Maximum call stack size exceeded
+    const stack: { id: number; depth: number }[] = [{ id: 0, depth: 0 }];
+    while (stack.length > 0) {
+      const { id, depth } = stack.pop()!;
       const dto = nodeMap.get(id);
-      if (!dto) return;
+      if (!dto) continue;
       const hasChildren = dto.children_ids.length > 0;
       const isExp = expanded.has(id);
       const isChildrenLoaded = !lazyMode || (loadedNodes?.has(id) ?? false);
@@ -71,19 +80,86 @@ export default function FunctionTree({
         depth, hasChildren, isExpanded: isExp, isChildrenLoaded,
       });
       if (hasChildren && isExp && isChildrenLoaded) {
-        for (const cid of dto.children_ids) walk(cid, depth + 1);
+        // 逆序入栈以保持遍历顺序（与递归版一致）
+        const children = dto.children_ids;
+        for (let i = children.length - 1; i >= 0; i--) {
+          stack.push({ id: children[i], depth: depth + 1 });
+        }
       }
     }
-    walk(0, 0);
     return result;
   }, [nodeMap, expanded, lazyMode, loadedNodes]);
 
-  const virtualizer = useVirtualizerNoSync({
-    count: rows.length,
-    getScrollElement: () => parentRef.current,
-    estimateSize: () => 22,
-    overscan: 20,
-  });
+  const vs = useVirtualScroll({ totalCount: rows.length, rowHeight: 22, overscan: 20 });
+
+  // 计算所有行中最大深度，用于确定水平滚动区域宽度
+  const maxDepth = useMemo(() => rows.reduce((m, r) => Math.max(m, r.depth), 0), [rows]);
+  // 内容最小宽度：最深缩进 + 箭头 + 函数名预留 + lineCount
+  const contentMinWidth = maxDepth * 16 + 4 + 16 + 200;
+
+  // 水平滚动：处理触控板 deltaX 和 Shift+滚轮
+  useEffect(() => {
+    const el = vs.containerRef.current;
+    if (!el) return;
+    const handler = (e: WheelEvent) => {
+      const dx = e.deltaX || (e.shiftKey ? e.deltaY : 0);
+      if (dx !== 0) el.scrollLeft += dx;
+    };
+    el.addEventListener("wheel", handler, { passive: true });
+    return () => el.removeEventListener("wheel", handler);
+  }, [vs.containerRef]);
+
+  // Auto-follow: 当 traceTable 选中行变化时，定位到包含该 seq 的最深节点
+  useEffect(() => {
+    if (!autoFollow || globalSelectedSeq === null || nodeMap.size === 0) return;
+    const seq = globalSelectedSeq;
+    const ancestors: number[] = [];
+    let current = nodeMap.get(0);
+    if (!current || seq < current.entry_seq || seq > current.exit_seq) return;
+    ancestors.push(0);
+    let found = current;
+    let foundDepth = 0;
+    outer: while (true) {
+      for (const childId of current.children_ids) {
+        const child = nodeMap.get(childId);
+        if (child && seq >= child.entry_seq && seq <= child.exit_seq) {
+          ancestors.push(childId);
+          found = child;
+          foundDepth++;
+          current = child;
+          continue outer;
+        }
+      }
+      break;
+    }
+    // 折叠其他节点，仅展开命中路径上的祖先
+    setExpanded(new Set(ancestors));
+    setSelectedId(found.id);
+    pendingScrollRef.current = { id: found.id, depth: foundDepth };
+  }, [autoFollow, globalSelectedSeq, nodeMap]);
+
+  // rows 变化后执行延迟滚动（垂直 + 水平）
+  useEffect(() => {
+    const pending = pendingScrollRef.current;
+    if (!pending) return;
+    pendingScrollRef.current = null;
+    const idx = rows.findIndex(r => r.id === pending.id);
+    if (idx >= 0) {
+      // 垂直居中
+      const center = Math.max(0, idx - Math.floor(vs.visibleRows / 2));
+      vs.scrollToRow(center);
+      // 水平定位：让命中节点的缩进区域可见
+      const el = vs.containerRef.current;
+      if (el) {
+        const targetLeft = pending.depth * 16;
+        const viewWidth = el.clientWidth;
+        // 如果缩进已超出可视范围，滚动到让节点名称左侧留约 20px 余量
+        if (targetLeft < el.scrollLeft || targetLeft > el.scrollLeft + viewWidth - 100) {
+          el.scrollLeft = Math.max(0, targetLeft - 20);
+        }
+      }
+    }
+  }, [rows, vs.visibleRows, vs.scrollToRow, vs.containerRef]);
 
   const toggleExpand = useCallback(async (id: number) => {
     if (expanded.has(id)) {
@@ -124,6 +200,17 @@ export default function FunctionTree({
     setCtxMenu({ x: e.clientX, y: e.clientY, row });
   }, []);
 
+  const handleRenameConfirm = useCallback(() => {
+    if (!renameTarget) return;
+    const val = renameInputRef.current?.value.trim() ?? "";
+    if (val) {
+      funcRename.setName(renameTarget.addr, val);
+    } else {
+      funcRename.removeName(renameTarget.addr);
+    }
+    setRenameTarget(null);
+  }, [renameTarget, funcRename]);
+
   if (!isPhase2Ready) {
     return (
       <div style={{ height: "100%", display: "flex", alignItems: "center", justifyContent: "center", background: "var(--bg-primary)" }}>
@@ -146,71 +233,90 @@ export default function FunctionTree({
     );
   }
 
-  const virtualItems = virtualizer.getVirtualItems();
-
   return (
     <div style={{ height: "100%", display: "flex", flexDirection: "column", background: "var(--bg-primary)" }}>
       <div style={{
         color: "var(--text-secondary)", fontSize: 11,
         padding: "6px 8px 4px", borderBottom: "1px solid var(--border-color)", flexShrink: 0,
+        display: "flex", alignItems: "center", justifyContent: "space-between",
       }}>
-        Functions ({nodeCount.toLocaleString()})
+        <span>Functions ({nodeCount.toLocaleString()})</span>
+        <label title="Auto-follow: automatically locate the corresponding function when the selected line changes in traceTable" style={{ display: "flex", alignItems: "center", gap: 3, cursor: "pointer", whiteSpace: "nowrap" }}>
+          <input
+            type="checkbox"
+            checked={autoFollow}
+            onChange={(e) => { setAutoFollow(e.target.checked); localStorage.setItem("callTree-autoFollow", String(e.target.checked)); }}
+            style={{ accentColor: "var(--btn-primary)" }}
+          />
+          Auto
+        </label>
       </div>
-      <div ref={parentRef} style={{ flex: 1, overflow: "auto" }}>
-        <div style={{ height: virtualizer.getTotalSize(), width: "100%", position: "relative" }}>
-          {virtualItems.map((virtualRow) => {
-            const row = rows[virtualRow.index];
-            if (!row) return null;
-            const isNodeLoading = loadingNodes.has(row.id);
-            const customName = funcRename.getName(row.func_addr);
-            const displayName = customName || row.func_name;
-            return (
-              <div
-                key={row.id}
-                onClick={() => handleClick(row)}
-                onDoubleClick={() => handleDoubleClick(row)}
-                onContextMenu={(e) => handleContextMenu(e, row)}
-                style={{
-                  position: "absolute", top: 0, left: 0, width: "100%", height: 22,
-                  transform: `translateY(${virtualRow.start}px)`,
-                  paddingLeft: row.depth * 16 + 4, paddingRight: 8,
-                  cursor: "pointer", fontSize: 12, lineHeight: "22px",
-                  whiteSpace: "nowrap",
-                  background: selectedId === row.id ? "var(--bg-selected)" : "transparent",
-                  display: "flex", alignItems: "center", gap: 4,
-                }}
-                onMouseEnter={(e) => { if (selectedId !== row.id) e.currentTarget.style.background = "var(--bg-row-odd)"; }}
-                onMouseLeave={(e) => { if (selectedId !== row.id) e.currentTarget.style.background = "transparent"; }}
-              >
-                <span style={{ width: 12, textAlign: "center", color: "var(--text-secondary)", fontSize: 10, flexShrink: 0 }}>
-                  {row.hasChildren
-                    ? (isNodeLoading ? "\u23F3" : (row.isExpanded && row.isChildrenLoaded ? "\u25BC" : "\u25B6"))
-                    : ""}
-                </span>
-                {displayName
-                  ? <span
-                      style={{ color: "var(--text-primary)", flexShrink: 0 }}
-                      onMouseEnter={(e) => {
-                        const mx = e.clientX, my = e.clientY;
-                        tooltipTimer.current = setTimeout(() => {
-                          setTooltip({ x: mx, y: my + 16, text: row.func_addr });
-                        }, 100);
-                      }}
-                      onMouseLeave={() => {
-                        if (tooltipTimer.current) { clearTimeout(tooltipTimer.current); tooltipTimer.current = null; }
-                        setTooltip(null);
-                      }}
-                    >{displayName}</span>
-                  : <span style={{ color: "var(--text-address)", flexShrink: 0 }}>{row.func_addr}</span>
-                }
-                <span style={{ color: "var(--text-secondary)", fontSize: 11, marginLeft: "auto", flexShrink: 0 }}>
-                  {formatLineCount(row.line_count)}
-                </span>
-              </div>
-            );
-          })}
-        </div>
-      </div>
+      <VirtualScrollArea
+        containerRef={vs.containerRef}
+        containerStyle={vs.containerStyle}
+        containerHeight={vs.containerHeight}
+        scrollbarProps={vs.scrollbarProps}
+        horizontalScroll
+      >
+        {/* 占位元素：撑开水平滚动区域 */}
+        {contentMinWidth > vs.containerWidth && (
+          <div style={{ width: contentMinWidth, height: 0, pointerEvents: "none" }} />
+        )}
+        {Array.from({ length: Math.max(0, vs.endIdx - vs.startIdx + 1) }, (_, i) => {
+          const index = vs.startIdx + i;
+          const row = rows[index];
+          if (!row) return null;
+          const isNodeLoading = loadingNodes.has(row.id);
+          const customName = funcRename.getName(row.func_addr);
+          const displayName = customName || row.func_name;
+          return (
+            <div
+              key={row.id}
+              onClick={() => handleClick(row)}
+              onDoubleClick={() => handleDoubleClick(row)}
+              onContextMenu={(e) => handleContextMenu(e, row)}
+              style={{
+                position: "absolute", top: 0, left: 0, minWidth: "100%", height: 22,
+                width: contentMinWidth > vs.containerWidth ? contentMinWidth : undefined,
+                transform: `translateY(${vs.getItemY(index)}px)`,
+                paddingLeft: row.depth * 16 + 4, paddingRight: 8,
+                cursor: "pointer", fontSize: 12, lineHeight: "22px",
+                whiteSpace: "nowrap",
+                background: selectedId === row.id ? "var(--bg-selected)" : "transparent",
+                display: "flex", alignItems: "center", gap: 4,
+                boxSizing: "border-box",
+              }}
+              onMouseEnter={(e) => { if (selectedId !== row.id) e.currentTarget.style.background = "var(--bg-row-odd)"; }}
+              onMouseLeave={(e) => { if (selectedId !== row.id) e.currentTarget.style.background = "transparent"; }}
+            >
+              <span style={{ width: 12, textAlign: "center", color: "var(--text-secondary)", fontSize: 10, flexShrink: 0 }}>
+                {row.hasChildren
+                  ? (isNodeLoading ? "\u23F3" : (row.isExpanded && row.isChildrenLoaded ? "\u25BC" : "\u25B6"))
+                  : ""}
+              </span>
+              {displayName
+                ? <span
+                    style={{ color: "var(--text-primary)", flexShrink: 0 }}
+                    onMouseEnter={(e) => {
+                      const mx = e.clientX, my = e.clientY;
+                      tooltipTimer.current = setTimeout(() => {
+                        setTooltip({ x: mx, y: my + 16, text: row.func_addr });
+                      }, 100);
+                    }}
+                    onMouseLeave={() => {
+                      if (tooltipTimer.current) { clearTimeout(tooltipTimer.current); tooltipTimer.current = null; }
+                      setTooltip(null);
+                    }}
+                  >{displayName}</span>
+                : <span style={{ color: "var(--text-address)", flexShrink: 0 }}>{row.func_addr}</span>
+              }
+              <span style={{ color: "var(--text-secondary)", fontSize: 11, marginLeft: "auto", flexShrink: 0 }}>
+                {formatLineCount(row.line_count)}
+              </span>
+            </div>
+          );
+        })}
+      </VirtualScrollArea>
 
       {tooltip && createPortal(
         <div style={{
@@ -303,13 +409,7 @@ export default function FunctionTree({
               onFocus={(e) => e.target.select()}
               onKeyDown={(e) => {
                 if (e.key === "Enter") {
-                  const val = renameInputRef.current?.value.trim() ?? "";
-                  if (val) {
-                    funcRename.setName(renameTarget.addr, val);
-                  } else {
-                    funcRename.removeName(renameTarget.addr);
-                  }
-                  setRenameTarget(null);
+                  handleRenameConfirm();
                 } else if (e.key === "Escape") {
                   setRenameTarget(null);
                 }
@@ -329,13 +429,7 @@ export default function FunctionTree({
               <button
                 onMouseDown={(e) => {
                   e.preventDefault();
-                  const val = renameInputRef.current?.value.trim() ?? "";
-                  if (val) {
-                    funcRename.setName(renameTarget.addr, val);
-                  } else {
-                    funcRename.removeName(renameTarget.addr);
-                  }
-                  setRenameTarget(null);
+                  handleRenameConfirm();
                 }}
                 style={{
                   padding: "4px 12px", fontSize: 12, cursor: "pointer",

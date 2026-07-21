@@ -8,8 +8,13 @@ import SearchResultList from "./components/SearchResultList";
 import StringsPanel from "./components/StringsPanel";
 import StringDetailPanel from "./components/StringDetailPanel";
 import StringXRefsPanel from "./components/StringXRefsPanel";
+import DependencyTreePanel from "./components/DependencyTreePanel";
 import type { SearchMatch, SearchResult } from "./types/trace";
 import SearchBar, { SearchOptions } from "./components/SearchBar";
+import { usePreferences } from "./hooks/usePreferences";
+import { useSearchMatchCache } from "./hooks/useSearchMatchCache";
+import { useSearchPages } from "./hooks/useSearchPages";
+import { findNearestSeqIndex } from "./utils/binarySearch";
 
 const PANEL_TITLES: Record<string, string> = {
   memory: "Memory",
@@ -20,6 +25,7 @@ const PANEL_TITLES: Record<string, string> = {
   "string-detail": "String Detail",
   "string-xrefs": "XRefs",
   "call-info": "Call Info",
+  "dep-tree": "Dependency Tree",
 };
 
 interface SyncState {
@@ -44,7 +50,7 @@ export default function FloatingPanel({ panel }: { panel: string }) {
   });
 
   // Search 面板状态
-  const [searchResults, setSearchResults] = useState<SearchMatch[]>([]);
+  const [matchSeqs, setMatchSeqs] = useState<number[]>([]);
   const [searchQuery, setSearchQuery] = useState("");
   const [isSearching, setIsSearching] = useState(false);
   const [searchStatus, setSearchStatus] = useState("");
@@ -55,7 +61,7 @@ export default function FloatingPanel({ panel }: { panel: string }) {
     emitTo("main", "panel:ready", { panel });
   }, [panel]);
 
-  // 监听主窗口同步事件
+  // 监听主窗口同步事件（dep-tree 不需要 selectedSeq，跳过避免无意义重渲染）
   useEffect(() => {
     const unlisteners: Promise<() => void>[] = [];
 
@@ -63,9 +69,11 @@ export default function FloatingPanel({ panel }: { panel: string }) {
       setSyncState(e.payload);
     }));
 
-    unlisteners.push(listen<{ seq: number | null }>("sync:selected-seq", (e) => {
-      setSyncState(prev => ({ ...prev, selectedSeq: e.payload.seq }));
-    }));
+    if (panel !== "dep-tree") {
+      unlisteners.push(listen<{ seq: number | null }>("sync:selected-seq", (e) => {
+        setSyncState(prev => ({ ...prev, selectedSeq: e.payload.seq }));
+      }));
+    }
 
     unlisteners.push(listen<{ ready: boolean }>("sync:phase2-ready", (e) => {
       setSyncState(prev => ({ ...prev, isPhase2Ready: e.payload.ready }));
@@ -92,7 +100,7 @@ export default function FloatingPanel({ panel }: { panel: string }) {
     if (!syncState.sessionId) return;
     setSearchQuery(query);
     setIsSearching(true);
-    setSearchResults([]);
+    setMatchSeqs([]);
     setSearchTotalMatches(0);
     setSearchStatus("Searching...");
     try {
@@ -107,28 +115,26 @@ export default function FloatingPanel({ panel }: { panel: string }) {
         sessionId: syncState.sessionId,
         request: {
           query: finalQuery,
-          max_results: 10000,
           case_sensitive: options?.caseSensitive ?? false,
           use_regex: finalUseRegex,
           fuzzy: options?.fuzzyMatch ?? false,
         },
       });
-      setSearchResults(result.matches);
+      setMatchSeqs(result.match_seqs);
       setSearchTotalMatches(result.total_matches);
-      setSearchStatus(result.total_matches === 0
+      const statusText = result.total_matches === 0
         ? `No results found for "${query}"`
-        : `${result.total_matches.toLocaleString()} results`);
+        : `${result.total_matches.toLocaleString()} results`;
+      setSearchStatus(statusText);
       emit("sync:search-results-back", {
-        results: result.matches,
+        matchSeqs: result.match_seqs,
         query,
-        status: result.total_matches === 0
-          ? `No results found for "${query}"`
-          : `${result.total_matches.toLocaleString()} results`,
+        status: statusText,
         totalMatches: result.total_matches,
       });
     } catch (e) {
       setSearchStatus(`Search failed: ${e}`);
-      setSearchResults([]);
+      setMatchSeqs([]);
     } finally {
       setIsSearching(false);
     }
@@ -145,8 +151,8 @@ export default function FloatingPanel({ panel }: { panel: string }) {
   // Search 面板：接收主窗口同步的已有搜索结果
   useEffect(() => {
     if (panel !== "search") return;
-    const unlisten = listen<{ results: SearchMatch[]; query: string; status: string; totalMatches: number }>("sync:search-state", (e) => {
-      setSearchResults(e.payload.results);
+    const unlisten = listen<{ matchSeqs: number[]; query: string; status: string; totalMatches: number }>("sync:search-state", (e) => {
+      setMatchSeqs(e.payload.matchSeqs);
       setSearchQuery(e.payload.query);
       setSearchStatus(e.payload.status);
       setSearchTotalMatches(e.payload.totalMatches);
@@ -160,12 +166,8 @@ export default function FloatingPanel({ panel }: { panel: string }) {
   }, []);
 
   const handleJumpToSearchMatch = useCallback((match: SearchMatch) => {
-    if (match.call_info) {
-      emit("action:jump-to-search-match", { seq: match.seq });
-      return;
-    }
-    handleJumpToSeq(match.seq);
-  }, [handleJumpToSeq]);
+    emit("action:jump-to-search-match", { seq: match.seq, hasCallInfo: !!match.call_info });
+  }, []);
 
   const renderPanelContent = () => {
     switch (panel) {
@@ -181,7 +183,7 @@ export default function FloatingPanel({ panel }: { panel: string }) {
       case "search":
         return (
           <FloatingSearchContent
-            searchResults={searchResults}
+            matchSeqs={matchSeqs}
             searchQuery={searchQuery}
             isSearching={isSearching}
             searchStatus={searchStatus}
@@ -189,6 +191,8 @@ export default function FloatingPanel({ panel }: { panel: string }) {
             onJumpToSeq={handleJumpToSeq}
             onJumpToMatch={handleJumpToSearchMatch}
             onSearch={handleSearch}
+            currentSeq={syncState.selectedSeq}
+            sessionId={syncState.sessionId}
           />
         );
       case "strings":
@@ -205,6 +209,8 @@ export default function FloatingPanel({ panel }: { panel: string }) {
         return <StringXRefsPanel />;
       case "call-info":
         return <CallInfoContent />;
+      case "dep-tree":
+        return <DependencyTreePanel />;
       default:
         return (
           <div style={{
@@ -222,7 +228,10 @@ export default function FloatingPanel({ panel }: { panel: string }) {
   };
 
   return (
-    <FloatingWindowFrame title={title}>
+    <FloatingWindowFrame
+      title={title}
+      maxWidth={panel === "dep-tree" ? Math.round(window.screen.width * 0.5) : undefined}
+    >
       {/* 面板内容 */}
       <div style={{ flex: 1, display: "flex", flexDirection: "column", overflow: "hidden" }}>
         {renderPanelContent()}
@@ -232,10 +241,10 @@ export default function FloatingPanel({ panel }: { panel: string }) {
 }
 
 function FloatingSearchContent({
-  searchResults, searchQuery, isSearching, searchStatus, searchTotalMatches,
-  onJumpToSeq, onJumpToMatch, onSearch,
+  matchSeqs, searchQuery, isSearching, searchStatus, searchTotalMatches,
+  onJumpToSeq, onJumpToMatch, onSearch, currentSeq, sessionId,
 }: {
-  searchResults: SearchMatch[];
+  matchSeqs: number[];
   searchQuery: string;
   isSearching: boolean;
   searchStatus: string;
@@ -243,7 +252,10 @@ function FloatingSearchContent({
   onJumpToSeq: (seq: number) => void;
   onJumpToMatch: (match: SearchMatch) => void;
   onSearch: (query: string, options: SearchOptions) => void;
+  currentSeq: number | null;
+  sessionId: string | null;
 }) {
+  const { preferences } = usePreferences();
   const [localQuery, setLocalQuery] = useState(searchQuery);
   const [selectedIdx, setSelectedIdx] = useState(-1);
   const inputRef = useRef<HTMLInputElement>(null);
@@ -251,6 +263,43 @@ function FloatingSearchContent({
   const [caseSensitiveState, setCaseSensitiveState] = useState(false);
   const [fuzzyState, setFuzzyState] = useState(false);
   const [useRegexState, setUseRegexState] = useState(false);
+
+  const searchGenRef = useRef(0);
+  const [searchGen, setSearchGen] = useState(0);
+  const [queryParams, setQueryParams] = useState<{ query: string; caseSensitive: boolean; useRegex: boolean; fuzzy: boolean } | null>(null);
+
+  const cache = useSearchMatchCache(sessionId, queryParams, searchGen);
+  const searchPages = useSearchPages();
+
+  // 新搜索开始时递增 generation 并清空缓存（绑定到 searchQuery 变化，而非 matchSeqs）
+  useEffect(() => {
+    searchGenRef.current++;
+    setSearchGen(searchGenRef.current);
+    cache.clear();
+  }, [searchQuery]);
+
+  // 搜索结果变化时，重置分页状态
+  useEffect(() => {
+    if (matchSeqs.length === 0 && searchTotalMatches === 0) {
+      searchPages.reset(0, [], sessionId ?? "");
+      setSelectedIdx(-1);
+      return;
+    }
+    searchPages.reset(searchTotalMatches, matchSeqs, sessionId ?? "");
+    if (currentSeq == null) { setSelectedIdx(0); return; }
+    setSelectedIdx(findNearestSeqIndex(matchSeqs, currentSeq));
+    cache.getMatches(matchSeqs.slice(0, 50));
+  }, [matchSeqs, searchTotalMatches]);
+
+  const wrappedOnSearch = useCallback((query: string, options: SearchOptions) => {
+    setQueryParams({
+      query,
+      caseSensitive: options.caseSensitive,
+      useRegex: options.useRegex,
+      fuzzy: options.fuzzyMatch,
+    });
+    onSearch(query, options);
+  }, [onSearch]);
 
   const handleOptionsChange = useCallback((opts: SearchOptions) => {
     currentOptionsRef.current = opts;
@@ -287,21 +336,24 @@ function FloatingSearchContent({
   }, [localQuery]);
 
   useEffect(() => { setLocalQuery(searchQuery); }, [searchQuery]);
-  useEffect(() => { setSelectedIdx(-1); }, [searchResults]);
 
   const handlePrevMatch = useCallback(() => {
-    if (searchResults.length === 0) return;
-    setSelectedIdx(prev => prev <= 0 ? searchResults.length - 1 : prev - 1);
-  }, [searchResults.length]);
+    if (searchPages.totalCount === 0) return;
+    setSelectedIdx(prev => prev <= 0 ? searchPages.totalCount - 1 : prev - 1);
+  }, [searchPages.totalCount]);
 
   const handleNextMatch = useCallback(() => {
-    if (searchResults.length === 0) return;
-    setSelectedIdx(prev => (prev + 1) % searchResults.length);
-  }, [searchResults.length]);
+    if (searchPages.totalCount === 0) return;
+    setSelectedIdx(prev => (prev + 1) % searchPages.totalCount);
+  }, [searchPages.totalCount]);
+
+  const handleJumpToSearchMatch = useCallback((match: SearchMatch) => {
+    emit("action:jump-to-search-match", { seq: match.seq, hasCallInfo: !!match.call_info });
+  }, []);
 
   const matchInfo = isSearching
     ? "Searching..."
-    : searchResults.length === 0
+    : searchPages.totalCount === 0
       ? (searchQuery ? "No results" : "")
       : selectedIdx < 0
         ? `${searchTotalMatches.toLocaleString()} results`
@@ -312,18 +364,18 @@ function FloatingSearchContent({
       <SearchBar
         query={localQuery}
         onQueryChange={setLocalQuery}
-        onSearch={onSearch}
+        onSearch={wrappedOnSearch}
         onPrevMatch={handlePrevMatch}
         onNextMatch={handleNextMatch}
         matchInfo={matchInfo}
         inputRef={inputRef}
         onOptionsChange={handleOptionsChange}
       />
-      {isSearching ? (
+      {isSearching || (searchPages.totalCount > 0 && cache.cacheSize === 0) ? (
         <div style={{ flex: 1, display: "flex", alignItems: "center", justifyContent: "center" }}>
           <span style={{ color: "var(--text-secondary)", fontSize: 12 }}>Searching...</span>
         </div>
-      ) : searchResults.length === 0 ? (
+      ) : searchPages.totalCount === 0 ? (
         <div style={{ flex: 1, display: "flex", alignItems: "center", justifyContent: "center" }}>
           <span style={{ color: "var(--text-secondary)", fontSize: 12 }}>
             {searchQuery ? `No results found for "${searchQuery}"` : "Enter search query and press Enter"}
@@ -332,14 +384,24 @@ function FloatingSearchContent({
       ) : (
         <div style={{ flex: 1, display: "flex", flexDirection: "column", overflow: "hidden" }}>
           <SearchResultList
-            results={searchResults}
-            selectedSeq={searchResults[selectedIdx]?.seq ?? null}
+            totalCount={searchPages.totalCount}
+            getSeqAtIndex={searchPages.getSeqAtIndex}
+            ensureRange={searchPages.ensureRange}
+            findSeqIndex={searchPages.findSeqIndex}
+            getMatchDetail={cache.getMatch}
+            selectedSeq={searchPages.getSeqAtIndex(selectedIdx) ?? null}
             onJumpToSeq={onJumpToSeq}
-            onJumpToMatch={onJumpToMatch}
+            onJumpToMatch={handleJumpToSearchMatch}
             searchQuery={searchQuery}
             caseSensitive={caseSensitiveState}
             fuzzy={fuzzyState}
             useRegex={useRegexState}
+            showSoName={preferences.showSoName}
+            showAbsAddress={preferences.showAbsAddress}
+            addrColorHighlight={preferences.addrColorHighlight}
+            requestDetails={(seqs) => { cache.getMatches(seqs); }}
+            cacheVersion={cache.cacheSize}
+            pageVersion={searchPages.pageVersion}
           />
         </div>
       )}

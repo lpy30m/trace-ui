@@ -1,0 +1,10 @@
+[package]
+name = "trace-parser"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+smallvec = { version = "1", features = ["union"] }
+memchr = "2"
+serde = { version = "1", features = ["derive"] }
+regex = "1"

@@ -16,6 +16,8 @@ export function getSharedColors() {
     borderColor: t.borderColor,
     textSecondary: t.textSecondary,
     textAddress: t.textAddress,
+    textSoName: t.textSoName,
+    textAbsAddress: t.textAbsAddress,
     textChanges: t.textChanges,
     asmMnemonic: t.asmMnemonic,
     asmRegister: t.asmRegister,

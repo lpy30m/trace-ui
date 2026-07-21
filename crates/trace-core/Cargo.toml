@@ -1,0 +1,30 @@
+[package]
+name = "trace-core"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+trace-parser = { path = "../trace-parser" }
+thiserror = "1"
+serde = { version = "1", features = ["derive"] }
+memmap2 = "0.9"
+bitvec = { version = "1", features = ["serde"] }
+bincode = "1"
+rustc-hash = "2"
+smallvec = { version = "1", features = ["union", "serde"] }
+rayon = "1"
+anyhow = "1"
+sha2 = "0.10"
+md-5 = "0.10"
+sha1 = "0.10"
+crc32fast = "1"
+regex = "1"
+memchr = "2"
+uuid = { version = "1", features = ["v4"] }
+dirs = "5"
+serde_json = "1"
+aes = "0.8"
+aes-gcm = "0.10"
+
+[target.'cfg(windows)'.dependencies]
+windows-sys = { version = "0.59", features = ["Win32_Foundation", "Win32_Storage_FileSystem"] }

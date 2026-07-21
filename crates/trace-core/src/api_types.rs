@@ -1,0 +1,406 @@
+use serde::{Deserialize, Serialize};
+use trace_parser::types::TraceFormat;
+
+// ── Progress ──
+
+pub type ProgressCallback = Box<dyn Fn(Progress) + Send + Sync>;
+
+#[derive(Clone, Serialize)]
+pub struct Progress {
+    pub session_id: String,
+    pub phase: Phase,
+    pub fraction: f64,
+    pub message: Option<String>,
+}
+
+#[derive(Clone, Serialize)]
+pub enum Phase {
+    Scanning,
+    Flattening,
+    LoadingCache,
+}
+
+// ── Session ──
+
+#[derive(Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SessionInfo {
+    pub session_id: String,
+    pub file_path: String,
+    pub file_size: u64,
+    pub total_lines: u32,
+    pub index_ready: bool,
+    pub building: bool,
+    pub has_slice_result: bool,
+    pub trace_format: Option<TraceFormat>,
+}
+
+// ── Build ──
+
+pub struct BuildOptions {
+    pub force_rebuild: bool,
+    pub skip_strings: bool,
+}
+
+#[derive(Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct BuildResult {
+    pub total_lines: u32,
+    pub has_string_index: bool,
+    pub from_cache: bool,
+}
+
+// ── Browse ──
+
+#[derive(Serialize, Clone)]
+pub struct CallArgumentDto {
+    pub index: String,
+    pub value: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub register: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub role: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub type_name: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub raw_value: Option<String>,
+    pub observation: String,
+}
+
+impl CallArgumentDto {
+    pub fn from_annotation(func_name: &str, index: &str, value: &str) -> Self {
+        let register = index
+            .strip_prefix('x')
+            .and_then(|number| number.parse::<u8>().ok().filter(|number| *number <= 7))
+            .map(|number| format!("x{number}"));
+        let normalized = func_name.trim_start_matches('_').to_ascii_lowercase();
+        let position = register
+            .as_deref()
+            .and_then(|name| name.strip_prefix('x'))
+            .and_then(|number| number.parse::<u8>().ok());
+        let (role, type_name) = match (normalized.as_str(), position) {
+            (
+                "memcpy" | "memmove" | "strcpy" | "strcat" | "memset" | "sprintf" | "snprintf",
+                Some(0),
+            ) => (Some("destination"), Some("pointer")),
+            ("memcpy" | "memmove" | "strcpy" | "strcat", Some(1)) => {
+                (Some("source"), Some("pointer"))
+            }
+            ("memcpy" | "memmove", Some(2)) | ("snprintf", Some(1)) => {
+                (Some("length"), Some("size_t"))
+            }
+            ("memset", Some(1)) => (Some("fill_value"), Some("int")),
+            ("memset", Some(2)) => (Some("length"), Some("size_t")),
+            ("strlen", Some(0)) => (Some("source"), Some("cstring")),
+            ("sprintf", Some(1)) | ("snprintf", Some(2)) => (Some("format"), Some("cstring")),
+            ("sprintf", Some(position)) if position >= 2 => {
+                (Some("variadic_value"), Some("abi_value"))
+            }
+            ("snprintf", Some(position)) if position >= 3 => {
+                (Some("variadic_value"), Some("abi_value"))
+            }
+            _ => (None, None),
+        };
+        Self {
+            index: index.to_string(),
+            value: value.to_string(),
+            register,
+            role: role.map(str::to_string),
+            type_name: type_name.map(str::to_string),
+            raw_value: Some(value.to_string()),
+            observation: if index.starts_with('x') {
+                "call_signature".to_string()
+            } else {
+                "decoded_annotation".to_string()
+            },
+        }
+    }
+}
+
+#[cfg(test)]
+mod call_argument_tests {
+    use super::CallArgumentDto;
+
+    #[test]
+    fn assigns_libc_abi_roles_without_upgrading_decoded_annotations() {
+        let destination = CallArgumentDto::from_annotation("sprintf", "x0", "0x1000");
+        assert_eq!(destination.register.as_deref(), Some("x0"));
+        assert_eq!(destination.role.as_deref(), Some("destination"));
+        assert_eq!(destination.type_name.as_deref(), Some("pointer"));
+        assert_eq!(destination.observation, "call_signature");
+
+        let variadic = CallArgumentDto::from_annotation("sprintf", "x2", "0x6b2e9c01");
+        assert_eq!(variadic.role.as_deref(), Some("variadic_value"));
+
+        let decoded = CallArgumentDto::from_annotation("sprintf", "0", "3");
+        assert_eq!(decoded.register, None);
+        assert_eq!(decoded.role, None);
+        assert_eq!(decoded.observation, "decoded_annotation");
+    }
+}
+
+#[derive(Serialize, Clone)]
+pub struct CallInfoDto {
+    pub func_name: String,
+    pub is_jni: bool,
+    pub args: Vec<CallArgumentDto>,
+    pub ret_value: Option<String>,
+    pub summary: String,
+    pub tooltip: String,
+    pub observation_seq: Option<u32>,
+    pub completion_seq: Option<u32>,
+}
+
+#[derive(Serialize, Clone)]
+pub struct TraceLine {
+    pub seq: u32,
+    pub address: String,
+    pub so_offset: String,
+    pub so_name: Option<String>,
+    pub disasm: String,
+    pub changes: String,
+    pub reg_before: String,
+    pub mem_rw: Option<String>,
+    pub mem_addr: Option<String>,
+    pub mem_size: Option<u8>,
+    pub raw: String,
+    pub call_info: Option<CallInfoDto>,
+}
+
+// ── Search ──
+
+pub struct SearchOptions {
+    pub case_sensitive: bool,
+    pub use_regex: bool,
+    pub fuzzy: bool,
+    pub max_results: Option<u32>,
+}
+
+#[derive(Serialize)]
+pub struct SearchResultLite {
+    pub match_seqs: Vec<u32>,
+    pub total_scanned: u32,
+    pub total_matches: u32,
+    pub truncated: bool,
+}
+
+#[derive(Serialize)]
+pub struct SearchMatch {
+    pub seq: u32,
+    pub address: String,
+    pub so_offset: String,
+    pub so_name: Option<String>,
+    pub disasm: String,
+    pub changes: String,
+    pub reg_before: String,
+    pub mem_rw: Option<String>,
+    pub call_info: Option<CallInfoDto>,
+    pub hidden_content: Option<String>,
+}
+
+// ── Slice ──
+
+pub struct SliceOptions {
+    pub start_seq: Option<u32>,
+    pub end_seq: Option<u32>,
+    pub data_only: bool,
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SliceResult {
+    pub marked_count: u32,
+    pub total_lines: u32,
+    pub percentage: f64,
+    pub warnings: Vec<SliceWarning>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SliceWarning {
+    pub code: String,
+    pub message: String,
+    pub source_spec: String,
+    pub missing_ranges: Vec<SliceMissingRange>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SliceMissingRange {
+    pub start_addr: String,
+    pub end_addr: String,
+    pub size: u32,
+}
+
+#[derive(Clone, Debug)]
+pub struct ForwardSliceOptions {
+    pub start_seq: Option<u32>,
+    pub end_seq: Option<u32>,
+    pub data_only: bool,
+    pub max_nodes: u32,
+}
+
+#[derive(Clone, Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ForwardSliceResult {
+    pub source_specs: Vec<String>,
+    pub source_seqs: Vec<u32>,
+    pub affected_seqs: Vec<u32>,
+    pub terminal_seqs: Vec<u32>,
+    pub affected_count: u32,
+    pub total_lines: u32,
+    pub traversed_edges: u64,
+    pub forward_index_edges: u64,
+    pub forward_index_reused: bool,
+    pub truncated: bool,
+    pub warnings: Vec<SliceWarning>,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ExportConfig {
+    pub from_specs: Vec<String>,
+    pub start_seq: Option<u32>,
+    pub end_seq: Option<u32>,
+}
+
+// ── Memory ──
+
+#[derive(Serialize)]
+pub struct MemorySnapshot {
+    pub base_addr: String,
+    pub bytes: Vec<u8>,
+    pub known: Vec<bool>,
+    pub length: u32,
+    pub provenance: Vec<MemoryByteProvenance>,
+}
+
+#[derive(Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct MemoryByteProvenance {
+    pub offset: u32,
+    pub address: String,
+    pub source: String,
+    pub seq: Option<u32>,
+    pub confidence: String,
+}
+
+#[derive(Serialize)]
+pub struct MemHistoryRecord {
+    pub seq: u32,
+    pub rw: String,
+    pub data: String,
+    pub size: u8,
+    pub insn_addr: String,
+    pub disasm: String,
+}
+
+#[derive(Serialize)]
+pub struct MemHistoryMeta {
+    pub total: usize,
+    pub center_index: usize,
+    pub samples: Vec<MemHistoryRecord>,
+}
+
+// ── Call Tree ──
+
+#[derive(Serialize, Clone)]
+pub struct CallTreeNodeDto {
+    pub id: u32,
+    pub func_addr: String,
+    pub func_name: Option<String>,
+    pub entry_seq: u32,
+    pub exit_seq: u32,
+    pub parent_id: Option<u32>,
+    pub children_ids: Vec<u32>,
+    pub line_count: u32,
+}
+
+// ── Strings ──
+
+pub struct StringQueryOptions {
+    pub min_len: u32,
+    pub offset: u32,
+    pub limit: u32,
+    pub search: Option<String>,
+}
+
+#[derive(Serialize)]
+pub struct StringRecordDto {
+    pub idx: u32,
+    pub addr: String,
+    pub content: String,
+    pub encoding: String,
+    pub byte_len: u32,
+    pub seq: u32,
+    pub xref_count: u32,
+    pub rw: String,
+}
+
+#[derive(Serialize)]
+pub struct StringsResult {
+    pub strings: Vec<StringRecordDto>,
+    pub total: u32,
+}
+
+#[derive(Serialize)]
+pub struct StringXRef {
+    pub seq: u32,
+    pub rw: String,
+    pub insn_addr: String,
+    pub disasm: String,
+}
+
+// ── Dep Tree ──
+
+pub struct DepTreeOptions {
+    pub data_only: bool,
+    pub max_nodes: Option<u32>,
+}
+
+// ── DEF/USE ──
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct DefUseChain {
+    pub def_seq: Option<u32>,
+    pub use_seqs: Vec<u32>,
+    pub redefined_seq: Option<u32>,
+}
+
+// ── Functions ──
+
+#[derive(Serialize)]
+pub struct FunctionCallOccurrence {
+    pub seq: u32,
+    pub summary: String,
+}
+
+#[derive(Serialize)]
+pub struct FunctionCallEntry {
+    pub func_name: String,
+    pub is_jni: bool,
+    pub occurrences: Vec<FunctionCallOccurrence>,
+}
+
+#[derive(Serialize)]
+pub struct FunctionCallsResult {
+    pub functions: Vec<FunctionCallEntry>,
+    pub total_calls: usize,
+}
+
+// ── Cache ──
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CacheInfo {
+    pub path: String,
+    pub size: u64,
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ClearResult {
+    pub files_deleted: u32,
+    pub bytes_freed: u64,
+}

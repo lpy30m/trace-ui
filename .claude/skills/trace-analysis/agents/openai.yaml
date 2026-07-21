@@ -1,0 +1,15 @@
+interface:
+  display_name: "Trace Analysis"
+  short_description: "Analyze ARM64 traces with verifiable MCP evidence"
+  default_prompt: "Use $trace-analysis to investigate this ARM64 trace and report only evidence-backed conclusions."
+
+dependencies:
+  tools:
+    - type: "mcp"
+      value: "trace-ui"
+      description: "Local Trace UI deterministic ARM64 analysis server"
+      transport: "streamable_http"
+      url: "http://127.0.0.1:19821/mcp"
+
+policy:
+  allow_implicit_invocation: true

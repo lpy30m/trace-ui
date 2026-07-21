@@ -1,5 +1,6 @@
-import { useState, useCallback } from "react";
+import { useState, useCallback, useEffect } from "react";
 import { getCurrentWindow } from "@tauri-apps/api/window";
+import { LogicalSize, LogicalPosition } from "@tauri-apps/api/dpi";
 import WindowControls from "./WindowControls";
 import ContextMenu, { ContextMenuItem } from "./ContextMenu";
 import { isMac } from "../utils/platform";
@@ -10,9 +11,11 @@ interface FloatingWindowFrameProps {
   onClose?: () => void;
   /** 标题栏右侧额外控件（位于 pin 按钮左侧） */
   titleBarExtra?: React.ReactNode;
+  /** 窗口最大宽度限制（逻辑像素）。设置后最大化时宽度不超过此值 */
+  maxWidth?: number;
 }
 
-export default function FloatingWindowFrame({ title, children, onClose, titleBarExtra }: FloatingWindowFrameProps) {
+export default function FloatingWindowFrame({ title, children, onClose, titleBarExtra, maxWidth }: FloatingWindowFrameProps) {
   // 置顶锁定
   const [isPinned, setIsPinned] = useState(false);
   const [ctxMenu, setCtxMenu] = useState<{ x: number; y: number } | null>(null);
@@ -24,6 +27,25 @@ export default function FloatingWindowFrame({ title, children, onClose, titleBar
       return next;
     });
   }, []);
+
+  // 限制窗口最大宽度：使用原生 setMaxSize 约束
+  useEffect(() => {
+    if (!maxWidth) return;
+    const win = getCurrentWindow();
+    win.setMaxSize(new LogicalSize(maxWidth, 99999));
+    return () => { win.setMaxSize(null); };
+  }, [maxWidth]);
+
+  // 受限最大化：宽度不超过 maxWidth，高度铺满屏幕，居中
+  const constrainedMaximize = useCallback(async () => {
+    const win = getCurrentWindow();
+    const screenW = window.screen.availWidth;
+    const screenH = window.screen.availHeight;
+    const w = maxWidth ? Math.min(maxWidth, screenW) : screenW;
+    const x = Math.round((screenW - w) / 2);
+    await win.setSize(new LogicalSize(w, screenH));
+    await win.setPosition(new LogicalPosition(x, 0));
+  }, [maxWidth]);
 
   return (
     <div style={{
@@ -55,7 +77,7 @@ export default function FloatingWindowFrame({ title, children, onClose, titleBar
           gap: 8,
         }}
       >
-        {isMac && <WindowControls />}
+        {isMac && <WindowControls onMaximize={maxWidth ? constrainedMaximize : undefined} />}
         <span
           data-tauri-drag-region
           style={{ flex: 1, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}
@@ -76,7 +98,7 @@ export default function FloatingWindowFrame({ title, children, onClose, titleBar
             lineHeight: 1,
           }}
         >{"\uD83D\uDCCC"}</span>
-        {!isMac && <WindowControls />}
+        {!isMac && <WindowControls onMaximize={maxWidth ? constrainedMaximize : undefined} />}
       </div>
 
       {/* 右键上下文菜单 */}

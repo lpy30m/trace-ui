@@ -1,12 +1,12 @@
 import { useState, useEffect, useCallback, useRef, useMemo } from "react";
 import { invoke } from "@tauri-apps/api/core";
-import { listen } from "@tauri-apps/api/event";
-import { useVirtualizerNoSync } from "../hooks/useVirtualizerNoSync";
+import { emit, listen } from "@tauri-apps/api/event";
 import type { MemorySnapshot, TraceLine } from "../types/trace";
 import { useSelectedSeq } from "../stores/selectedSeqStore";
 import type { ResolvedRow } from "../hooks/useFoldState";
 import Minimap, { MINIMAP_WIDTH } from "./Minimap";
 import CustomScrollbar from "./CustomScrollbar";
+import ContextMenu, { ContextMenuItem, ContextMenuSeparator } from "./ContextMenu";
 
 interface MemHistoryRecord {
   seq: number;
@@ -15,6 +15,12 @@ interface MemHistoryRecord {
   size: number;
   insn_addr: string;
   disasm: string;
+}
+
+interface MemHistoryMeta {
+  total: number;
+  center_index: number;
+  samples: MemHistoryRecord[];
 }
 
 interface Props {
@@ -26,14 +32,18 @@ interface Props {
   onJumpToSeq: (seq: number) => void;
   sessionId: string | null;
   resetKey?: number;
+  onTraceMemory?: (request: { addr: string; size: number; seq: number }) => Promise<void> | void;
 }
 
 const BYTES_PER_LINE = 16;
+const HISTORY_PAGE_SIZE = 500;
 const DEFAULT_LENGTH = 1024;
+const LENGTH_PRESETS = [256, 512, 1024, 2048, 4096, 8192, 16384];
 const HISTORY_ROW_HEIGHT = 20;
 const HEX_ROW_HEIGHT = 20;
 const ADDR_HISTORY_KEY = "memory-addr-search-history";
 const MAX_ADDR_HISTORY = 20;
+const MEM_LENGTH_KEY = "memory-hex-length";
 
 function formatHexByte(byte: number): string {
   return byte.toString(16).padStart(2, "0").toUpperCase();
@@ -43,7 +53,24 @@ function toAsciiChar(byte: number): string {
   return byte >= 0x20 && byte <= 0x7e ? String.fromCharCode(byte) : ".";
 }
 
-export default function MemoryPanel({ selectedSeq: selectedSeqProp, isPhase2Ready, memAddr: memAddrProp, memRw: memRwProp, memSize: memSizeProp, onJumpToSeq, sessionId, resetKey }: Props) {
+/** 将 hex 地址字符串解析为 BigInt（支持超过 2^53 的 64 位地址） */
+function hexToBigInt(hex: string): bigint {
+  const raw = hex.replace(/^0x/i, "");
+  if (!raw || !/^[0-9a-fA-F]+$/.test(raw)) return 0n;
+  return BigInt("0x" + raw);
+}
+
+/** 将 BigInt 转回 hex 字符串 */
+function bigIntToHex(n: bigint): string {
+  return "0x" + n.toString(16);
+}
+
+/** 16 字节对齐（纯字符串操作，无精度丢失） */
+function alignHexAddr16(hex: string): string {
+  return bigIntToHex(hexToBigInt(hex) & ~0xFn);
+}
+
+export default function MemoryPanel({ selectedSeq: selectedSeqProp, isPhase2Ready, memAddr: memAddrProp, memRw: memRwProp, memSize: memSizeProp, onJumpToSeq, sessionId, resetKey, onTraceMemory }: Props) {
   const selectedSeqFromStore = useSelectedSeq();
   const selectedSeq = selectedSeqProp !== undefined ? selectedSeqProp : selectedSeqFromStore;
 
@@ -74,10 +101,49 @@ export default function MemoryPanel({ selectedSeq: selectedSeqProp, isPhase2Read
   const [inputAddr, setInputAddr] = useState("");
   const [currentAddr, setCurrentAddr] = useState<string | null>(null);
   const [snapshot, setSnapshot] = useState<MemorySnapshot | null>(null);
+  const [hexLength, setHexLength] = useState<number>(() => {
+    try { const v = parseInt(localStorage.getItem(MEM_LENGTH_KEY) || ""); return v > 0 ? v : DEFAULT_LENGTH; } catch { return DEFAULT_LENGTH; }
+  });
+  const [showLengthInput, setShowLengthInput] = useState(false);
+  const [customLengthInput, setCustomLengthInput] = useState("");
   const [error, setError] = useState<string | null>(null);
-  const [history, setHistory] = useState<MemHistoryRecord[]>([]);
+  const [historyTotal, setHistoryTotal] = useState(0);
+  const [historyCenterIndex, setHistoryCenterIndex] = useState(0);
+  const historyPagesRef = useRef<Map<number, MemHistoryRecord[]>>(new Map());
+  const [historyPagesVersion, setHistoryPagesVersion] = useState(0);
+  const historyLoadingPages = useRef<Set<number>>(new Set());
+  const historyMinimapSamples = useRef<MemHistoryRecord[]>([]);
   const [historyAddr, setHistoryAddr] = useState<string | null>(null);
   const historyRef = useRef<HTMLDivElement>(null);
+  const [hexContextMenu, setHexContextMenu] = useState<{ x: number; y: number; selText: string } | null>(null);
+
+  const getHistoryRecord = useCallback((globalIndex: number): MemHistoryRecord | undefined => {
+    const pageIndex = Math.floor(globalIndex / HISTORY_PAGE_SIZE);
+    const page = historyPagesRef.current.get(pageIndex);
+    if (!page) return undefined;
+    return page[globalIndex - pageIndex * HISTORY_PAGE_SIZE];
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [historyPagesVersion]);
+
+  const loadHistoryPage = useCallback((pageIndex: number, addr: string) => {
+    if (historyLoadingPages.current.has(pageIndex)) return;
+    if (historyPagesRef.current.has(pageIndex)) return;
+    historyLoadingPages.current.add(pageIndex);
+    const startIndex = pageIndex * HISTORY_PAGE_SIZE;
+    invoke<MemHistoryRecord[]>("get_mem_history_range", {
+      sessionId,
+      addr,
+      startIndex,
+      limit: HISTORY_PAGE_SIZE,
+    }).then((records) => {
+      historyPagesRef.current.set(pageIndex, records);
+      setHistoryPagesVersion(v => v + 1);
+    }).finally(() => {
+      historyLoadingPages.current.delete(pageIndex);
+    });
+  }, [sessionId]);
+
+  const prevMemAddr = useRef<string | null>(null);
 
   // ── 地址搜索历史 ──
   const [addrHistory, setAddrHistory] = useState<string[]>(() => {
@@ -129,12 +195,10 @@ export default function MemoryPanel({ selectedSeq: selectedSeqProp, isPhase2Read
   // View in Memory：外部指定地址时直接跳转，关闭 autoTrack
   useEffect(() => {
     const unlisten = listen<{ addr: string }>("action:view-in-memory", (e) => {
-      const raw = e.payload.addr.replace(/^0x/i, "");
-      const num = parseInt(raw, 16);
-      if (isNaN(num)) return;
-      const aligned = num - (num % 16);
+      const n = hexToBigInt(e.payload.addr);
+      if (n === 0n) return;
       setAutoTrack(false);
-      setCurrentAddr(`0x${aligned.toString(16)}`);
+      setCurrentAddr(bigIntToHex(n & ~0xFn));
       setInputAddr(e.payload.addr);
     });
     return () => { unlisten.then(fn => fn()); };
@@ -143,11 +207,7 @@ export default function MemoryPanel({ selectedSeq: selectedSeqProp, isPhase2Read
   // auto-track 时更新 currentAddr，让访问地址出现在第一行
   useEffect(() => {
     if (autoTrack && memAddr) {
-      const addr = parseInt(memAddr.replace(/^0x/i, ""), 16);
-      if (isNaN(addr)) { setCurrentAddr(memAddr); return; }
-      // 对齐到 16 字节边界
-      const aligned = addr - (addr % 16);
-      setCurrentAddr(`0x${aligned.toString(16)}`);
+      setCurrentAddr(alignHexAddr16(memAddr));
     }
   }, [autoTrack, memAddr]);
 
@@ -162,7 +222,7 @@ export default function MemoryPanel({ selectedSeq: selectedSeqProp, isPhase2Read
         sessionId,
         seq: selectedSeq,
         addr: currentAddr,
-        length: DEFAULT_LENGTH,
+        length: hexLength,
       })
         .then((s) => {
           if (cancelled) return;
@@ -175,59 +235,110 @@ export default function MemoryPanel({ selectedSeq: selectedSeqProp, isPhase2Read
         });
     }, 80);
     return () => { cancelled = true; clearTimeout(timer); };
-  }, [selectedSeq, isPhase2Ready, currentAddr, sessionId]);
+  }, [selectedSeq, isPhase2Ready, currentAddr, sessionId, hexLength]);
 
-  // 查询地址读写历史（当 memAddr 变化时，debounce 150ms 让 register/memory 查询先完成）
+  // 查询地址读写历史（分页加载，debounce 150ms）
   useEffect(() => {
-    if (!memAddr || !isPhase2Ready || !sessionId) {
-      setHistory([]);
+    if (!memAddr || !isPhase2Ready || !sessionId || selectedSeq === null) {
+      setHistoryTotal(0);
+      setHistoryCenterIndex(0);
+      historyPagesRef.current = new Map();
+      setHistoryPagesVersion(v => v + 1);
       setHistoryAddr(null);
+      historyLoadingPages.current.clear();
+      prevMemAddr.current = null;
       return;
     }
+
+    const addrChanged = memAddr !== prevMemAddr.current;
+    prevMemAddr.current = memAddr;
+
     let cancelled = false;
     const timer = setTimeout(() => {
       setHistoryAddr(memAddr);
-      invoke<MemHistoryRecord[]>("get_mem_history", { sessionId, addr: memAddr })
-        .then((h) => {
-          if (!cancelled) setHistory(h);
-        })
-        .catch(() => { if (!cancelled) setHistory([]); });
+
+      if (addrChanged) {
+        historyPagesRef.current = new Map();
+        historyLoadingPages.current.clear();
+        historyMinimapSamples.current = [];
+        setHistoryPagesVersion(v => v + 1);
+
+        invoke<MemHistoryMeta>("get_mem_history_meta", {
+          sessionId,
+          addr: memAddr,
+          centerSeq: selectedSeq,
+        }).then((meta) => {
+          if (cancelled) return;
+          setHistoryTotal(meta.total);
+          setHistoryCenterIndex(meta.center_index);
+          historyMinimapSamples.current = meta.samples;
+          if (meta.total === 0) return;
+          const centerPage = Math.floor(meta.center_index / HISTORY_PAGE_SIZE);
+          invoke<MemHistoryRecord[]>("get_mem_history_range", {
+            sessionId,
+            addr: memAddr,
+            startIndex: centerPage * HISTORY_PAGE_SIZE,
+            limit: HISTORY_PAGE_SIZE,
+          }).then((records) => {
+            if (cancelled) return;
+            historyPagesRef.current.set(centerPage, records);
+            setHistoryPagesVersion(v => v + 1);
+          });
+        }).catch(() => {
+          if (cancelled) return;
+          setHistoryTotal(0);
+          historyPagesRef.current = new Map();
+          setHistoryPagesVersion(v => v + 1);
+        });
+      } else {
+        // Only selectedSeq changed, same address — just re-center, don't clear cache
+        invoke<MemHistoryMeta>("get_mem_history_meta", {
+          sessionId,
+          addr: memAddr,
+          centerSeq: selectedSeq,
+        }).then((meta) => {
+          if (cancelled) return;
+          setHistoryCenterIndex(meta.center_index);
+          const centerPage = Math.floor(meta.center_index / HISTORY_PAGE_SIZE);
+          loadHistoryPage(centerPage, memAddr);
+        });
+      }
     }, 150);
     return () => { cancelled = true; clearTimeout(timer); };
-  }, [memAddr, isPhase2Ready, sessionId]);
-
-  const historyVirtualizer = useVirtualizerNoSync({
-    count: history.length,
-    getScrollElement: () => historyRef.current,
-    estimateSize: () => 20,
-    overscan: 10,
-  });
-
-  // 当 history 加载完成或 selectedSeq 变化时，滚动到当前 seq 居中
-  useEffect(() => {
-    if (history.length === 0 || selectedSeq === null) return;
-    const idx = history.findIndex(r => r.seq === selectedSeq);
-    if (idx >= 0) {
-      historyVirtualizer.scrollToIndex(idx, { align: "center" });
-    }
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [history, selectedSeq]);
+  }, [memAddr, isPhase2Ready, sessionId, selectedSeq, loadHistoryPage]);
 
   // Access History minimap state
   const [historyScrollRow, setHistoryScrollRow] = useState(0);
   const [historyContainerHeight, setHistoryContainerHeight] = useState(0);
   const historyObserverRef = useRef<{ ro: ResizeObserver; el: HTMLDivElement } | null>(null);
 
-  const handleHistoryScroll = useCallback(() => {
-    const el = historyRef.current;
-    if (el) setHistoryScrollRow(Math.floor(el.scrollTop / HISTORY_ROW_HEIGHT));
-  }, []);
+  const historyVisibleRows = historyContainerHeight > 0
+    ? Math.floor(historyContainerHeight / HISTORY_ROW_HEIGHT)
+    : 0;
+  const historyMaxRow = Math.max(0, historyTotal - historyVisibleRows);
+
+  // 当 history 加载完成或 selectedSeq 变化时，滚动到当前 seq 居中
+  useEffect(() => {
+    if (historyTotal === 0) return;
+    const target = Math.max(0, Math.min(
+      historyCenterIndex - Math.floor(historyVisibleRows / 2),
+      historyMaxRow,
+    ));
+    setHistoryScrollRow(target);
+  }, [historyCenterIndex, historyTotal, historyVisibleRows, historyMaxRow]);
+
+  const historyVisibleItems = useMemo(() => {
+    if (historyTotal === 0 || historyVisibleRows === 0) return [];
+    const start = historyScrollRow;
+    const end = Math.min(start + historyVisibleRows + 2, historyTotal);
+    const items: number[] = [];
+    for (let i = start; i < end; i++) items.push(i);
+    return items;
+  }, [historyScrollRow, historyVisibleRows, historyTotal]);
 
   // Callback ref: 在元素挂载/卸载时立即设置/清理 ResizeObserver
   const historyRefCallback = useCallback((el: HTMLDivElement | null) => {
-    // 清理旧的 observer
     if (historyObserverRef.current) {
-      historyObserverRef.current.el.removeEventListener("scroll", handleHistoryScroll);
       historyObserverRef.current.ro.disconnect();
       historyObserverRef.current = null;
     }
@@ -236,7 +347,6 @@ export default function MemoryPanel({ selectedSeq: selectedSeqProp, isPhase2Read
       setHistoryContainerHeight(0);
       return;
     }
-    // 设置新的 observer
     let timer = 0;
     const ro = new ResizeObserver((entries) => {
       if (entries[0]) {
@@ -247,35 +357,78 @@ export default function MemoryPanel({ selectedSeq: selectedSeqProp, isPhase2Read
         }, document.documentElement.dataset.separatorDrag ? 300 : 0);
       }
     });
-    el.addEventListener("scroll", handleHistoryScroll);
     ro.observe(el);
     historyObserverRef.current = { ro, el };
-  }, [handleHistoryScroll]);
+  }, []);
 
   // 组件卸载时清理 observer
   useEffect(() => {
     return () => {
       if (historyObserverRef.current) {
-        historyObserverRef.current.el.removeEventListener("scroll", handleHistoryScroll);
         historyObserverRef.current.ro.disconnect();
         historyObserverRef.current = null;
       }
     };
-  }, [handleHistoryScroll]);
+  }, []);
+
+  // 根据滚动位置按需加载可见区域的页（独立 useEffect 避免 stale closure）
+  useEffect(() => {
+    if (historyTotal === 0 || !memAddr) return;
+    const firstVisible = historyScrollRow;
+    const visibleRows = historyContainerHeight > 0 ? Math.ceil(historyContainerHeight / HISTORY_ROW_HEIGHT) + 10 : 30; // +overscan
+    const lastVisible = Math.min(firstVisible + visibleRows, historyTotal - 1);
+    const firstPage = Math.floor(firstVisible / HISTORY_PAGE_SIZE);
+    const lastPage = Math.floor(lastVisible / HISTORY_PAGE_SIZE);
+    for (let p = firstPage; p <= lastPage; p++) {
+      loadHistoryPage(p, memAddr);
+    }
+  }, [historyScrollRow, historyTotal, memAddr, historyContainerHeight, loadHistoryPage]);
 
   const historyResolve = useCallback((vi: number): ResolvedRow => {
-    return { type: "line", seq: history[vi]?.seq ?? vi } as ResolvedRow;
-  }, [history]);
+    // 1. 优先从页缓存获取
+    const rec = getHistoryRecord(vi);
+    if (rec) return { type: "line", seq: rec.seq } as ResolvedRow;
+    // 2. 从 Minimap 采样中按比例映射
+    const samples = historyMinimapSamples.current;
+    if (samples.length > 0 && historyTotal > 0) {
+      const sampleIdx = Math.min(
+        Math.round(vi / historyTotal * samples.length),
+        samples.length - 1,
+      );
+      return { type: "line", seq: samples[sampleIdx].seq } as ResolvedRow;
+    }
+    return { type: "line", seq: -1 } as ResolvedRow;
+  }, [getHistoryRecord, historyTotal]);
 
   const historyGetLines = useCallback(async (seqs: number[]): Promise<TraceLine[]> => {
     const seqSet = new Set(seqs);
-    return history.filter(r => seqSet.has(r.seq)).map(r => ({
-      seq: r.seq,
-      address: r.insn_addr,
-      disasm: r.disasm,
-      changes: `${r.rw} ${r.data}`,
-    })) as unknown as TraceLine[];
-  }, [history]);
+    const results: TraceLine[] = [];
+    const found = new Set<number>();
+    // 1. 从页缓存查找
+    historyPagesRef.current.forEach((page) => {
+      for (const r of page) {
+        if (seqSet.has(r.seq) && !found.has(r.seq)) {
+          found.add(r.seq);
+          results.push({
+            seq: r.seq, address: r.insn_addr, disasm: r.disasm,
+            changes: `${r.rw} ${r.data}`,
+          } as unknown as TraceLine);
+        }
+      }
+    });
+    // 2. 从 Minimap 采样补充
+    for (const r of historyMinimapSamples.current) {
+      if (seqSet.has(r.seq) && !found.has(r.seq)) {
+        found.add(r.seq);
+        results.push({
+          seq: r.seq, address: r.insn_addr, disasm: r.disasm,
+          changes: `${r.rw} ${r.data}`,
+        } as unknown as TraceLine);
+      }
+    }
+    return results;
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [historyPagesVersion]);
 
   // ── 地址搜索历史：点击外部关闭 ──
   useEffect(() => {
@@ -342,14 +495,14 @@ export default function MemoryPanel({ selectedSeq: selectedSeqProp, isPhase2Read
   const hexLines = useMemo(() => {
     const lines: { addr: string; bytes: { value: number; known: boolean }[] }[] = [];
     if (snapshot) {
-      const base = parseInt(snapshot.base_addr.replace(/^0x/i, ""), 16);
+      const base = hexToBigInt(snapshot.base_addr);
       for (let i = 0; i < snapshot.bytes.length; i += BYTES_PER_LINE) {
-        const lineAddr = base + i;
+        const lineAddr = base + BigInt(i);
         const lineBytes: { value: number; known: boolean }[] = [];
         for (let j = 0; j < BYTES_PER_LINE && i + j < snapshot.bytes.length; j++) {
           lineBytes.push({ value: snapshot.bytes[i + j], known: snapshot.known[i + j] });
         }
-        lines.push({ addr: `0x${lineAddr.toString(16)}`, bytes: lineBytes });
+        lines.push({ addr: bigIntToHex(lineAddr), bytes: lineBytes });
       }
     }
     return lines;
@@ -360,9 +513,9 @@ export default function MemoryPanel({ selectedSeq: selectedSeqProp, isPhase2Read
     let hStart = -1;
     let hEnd = -1;
     if (snapshot && memAddr && memRw) {
-      const accessAddr = parseInt(memAddr.replace(/^0x/i, ""), 16);
-      const base = parseInt(snapshot.base_addr.replace(/^0x/i, ""), 16);
-      const offset = accessAddr - base;
+      const accessAddr = hexToBigInt(memAddr);
+      const base = hexToBigInt(snapshot.base_addr);
+      const offset = Number(accessAddr - base);
       if (offset >= 0 && offset < snapshot.bytes.length) {
         hStart = offset;
         hEnd = offset + (memSize ?? 4);
@@ -383,6 +536,13 @@ export default function MemoryPanel({ selectedSeq: selectedSeqProp, isPhase2Read
     return { highlightStart: hStart, highlightEnd: hEnd, lastNonZeroOffset: lastNonZero };
   }, [snapshot, memAddr, memRw, memSize]);
 
+  // 地址列宽度：根据最长地址文本自适应（ch 单位 + 少量 padding）
+  const addrColWidth = useMemo(() => {
+    if (hexLines.length === 0) return "10ch";
+    const maxLen = Math.max(...hexLines.map(l => l.addr.length));
+    return `${maxLen + 2}ch`;
+  }, [hexLines]);
+
   // 字节颜色：有效值字节=绿色，尾部高位零=白色，范围外=灰色
   const byteColor = useCallback((globalOffset: number) => {
     if (globalOffset >= highlightStart && globalOffset < highlightEnd) {
@@ -390,6 +550,78 @@ export default function MemoryPanel({ selectedSeq: selectedSeqProp, isPhase2Read
     }
     return "var(--text-hex-zero)";
   }, [highlightStart, highlightEnd, lastNonZeroOffset]);
+
+  // hexdump 右键菜单
+  const handleHexContextMenu = useCallback((e: React.MouseEvent) => {
+    e.preventDefault();
+    const selText = window.getSelection()?.toString() ?? "";
+    setHexContextMenu({ x: e.clientX, y: e.clientY, selText });
+  }, []);
+
+  /** 生成完整 hexdump 文本（地址 + hex + ascii） */
+  const buildHexdumpText = useCallback(() => {
+    return hexLines.map((line) => {
+      const hex1 = line.bytes.slice(0, 8).map(b => b.known ? formatHexByte(b.value) : "??").join(" ");
+      const hex2 = line.bytes.slice(8, 16).map(b => b.known ? formatHexByte(b.value) : "??").join(" ");
+      const ascii = line.bytes.map(b => (b.known && b.value !== 0) ? toAsciiChar(b.value) : ".").join("");
+      return `${line.addr}  ${hex1}  ${hex2}  ${ascii}`;
+    }).join("\n");
+  }, [hexLines]);
+
+  /** 仅 hex 字节（无空格无换行） */
+  const buildHexOnly = useCallback(() => {
+    return hexLines.flatMap((line) =>
+      line.bytes.map(b => b.known ? formatHexByte(b.value) : "??")
+    ).join("");
+  }, [hexLines]);
+
+  /** 仅 ASCII（无换行，连续输出） */
+  const buildAsciiOnly = useCallback(() => {
+    return hexLines.flatMap((line) =>
+      line.bytes.map(b => (b.known && b.value !== 0) ? toAsciiChar(b.value) : ".")
+    ).join("");
+  }, [hexLines]);
+
+  const handleCopyHexdump = useCallback(() => {
+    navigator.clipboard.writeText(buildHexdumpText());
+    setHexContextMenu(null);
+  }, [buildHexdumpText]);
+
+  const handleCopyHex = useCallback(() => {
+    navigator.clipboard.writeText(buildHexOnly());
+    setHexContextMenu(null);
+  }, [buildHexOnly]);
+
+  const handleCopyAscii = useCallback(() => {
+    navigator.clipboard.writeText(buildAsciiOnly());
+    setHexContextMenu(null);
+  }, [buildAsciiOnly]);
+
+  const handleCopySelection = useCallback(() => {
+    if (hexContextMenu?.selText) navigator.clipboard.writeText(hexContextMenu.selText);
+    setHexContextMenu(null);
+  }, [hexContextMenu]);
+
+  const traceRange = useMemo(() => {
+    if (selectedSeq === null) return null;
+    const addr = memAddr || currentAddr;
+    if (!addr) return null;
+    return {
+      addr,
+      size: Math.max(1, Math.min(memSize || hexLength, 4096)),
+      seq: selectedSeq,
+    };
+  }, [selectedSeq, memAddr, currentAddr, memSize, hexLength]);
+
+  const handleTraceMemory = useCallback(() => {
+    if (!traceRange) return;
+    setHexContextMenu(null);
+    if (onTraceMemory) {
+      onTraceMemory(traceRange);
+    } else {
+      emit("action:trace-memory-value", traceRange);
+    }
+  }, [traceRange, onTraceMemory]);
 
   if (!isPhase2Ready) {
     return (
@@ -407,7 +639,7 @@ export default function MemoryPanel({ selectedSeq: selectedSeqProp, isPhase2Read
     );
   }
 
-  const showHistory = !!(historyAddr && history.length > 0);
+  const showHistory = !!(historyAddr && historyTotal > 0);
 
   const toolbar = (
     <div style={{ display: "flex", alignItems: "center", gap: 6, fontSize: "var(--font-size-sm)", width: "100%" }}>
@@ -421,7 +653,7 @@ export default function MemoryPanel({ selectedSeq: selectedSeqProp, isPhase2Read
       )}
       <span style={{ flex: 1 }} />
       {/* 右侧：Auto + 搜索框 */}
-      <label style={{ display: "flex", alignItems: "center", gap: 3, color: "var(--text-secondary)", cursor: "pointer", whiteSpace: "nowrap" }}>
+      <label title="Auto-track memory address accessed by the current instruction; scrolling temporarily disables tracking" style={{ display: "flex", alignItems: "center", gap: 3, color: "var(--text-secondary)", cursor: "pointer", whiteSpace: "nowrap" }}>
         <input
           type="checkbox"
           checked={autoTrack}
@@ -436,6 +668,69 @@ export default function MemoryPanel({ selectedSeq: selectedSeqProp, isPhase2Read
         />
         Auto
       </label>
+      {/* 长度选择器 */}
+      <div style={{ position: "relative", display: "inline-flex", alignItems: "center" }}>
+        <select
+          value={LENGTH_PRESETS.includes(hexLength) ? hexLength : "custom"}
+          onChange={(e) => {
+            const val = e.target.value;
+            if (val === "custom") {
+              setCustomLengthInput(String(hexLength));
+              setShowLengthInput(true);
+            } else {
+              const n = parseInt(val);
+              setHexLength(n);
+              localStorage.setItem(MEM_LENGTH_KEY, String(n));
+              setShowLengthInput(false);
+            }
+          }}
+          style={{
+            padding: "1px 4px", background: "var(--bg-input)", color: "var(--text-primary)",
+            border: "1px solid var(--border-color)", borderRadius: 3,
+            fontFamily: "var(--font-mono)", fontSize: "var(--font-size-sm)", cursor: "pointer",
+          }}
+        >
+          {LENGTH_PRESETS.map(v => (
+            <option key={v} value={v}>{v}</option>
+          ))}
+          <option value="custom">{!LENGTH_PRESETS.includes(hexLength) ? hexLength : "Custom"}</option>
+        </select>
+        {showLengthInput && (
+          <input
+            type="text"
+            autoFocus
+            placeholder="bytes"
+            value={customLengthInput}
+            onChange={(e) => setCustomLengthInput(e.target.value.replace(/[^0-9]/g, ""))}
+            onKeyDown={(e) => {
+              if (e.key === "Enter") {
+                const n = parseInt(customLengthInput);
+                if (n >= 16 && n <= 65536) {
+                  setHexLength(n);
+                  localStorage.setItem(MEM_LENGTH_KEY, String(n));
+                  setShowLengthInput(false);
+                }
+              } else if (e.key === "Escape") {
+                setShowLengthInput(false);
+              }
+            }}
+            onBlur={() => {
+              const n = parseInt(customLengthInput);
+              if (n >= 16 && n <= 65536) {
+                setHexLength(n);
+                localStorage.setItem(MEM_LENGTH_KEY, String(n));
+              }
+              setShowLengthInput(false);
+            }}
+            style={{
+              width: 64, marginLeft: 4, padding: "1px 4px",
+              background: "var(--bg-input)", color: "var(--text-primary)",
+              border: "1px solid var(--border-color)", borderRadius: 3,
+              fontFamily: "var(--font-mono)", fontSize: "var(--font-size-sm)",
+            }}
+          />
+        )}
+      </div>
       <div ref={addrInputWrapperRef} style={{ position: "relative", display: "inline-flex", alignItems: "center" }}>
         <input
           type="text"
@@ -540,7 +835,7 @@ export default function MemoryPanel({ selectedSeq: selectedSeqProp, isPhase2Read
           ) : (<>
             <div style={{ flexShrink: 0, display: "flex", alignItems: "center", padding: "4px 8px", borderBottom: "1px solid var(--border-color)" }}>{toolbar}</div>
             <div style={{ flexShrink: 0, display: "flex", lineHeight: "20px", whiteSpace: "pre", color: "var(--text-secondary)", padding: "0 8px" }}>
-              <span style={{ width: 120, flexShrink: 0 }}>{"Address"}</span>
+              <span style={{ width: addrColWidth, flexShrink: 0 }}>{"Address"}</span>
               {[0,1,2,3,4,5,6,7].map(i => (
                 <span key={i}>{i.toString(16).toUpperCase().padStart(2, "0")}{" "}</span>
               ))}
@@ -552,7 +847,7 @@ export default function MemoryPanel({ selectedSeq: selectedSeqProp, isPhase2Read
               <span>{"ASCII"}</span>
             </div>
             <div ref={hexWrapperRef} style={{ flex: 1, overflow: "hidden" }}>
-            <div style={{
+            <div onContextMenu={handleHexContextMenu} style={{
               height: hexClippedHeight, overflowY: "auto", overflowX: "hidden", padding: "0 8px",
               scrollbarWidth: "thin",
               scrollbarColor: "var(--text-secondary) transparent",
@@ -566,28 +861,28 @@ export default function MemoryPanel({ selectedSeq: selectedSeqProp, isPhase2Read
                     ref={isHighlightLine && lineStartOffset <= highlightStart ? highlightLineRef : undefined}
                     style={{ display: "flex", lineHeight: "20px", whiteSpace: "pre" }}
                   >
-                    <span style={{ color: "var(--text-address)", width: 120, flexShrink: 0 }}>
+                    <span style={{ color: "var(--text-address)", width: addrColWidth, flexShrink: 0 }}>
                       {line.addr}
                     </span>
-                    {line.bytes.slice(0, 8).map((b, i) => {
+                    <span>{line.bytes.slice(0, 8).map((b, i) => {
                       const globalOffset = lineIdx * BYTES_PER_LINE + i;
                       return (
                         <span key={i} style={{ color: b.known ? byteColor(globalOffset) : "var(--text-hex-zero)" }}>
                           {b.known ? formatHexByte(b.value) : "??"}{" "}
                         </span>
                       );
-                    })}
+                    })}</span>
                     <span style={{ width: 4 }}> </span>
-                    {line.bytes.slice(8, 16).map((b, i) => {
+                    <span>{line.bytes.slice(8, 16).map((b, i) => {
                       const globalOffset = lineIdx * BYTES_PER_LINE + 8 + i;
                       return (
                         <span key={i + 8} style={{ color: b.known ? byteColor(globalOffset) : "var(--text-hex-zero)" }}>
                           {b.known ? formatHexByte(b.value) : "??"}{" "}
                         </span>
                       );
-                    })}
+                    })}</span>
                     <span style={{ width: 8 }}> </span>
-                    {line.bytes.map((b, i) => {
+                    <span>{line.bytes.map((b, i) => {
                       const globalOffset = lineIdx * BYTES_PER_LINE + i;
                       const isHighlight = globalOffset >= highlightStart && globalOffset < highlightEnd;
                       return (
@@ -597,7 +892,7 @@ export default function MemoryPanel({ selectedSeq: selectedSeqProp, isPhase2Read
                           {(b.known && b.value !== 0) ? toAsciiChar(b.value) : "."}
                         </span>
                       );
-                    })}
+                    })}</span>
                   </div>
                 );
               })}
@@ -605,6 +900,19 @@ export default function MemoryPanel({ selectedSeq: selectedSeqProp, isPhase2Read
             </div>
           </>)}
         </div>
+
+        {/* Hexdump 右键菜单 */}
+        {hexContextMenu && (
+          <ContextMenu x={hexContextMenu.x} y={hexContextMenu.y} onClose={() => setHexContextMenu(null)}>
+            <ContextMenuItem label="Copy Hexdump" onClick={handleCopyHexdump} disabled={hexLines.length === 0} />
+            <ContextMenuItem label="Copy Hex" onClick={handleCopyHex} disabled={hexLines.length === 0} />
+            <ContextMenuItem label="Copy ASCII" onClick={handleCopyAscii} disabled={hexLines.length === 0} />
+            <ContextMenuSeparator />
+            <ContextMenuItem label="Trace Memory Value" onClick={handleTraceMemory} disabled={!traceRange} />
+            <ContextMenuSeparator />
+            <ContextMenuItem label="Copy Selected Text" onClick={handleCopySelection} disabled={!hexContextMenu.selText} />
+          </ContextMenu>
+        )}
 
         {/* Access History（右侧，可拖拽宽度） */}
         {showHistory && (
@@ -626,70 +934,84 @@ export default function MemoryPanel({ selectedSeq: selectedSeqProp, isPhase2Read
                 borderBottom: "1px solid var(--border-color)",
                 fontSize: 11, color: "var(--text-secondary)", flexShrink: 0,
               }}>
-                Total: {history.length.toLocaleString()}
+                Memory accesses history  Total: {historyTotal.toLocaleString()}
               </div>
               <div style={{ flex: 1, display: "flex", overflow: "hidden" }}>
                 <div
                   ref={historyRefCallback}
-                  style={{ flex: 1, overflow: "auto", fontFamily: "var(--font-mono)", fontSize: "var(--font-size-sm)", outline: "none", scrollbarWidth: "none" } as React.CSSProperties}
+                  style={{ flex: 1, overflow: "hidden", position: "relative", fontFamily: "var(--font-mono)", fontSize: "var(--font-size-sm)", outline: "none" } as React.CSSProperties}
+                  onWheel={(e) => {
+                    if (historyTotal === 0) return;
+                    let delta: number;
+                    if (e.deltaMode === 1) {
+                      delta = Math.round(e.deltaY) * 3;
+                    } else {
+                      delta = Math.round(e.deltaY / HISTORY_ROW_HEIGHT);
+                      if (delta === 0 && e.deltaY !== 0) delta = e.deltaY > 0 ? 1 : -1;
+                    }
+                    setHistoryScrollRow(prev => Math.max(0, Math.min(historyMaxRow, prev + delta)));
+                  }}
                 >
-                  <div style={{ height: historyVirtualizer.getTotalSize(), width: "100%", position: "relative" }}>
-                    {historyVirtualizer.getVirtualItems().map((vRow) => {
-                      const rec = history[vRow.index];
-                      if (!rec) return null;
-                      const isCurrent = selectedSeq !== null && rec.seq === selectedSeq;
-                      return (
-                        <div
-                          key={vRow.index}
-                          onClick={() => onJumpToSeq(rec.seq)}
-                          style={{
-                            position: "absolute", top: 0, left: 0, width: "100%", height: 20,
-                            transform: `translateY(${vRow.start}px)`,
-                            display: "flex", alignItems: "center", padding: "0 8px", gap: 8,
-                            cursor: "pointer",
-                            background: isCurrent ? "var(--bg-selected)"
-                              : vRow.index % 2 === 0 ? "var(--bg-row-even)" : "var(--bg-row-odd)",
-                            whiteSpace: "nowrap",
-                          }}
-                          onMouseEnter={(e) => { if (!isCurrent) e.currentTarget.style.background = "var(--bg-hover)"; }}
-                          onMouseLeave={(e) => { if (!isCurrent) e.currentTarget.style.background = vRow.index % 2 === 0 ? "var(--bg-row-even)" : "var(--bg-row-odd)"; }}
-                        >
-                          <span style={{ width: 90, color: "var(--text-secondary)", flexShrink: 0 }}>#{rec.seq + 1}</span>
-                          <span style={{
-                            width: 20, flexShrink: 0, textAlign: "center",
-                            color: rec.rw === "W" ? "var(--text-hex-highlight)" : "var(--text-address)",
-                          }}>{rec.rw}</span>
-                          <span style={{ width: 280, color: "var(--text-ascii-printable)", flexShrink: 0, overflow: "hidden", textOverflow: "ellipsis" }}>{rec.data}</span>
-                          <span style={{ flex: 1, color: "var(--text-secondary)", overflow: "hidden", textOverflow: "ellipsis" }}>{rec.disasm}</span>
-                        </div>
-                      );
-                    })}
-                  </div>
+                  {historyVisibleItems.map((globalIdx) => {
+                    const localIdx = globalIdx - historyScrollRow;
+                    const rec = getHistoryRecord(globalIdx);
+                    const isCurrent = rec ? selectedSeq !== null && rec.seq === selectedSeq : false;
+                    return (
+                      <div
+                        key={globalIdx}
+                        onClick={() => rec && onJumpToSeq(rec.seq)}
+                        style={{
+                          position: "absolute", top: localIdx * HISTORY_ROW_HEIGHT, left: 0, width: "100%", height: HISTORY_ROW_HEIGHT,
+                          display: "flex", alignItems: "center", padding: "0 8px", gap: 8,
+                          cursor: rec ? "pointer" : "default",
+                          background: isCurrent ? "var(--bg-selected)"
+                            : globalIdx % 2 === 0 ? "var(--bg-row-even)" : "var(--bg-row-odd)",
+                          whiteSpace: "nowrap",
+                        }}
+                        onMouseEnter={(e) => { if (!isCurrent) e.currentTarget.style.background = "var(--bg-hover)"; }}
+                        onMouseLeave={(e) => { if (!isCurrent) e.currentTarget.style.background = globalIdx % 2 === 0 ? "var(--bg-row-even)" : "var(--bg-row-odd)"; }}
+                      >
+                        {rec ? (
+                          <>
+                            <span style={{ width: 90, color: "var(--text-secondary)", flexShrink: 0 }}>#{rec.seq + 1}</span>
+                            <span style={{
+                              width: 20, flexShrink: 0, textAlign: "center",
+                              color: rec.rw === "W" ? "var(--text-hex-highlight)" : "var(--text-address)",
+                            }}>{rec.rw}</span>
+                            <span style={{ width: 280, color: "var(--text-ascii-printable)", flexShrink: 0, overflow: "hidden", textOverflow: "ellipsis" }}>{rec.data}</span>
+                            <span style={{ flex: 1, color: "var(--text-secondary)", overflow: "hidden", textOverflow: "ellipsis" }}>{rec.disasm}</span>
+                          </>
+                        ) : (
+                          <span style={{ color: "var(--text-secondary)", opacity: 0.4 }}>loading...</span>
+                        )}
+                      </div>
+                    );
+                  })}
                 </div>
-                {history.length > 0 && historyContainerHeight > 0 && (() => {
-                  const hVisibleRows = Math.floor(historyContainerHeight / HISTORY_ROW_HEIGHT);
-                  const hMaxRow = Math.max(0, history.length - hVisibleRows);
+                {historyTotal > 0 && historyContainerHeight > 0 && (() => {
                   return (
                     <div style={{ width: MINIMAP_WIDTH + 12, flexShrink: 0, position: "relative" }}>
                       <Minimap
-                        virtualTotalRows={history.length}
-                        visibleRows={hVisibleRows}
+                        virtualTotalRows={historyTotal}
+                        visibleRows={historyVisibleRows}
                         currentRow={historyScrollRow}
-                        maxRow={hMaxRow}
+                        maxRow={historyMaxRow}
                         height={historyContainerHeight}
-                        onScroll={(row) => { historyRef.current?.scrollTo({ top: row * HISTORY_ROW_HEIGHT }); }}
+                        onScroll={setHistoryScrollRow}
                         resolveVirtualIndex={historyResolve}
                         getLines={historyGetLines}
                         selectedSeq={selectedSeq}
                         rightOffset={12}
+                        showSoName={false}
+                        showAbsAddress={false}
                       />
                       <CustomScrollbar
                         currentRow={historyScrollRow}
-                        maxRow={hMaxRow}
-                        visibleRows={hVisibleRows}
-                        virtualTotalRows={history.length}
+                        maxRow={historyMaxRow}
+                        visibleRows={historyVisibleRows}
+                        virtualTotalRows={historyTotal}
                         trackHeight={historyContainerHeight}
-                        onScroll={(row) => { historyRef.current?.scrollTo({ top: row * HISTORY_ROW_HEIGHT }); }}
+                        onScroll={setHistoryScrollRow}
                       />
                     </div>
                   );
