@@ -1,11 +1,12 @@
 ---
 name: frida-hook-generation
-description: Generate bounded ARM64 Frida 16.x JavaScript hook scripts, inspect user-captured trace-ui/frida-hook-v1 JSON or NDJSON, and turn selected register/buffer captures into manual angr state seeds through the trace-ui MCP server. Use for native exports or module-relative offsets, X0-X7 arguments, buffers, strings, returns, backtraces, Stalker events, capture review, or Frida-to-angr handoff. Trace UI never attaches, spawns, loads, or executes Frida; the user controls runtime execution.
+description: Generate bounded ARM64 Frida 16.x JavaScript hook scripts, inspect user-captured trace-ui/frida-hook-v1 JSON or NDJSON, index captured crypto materials with bounded deterministic recomputation, and turn selected register/buffer captures into manual angr state seeds through the trace-ui MCP server. Use for native exports or module-relative offsets, X0-X7 arguments, key/salt/digest buffers, strings, returns, backtraces, Stalker events, capture review, or Frida-to-angr handoff. Trace UI never attaches, spawns, loads, or executes Frida; the user controls runtime execution.
 ---
 
 # Generate Frida 16 hooks with trace-ui
 
-Use `mcp__trace-ui__generate_frida_hook`, `mcp__trace-ui__inspect_frida_capture`, and
+Use `mcp__trace-ui__generate_frida_hook`, `mcp__trace-ui__inspect_frida_capture`,
+`mcp__trace-ui__analyze_frida_crypto_materials`, and
 `mcp__trace-ui__generate_angr_state_seed`. Generated hooks target Frida 16.x JavaScript APIs and emit
 `trace-ui/frida-hook-v1` messages with `send()` plus `TRACE_UI_JSON` strict-JSON log lines.
 
@@ -18,7 +19,10 @@ Use `mcp__trace-ui__generate_frida_hook`, `mcp__trace-ui__inspect_frida_capture`
 5. Stop. Do not attach, spawn, load, execute, or claim the hook ran. The user performs those steps manually.
 6. If the user supplies captured JSON/NDJSON, run `inspect_frida_capture`. Select an exact event index,
    normally a `hook-enter` with registers or buffers.
-7. When angr initialization is requested, run `generate_angr_state_seed` for that event. Keep SP
+7. When crypto roles are requested, run `analyze_frida_crypto_materials`. Treat explicit labels as
+   Related unless exact MD5/SHA/HMAC/PBKDF2 recomputation verifies the captured call. Prefer byteArray;
+   text re-encoding is weaker evidence.
+8. When angr initialization is requested, run `generate_angr_state_seed` for that event. Keep SP
    opt-in and explain that heap/stack addresses are process-specific.
 
 ## Request fields

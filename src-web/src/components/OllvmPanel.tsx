@@ -9,12 +9,23 @@ import type {
   IdaAnnotationBundle,
   IdaOllvmScript,
   OllvmAnalysisOptions,
+  OllvmMultiTraceReport,
   OllvmReport,
+  TraceSessionInfo,
 } from "../types/trace";
 
 interface Props {
   sessionId: string | null;
   onJumpToSeq: (seq: number) => void;
+}
+
+interface EditableOllvmCase {
+  sessionId: string;
+  label: string;
+  selected: boolean;
+  nodeId: string;
+  startSeq: string;
+  endSeq: string;
 }
 
 const buttonStyle: React.CSSProperties = {
@@ -69,9 +80,12 @@ export default function OllvmPanel({ sessionId, onJumpToSeq }: Props) {
   const [endSeq, setEndSeq] = useState("");
   const [includeChildCalls, setIncludeChildCalls] = useState(false);
   const [report, setReport] = useState<OllvmReport | null>(null);
+  const [comparison, setComparison] = useState<OllvmMultiTraceReport | null>(null);
+  const [compareCases, setCompareCases] = useState<EditableOllvmCase[]>([]);
+  const [comparing, setComparing] = useState(false);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const [section, setSection] = useState<"dispatchers" | "opaque" | "blocks" | "edges" | "ida" | "angr">("dispatchers");
+  const [section, setSection] = useState<"dispatchers" | "state" | "opaque" | "blocks" | "edges" | "compare" | "ida" | "angr">("dispatchers");
   const [openBlock, setOpenBlock] = useState<string | null>(null);
   const [idaImageBase, setIdaImageBase] = useState("");
   const [addUserXrefs, setAddUserXrefs] = useState(false);
@@ -87,6 +101,7 @@ export default function OllvmPanel({ sessionId, onJumpToSeq }: Props) {
 
   useEffect(() => {
     setReport(null);
+    setComparison(null);
     setIdaScript(null);
     setIdaAnnotations(null);
     setSavedPath(null);
@@ -139,6 +154,66 @@ export default function OllvmPanel({ sessionId, onJumpToSeq }: Props) {
       setLoading(false);
     }
   }, [options, sessionId]);
+
+  const refreshCompareSessions = useCallback(async () => {
+    try {
+      const sessions = await invoke<TraceSessionInfo[]>("list_trace_sessions");
+      setCompareCases(previous => sessions.map((session, index) => {
+        const existing = previous.find(item => item.sessionId === session.sessionId);
+        if (existing) return existing;
+        const fileName = session.filePath.split(/[\\/]/).pop() || `trace-${index + 1}`;
+        const current = session.sessionId === sessionId;
+        return {
+          sessionId: session.sessionId,
+          label: fileName,
+          selected: current,
+          nodeId: current ? nodeId : "",
+          startSeq: current ? startSeq : "",
+          endSeq: current ? endSeq : "",
+        };
+      }));
+    } catch (reason) {
+      setError(String(reason));
+    }
+  }, [endSeq, nodeId, sessionId, startSeq]);
+
+  useEffect(() => {
+    if (section === "compare") void refreshCompareSessions();
+  }, [refreshCompareSessions, section]);
+
+  const selectedCompareCases = useMemo(() => compareCases.filter(item => item.selected), [compareCases]);
+  const compareRuns = useCallback(async () => {
+    if (selectedCompareCases.length < 2) return;
+    setComparing(true);
+    setError(null);
+    try {
+      const result = await invoke<OllvmMultiTraceReport>("compare_ollvm_traces", {
+        request: {
+          cases: selectedCompareCases.map(item => ({
+            sessionId: item.sessionId,
+            label: item.label,
+            nodeId: optionalNumber(item.nodeId),
+            moduleName: moduleName.trim() || null,
+            startSeq: optionalNumber(item.startSeq),
+            endSeq: optionalNumber(item.endSeq),
+            includeChildCalls,
+          })),
+          maxBlocks: 1_000,
+          maxEdges: 3_000,
+        },
+      });
+      setComparison(result);
+    } catch (reason) {
+      setError(String(reason));
+      setComparison(null);
+    } finally {
+      setComparing(false);
+    }
+  }, [includeChildCalls, moduleName, selectedCompareCases]);
+
+  const updateCompareCase = (index: number, patch: Partial<EditableOllvmCase>) => {
+    setCompareCases(items => items.map((item, itemIndex) => itemIndex === index ? { ...item, ...patch } : item));
+  };
 
   const blockById = useMemo(() => new Map(report?.blocks.map(block => [block.blockId, block]) || []), [report]);
   const annotationByOffset = useMemo(() => new Map(
@@ -304,9 +379,11 @@ export default function OllvmPanel({ sessionId, onJumpToSeq }: Props) {
         overflowX: "auto", overflowY: "hidden", flexShrink: 0,
       }}>
         {sectionButton("dispatchers", `Dispatchers${report ? ` (${report.dispatcherCandidates.length})` : ""}`)}
+        {sectionButton("state", "State machine")}
         {sectionButton("opaque", `Opaque branches${report ? ` (${report.opaqueBranchCandidates.length})` : ""}`)}
         {sectionButton("blocks", `Dynamic blocks${report ? ` (${report.blockCount})` : ""}`)}
         {sectionButton("edges", `Edges${report ? ` (${report.edgeCount})` : ""}`)}
+        {sectionButton("compare", "Multi-run")}
         {sectionButton("ida", "IDA bridge")}
         {sectionButton("angr", "angr bridge")}
         <label style={{ display: "flex", alignItems: "center", gap: 4, marginLeft: 10, color: "var(--text-secondary)", fontSize: 10, flexShrink: 0, whiteSpace: "nowrap" }}>
@@ -321,7 +398,7 @@ export default function OllvmPanel({ sessionId, onJumpToSeq }: Props) {
       </div>
 
       {error && <div style={{ padding: "7px 10px", color: "#e5484d", borderBottom: "1px solid var(--border-color)", fontSize: 11 }}>{error}</div>}
-      {!report && !loading && (
+      {!report && !loading && section !== "compare" && (
         <div style={{ flex: 1, display: "flex", alignItems: "center", justifyContent: "center", color: "var(--text-secondary)", fontSize: 12 }}>
           Select a function invocation or provide a trace range.
         </div>
@@ -337,10 +414,49 @@ export default function OllvmPanel({ sessionId, onJumpToSeq }: Props) {
               <span>{candidate.predecessorCount} in / {candidate.successorCount} out</span>
               <span>{candidate.indirectBranchCount} indirect</span>
               <code>{candidate.stateRegisters.join(", ") || "no state register"}</code>
+              <span>{candidate.stateSnapshots.length} states / {candidate.stateTransitions.length} transitions</span>
               <span style={{ flex: 1, color: "var(--text-secondary)" }}>{candidate.rationale}</span>
             </div>
           ))}
           {report.dispatcherCandidates.length === 0 && <div style={{ padding: 14, color: "var(--text-secondary)", fontSize: 11 }}>No dispatcher candidate crossed the evidence threshold.</div>}
+        </div>
+      )}
+
+      {report && section === "state" && (
+        <div style={{ flex: 1, overflow: "auto", fontSize: 11 }}>
+          <div style={{ padding: "8px 10px", borderBottom: "1px solid var(--border-color)", color: "var(--text-secondary)" }}>
+            Values are reconstructed at dispatcher block entry from trace register checkpoints. They reveal an observed state trajectory, not the complete flattened state machine.
+          </div>
+          {report.dispatcherCandidates.map(candidate => (
+            <div key={candidate.blockId} style={{ borderBottom: "1px solid var(--border-color)", padding: "8px 10px" }}>
+              <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+                <Score score={candidate.assessment.score} grade={candidate.assessment.grade} />
+                <button type="button" style={buttonStyle} onClick={() => jumpBlock(blockById.get(candidate.blockId))}>{candidate.startOffset}</button>
+                <strong>{candidate.stateSnapshots.length} snapshots</strong>
+                <span>{candidate.stateTransitions.length} changing transitions</span>
+                {candidate.stateSnapshotsTruncated && <span style={{ color: "#d29922" }}>snapshot list truncated</span>}
+              </div>
+              {candidate.stateTransitions.length > 0 && (
+                <div style={{ marginTop: 7, display: "grid", gridTemplateColumns: "70px 170px 22px 170px 70px 80px", gap: 6, alignItems: "center" }}>
+                  <strong>Register</strong><strong>From</strong><span /><strong>To</strong><strong>Count</strong><strong>Trace</strong>
+                  {candidate.stateTransitions.map((transition, index) => (
+                    <React.Fragment key={`${transition.register}-${transition.fromValue}-${transition.toValue}-${index}`}>
+                      <code>{transition.register}</code>
+                      <code>{transition.fromValue}</code>
+                      <span>→</span>
+                      <code>{transition.toValue}</code>
+                      <span>x{transition.executionCount}</span>
+                      <button type="button" style={buttonStyle} onClick={() => onJumpToSeq(transition.sampleSeq)}>line {transition.sampleSeq + 1}</button>
+                    </React.Fragment>
+                  ))}
+                </div>
+              )}
+              {candidate.stateTransitions.length === 0 && (
+                <div style={{ marginTop: 6, color: "var(--text-tertiary)" }}>No changing value was reconstructed for the candidate state registers.</div>
+              )}
+            </div>
+          ))}
+          {report.dispatcherCandidates.length === 0 && <div style={{ padding: 14, color: "var(--text-secondary)" }}>No dispatcher candidate crossed the evidence threshold.</div>}
         </div>
       )}
 
@@ -354,8 +470,18 @@ export default function OllvmPanel({ sessionId, onJumpToSeq }: Props) {
                 <code style={{ color: "var(--text-primary)" }}>{candidate.disasm}</code>
                 <span>{candidate.executionCount} executions</span>
                 <span>taken {candidate.observedTakenCount} / fallthrough {candidate.observedFallthroughCount}</span>
+                <span>{candidate.observations.filter(item => Object.keys(item.registers).length > 0).length} seeded states</span>
               </div>
               <div style={{ marginTop: 4, paddingLeft: 88, color: "var(--text-secondary)" }}>{candidate.rationale}</div>
+              {candidate.observations.some(item => Object.keys(item.registers).length > 0) && (
+                <div style={{ marginTop: 5, paddingLeft: 88, display: "flex", gap: 6, flexWrap: "wrap" }}>
+                  {candidate.observations.filter(item => Object.keys(item.registers).length > 0).map(item => (
+                    <button key={`${candidate.branchOffset}-${item.seq}`} type="button" style={buttonStyle} onClick={() => onJumpToSeq(item.seq)}>
+                      line {item.seq + 1} · {item.outcome} · {Object.entries(item.registers).map(([name, value]) => `${name}=${value}`).join(", ")}
+                    </button>
+                  ))}
+                </div>
+              )}
             </div>
           ))}
           {report.opaqueBranchCandidates.length === 0 && <div style={{ padding: 14, color: "var(--text-secondary)", fontSize: 11 }}>No repeated single-outcome conditional branch was observed.</div>}
@@ -411,6 +537,72 @@ export default function OllvmPanel({ sessionId, onJumpToSeq }: Props) {
               <span style={{ color: "var(--text-tertiary)" }}>line {edge.sampleSeq + 1}</span>
             </div>
           ))}
+        </div>
+      )}
+
+      {section === "compare" && (
+        <div style={{ flex: 1, minHeight: 0, overflow: "auto", padding: 10, fontSize: 11 }}>
+          <div style={{ color: "var(--text-secondary)", marginBottom: 9 }}>
+            Compare the same module/function across controlled runs. A branch that shows both outcomes is evidence against treating it as globally opaque; stable single-outcome results remain candidates only.
+          </div>
+          <div style={{ display: "grid", gridTemplateColumns: "26px minmax(150px, 1fr) minmax(120px, 220px) 90px 90px 90px", gap: 5, alignItems: "center" }}>
+            <span /><strong>Open trace</strong><strong>Case label</strong><strong>Node ID</strong><strong>Start seq</strong><strong>End seq</strong>
+            {compareCases.map((item, index) => (
+              <React.Fragment key={item.sessionId}>
+                <input type="checkbox" checked={item.selected} onChange={event => updateCompareCase(index, { selected: event.target.checked })} />
+                <span title={item.sessionId} style={{ overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{item.label}</span>
+                <input style={inputStyle} value={item.label} onChange={event => updateCompareCase(index, { label: event.target.value })} />
+                <input style={inputStyle} value={item.nodeId} onChange={event => updateCompareCase(index, { nodeId: event.target.value })} placeholder="optional" />
+                <input style={inputStyle} value={item.startSeq} onChange={event => updateCompareCase(index, { startSeq: event.target.value })} placeholder="auto" />
+                <input style={inputStyle} value={item.endSeq} onChange={event => updateCompareCase(index, { endSeq: event.target.value })} placeholder="auto" />
+              </React.Fragment>
+            ))}
+          </div>
+          <div style={{ display: "flex", gap: 6, marginTop: 9 }}>
+            <button type="button" style={buttonStyle} onClick={refreshCompareSessions}>Refresh sessions</button>
+            <button
+              type="button"
+              style={{ ...buttonStyle, background: "var(--btn-primary)", color: "#fff", border: "none", opacity: selectedCompareCases.length < 2 || comparing ? 0.6 : 1 }}
+              disabled={selectedCompareCases.length < 2 || comparing}
+              onClick={compareRuns}
+            >
+              {comparing ? "Comparing..." : `Compare ${selectedCompareCases.length} runs`}
+            </button>
+            <span style={{ alignSelf: "center", color: "var(--text-tertiary)" }}>Module: {moduleName.trim() || "infer per run"}</span>
+          </div>
+          {comparison && (
+            <div style={{ marginTop: 12, borderTop: "1px solid var(--border-color)" }}>
+              <div style={{ padding: "8px 0", color: "var(--text-secondary)" }}>
+                {comparison.cases.length} runs · {comparison.dispatcherStability.length} dispatcher offsets · {comparison.branchStability.length} conditional branch offsets · verification gate remains closed
+              </div>
+              <h4 style={{ margin: "8px 0" }}>Dispatcher stability</h4>
+              {comparison.dispatcherStability.map(candidate => (
+                <div key={candidate.startOffset} style={{ padding: 8, border: "1px solid var(--border-color)", borderRadius: 4, marginBottom: 6, background: "var(--bg-secondary)" }}>
+                  <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
+                    <Score score={candidate.assessment.score} grade={candidate.assessment.grade} />
+                    <code>{candidate.startOffset}</code>
+                    <span>{candidate.candidateInRuns}/{comparison.cases.length} dispatcher runs</span>
+                    <span>{candidate.presentInRuns}/{comparison.cases.length} present</span>
+                    <code>{candidate.commonStateRegisters.join(", ") || "no common state register"}</code>
+                  </div>
+                  <div style={{ marginTop: 4, color: "var(--text-tertiary)" }}>{candidate.rationale}</div>
+                </div>
+              ))}
+              <h4 style={{ margin: "12px 0 8px" }}>Branch outcome stability</h4>
+              {comparison.branchStability.filter(branch => branch.stableSingleOutcome || branch.alternateOutcomesObserved).map(branch => (
+                <div key={branch.branchOffset} style={{ padding: 8, border: `1px solid ${branch.alternateOutcomesObserved ? "#e5484d" : "var(--border-color)"}`, borderRadius: 4, marginBottom: 6, background: "var(--bg-secondary)" }}>
+                  <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
+                    <Score score={branch.assessment.score} grade={branch.assessment.grade} />
+                    <code>{branch.branchOffset}</code>
+                    <strong style={{ color: branch.alternateOutcomesObserved ? "#e5484d" : "#d29922" }}>{branch.classification}</strong>
+                    <span>{branch.presentInRuns}/{comparison.cases.length} runs</span>
+                  </div>
+                  <div style={{ marginTop: 4 }}>{branch.cases.filter(item => item.present).map(item => `${item.label}: T${item.observedTakenCount}/F${item.observedFallthroughCount}/O${item.observedOtherCount}`).join(" · ")}</div>
+                  <div style={{ marginTop: 4, color: "var(--text-tertiary)" }}>{branch.rationale}</div>
+                </div>
+              ))}
+            </div>
+          )}
         </div>
       )}
 
@@ -512,6 +704,8 @@ export default function OllvmPanel({ sessionId, onJumpToSeq }: Props) {
                   <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
                     <button type="button" style={buttonStyle} onClick={() => jumpOffset(probe.offset)}>{probe.offset}</button>
                     <code>{probe.status}</code>
+                    <span>{probe.seedKind || "legacy seed"}{probe.sourceSeq != null ? ` @ line ${probe.sourceSeq + 1}` : ""}</span>
+                    {probe.seededRegisters.length > 0 && <code>{probe.seededRegisters.join(", ")}</code>}
                     <span>{probe.successors.filter(successor => successor.satisfiable).length} satisfiable successors</span>
                     {probe.error && <span style={{ color: "#e5484d" }}>{probe.error}</span>}
                   </div>

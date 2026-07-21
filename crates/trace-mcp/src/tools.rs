@@ -11,18 +11,19 @@ use rmcp::{
 
 use crate::types::*;
 use trace_core::{
-    api_types::TraceLine, apply_resource_validation, classify_flow_endpoints,
-    generate_angr_ollvm_script, generate_angr_state_seed as build_angr_state_seed,
-    generate_frida_hook as build_frida_hook, generate_ida_ollvm_script,
-    parse_angr_ollvm_result_bundle, parse_frida_capture_bundle, parse_hex_addr,
-    parse_ida_annotation_bundle, score_evidence, summarize_dependency_graph, AnalysisEvidence,
-    BuildOptions, CryptoFunctionsOptions, CryptoMaterialKind, CryptoMaterialMultiTraceRequest,
-    CryptoMaterialOptions, CryptoMaterialTraceCase, DepTreeOptions, EvidenceScoreSignal,
-    ForwardSliceOptions, FridaArgumentKind, FridaArgumentSpec, FridaCaptureDirection,
-    FridaHookRequest, FridaStalkerMode, HashAlgorithm, HashMatchRequest, HashTransformOptions,
-    OllvmAnalysisOptions, SearchOptions, SliceOptions, StringQueryOptions, TraceDiffOptions,
-    TraceEngine, ValueEndian, ValueSearchKind, ValueSearchRequest, WhiteBoxMultiTraceRequest,
-    WhiteBoxOptions, WhiteBoxTraceCaseRequest,
+    analyze_frida_crypto_materials as build_frida_crypto_materials, api_types::TraceLine,
+    apply_resource_validation, classify_flow_endpoints, generate_angr_ollvm_script,
+    generate_angr_state_seed as build_angr_state_seed, generate_frida_hook as build_frida_hook,
+    generate_ida_ollvm_script, parse_angr_ollvm_result_bundle, parse_frida_capture_bundle,
+    parse_hex_addr, parse_ida_annotation_bundle, score_evidence, summarize_dependency_graph,
+    AnalysisEvidence, BuildOptions, CryptoFunctionsOptions, CryptoMaterialKind,
+    CryptoMaterialMultiTraceRequest, CryptoMaterialOptions, CryptoMaterialTraceCase,
+    DepTreeOptions, EvidenceScoreSignal, ForwardSliceOptions, FridaArgumentKind, FridaArgumentSpec,
+    FridaCaptureDirection, FridaHookRequest, FridaStalkerMode, HashAlgorithm, HashMatchRequest,
+    HashTransformOptions, OllvmAnalysisOptions, OllvmMultiTraceRequest, OllvmTraceCase,
+    SearchOptions, SliceOptions, StringQueryOptions, TraceDiffOptions, TraceEngine, ValueEndian,
+    ValueSearchKind, ValueSearchRequest, WhiteBoxMultiTraceRequest, WhiteBoxOptions,
+    WhiteBoxTraceCaseRequest,
 };
 
 fn decode_hex_bytes(value: &str) -> Result<Vec<u8>, String> {
@@ -4114,6 +4115,27 @@ impl TraceToolHandler {
     }
 
     #[tool(
+        name = "analyze_frida_crypto_materials",
+        description = "Index key/password/salt/IV/nonce/input/output/digest/MAC/KDF candidates from a user-captured trace-ui/frida-hook-v1 file. Captures are grouped by callId; MD5/SHA, HMAC, and bounded PBKDF2 formulas are deterministically recomputed when required bytes exist. Label-only roles remain Related. Trace UI does not execute Frida."
+    )]
+    async fn analyze_frida_crypto_materials(
+        &self,
+        Parameters(req): Parameters<AnalyzeFridaCryptoMaterialsRequest>,
+    ) -> Result<String, String> {
+        blocking(move || {
+            let bytes = std::fs::read(&req.file_path)
+                .map_err(|error| format!("failed to read Frida capture: {error}"))?;
+            let bundle = parse_frida_capture_bundle(&bytes)?;
+            Ok(json(&build_frida_crypto_materials(
+                &bundle,
+                Some(req.max_materials),
+                req.include_unknown,
+            )?))
+        })
+        .await
+    }
+
+    #[tool(
         name = "generate_angr_state_seed",
         description = "Read a user-captured trace-ui/frida-hook-v1 JSON/NDJSON file and generate a manual Python configure_state(state) seed for angr from one selected event. Module pointers are rebased when metadata is available; heap/stack addresses remain process-specific. The output is candidate evidence and is never executed by Trace UI."
     )]
@@ -4184,6 +4206,86 @@ impl TraceToolHandler {
                     &sid,
                     "ollvm_dynamic_cfg",
                     "Dynamic CFG and OLLVM candidate analysis",
+                    request_record,
+                    result.clone(),
+                    evidence,
+                )
+                .map_err(|error| error.to_string())?;
+            result["analysisId"] = serde_json::json!(record.analysis_id);
+            result["saved"] = serde_json::json!(true);
+            Ok(json(&result))
+        })
+        .await
+    }
+
+    #[tool(
+        name = "compare_ollvm_traces",
+        description = "Compare two to sixteen controlled ARM64 trace scopes by module-relative offset. Reports dispatcher stability, state-register recurrence, and whether conditional branches keep one outcome or show alternate outcomes across runs. Alternate outcomes are evidence against globally opaque classification. Results remain candidate evidence and are saved to the first case session."
+    )]
+    async fn compare_ollvm_traces(
+        &self,
+        Parameters(req): Parameters<CompareOllvmTracesRequest>,
+    ) -> Result<String, String> {
+        let first_session = req
+            .cases
+            .first()
+            .map(|case| case.session_id.clone())
+            .ok_or_else(|| "OLLVM comparison requires at least two cases".to_string())?;
+        let request_record = serde_json::to_value(&req)
+            .map_err(|error| format!("serialize request failed: {error}"))?;
+        let engine = self.engine.clone();
+        blocking(move || {
+            let request = OllvmMultiTraceRequest {
+                cases: req
+                    .cases
+                    .into_iter()
+                    .map(|case| OllvmTraceCase {
+                        session_id: case.session_id,
+                        label: case.label,
+                        node_id: case.node_id,
+                        module_name: case.module_name,
+                        start_seq: case.start_seq,
+                        end_seq: case.end_seq,
+                        include_child_calls: case.include_child_calls,
+                    })
+                    .collect(),
+                max_blocks: req.max_blocks,
+                max_edges: req.max_edges,
+            };
+            let report = engine
+                .compare_ollvm_traces(request)
+                .map_err(|error| error.to_string())?;
+            let mut evidence = AnalysisEvidence::default();
+            for case in &report.cases {
+                push_unique(&mut evidence.modules, case.module_name.clone());
+            }
+            for candidate in &report.dispatcher_stability {
+                push_unique(&mut evidence.addresses, candidate.start_offset.clone());
+                push_unique(
+                    &mut evidence.operations,
+                    format!("dispatcher_multirun:{}", candidate.start_offset),
+                );
+            }
+            for branch in &report.branch_stability {
+                if branch.stable_single_outcome || branch.alternate_outcomes_observed {
+                    push_unique(&mut evidence.addresses, branch.branch_offset.clone());
+                    push_unique(
+                        &mut evidence.operations,
+                        format!(
+                            "branch_multirun:{}:{}",
+                            branch.branch_offset, branch.classification
+                        ),
+                    );
+                }
+            }
+            evidence.warnings.extend(report.limitations.clone());
+            let mut result = serde_json::to_value(&report)
+                .map_err(|error| format!("serialize report failed: {error}"))?;
+            let record = engine
+                .save_analysis(
+                    &first_session,
+                    "ollvm_multitrace",
+                    "Multi-trace OLLVM stability comparison",
                     request_record,
                     result.clone(),
                     evidence,

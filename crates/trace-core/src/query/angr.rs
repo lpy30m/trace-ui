@@ -49,6 +49,12 @@ pub struct AngrBranchProbe {
     pub offset: String,
     pub status: String,
     #[serde(default)]
+    pub seed_kind: Option<String>,
+    #[serde(default)]
+    pub source_seq: Option<u32>,
+    #[serde(default)]
+    pub seeded_registers: Vec<String>,
+    #[serde(default)]
     pub observed_successors: Vec<String>,
     #[serde(default)]
     pub successors: Vec<AngrSuccessor>,
@@ -229,16 +235,35 @@ def _reconcile_blocks(project, cfg):
     return results
 
 
-def _probe_branch(project, candidate):
+def _apply_trace_snapshot(state, snapshot):
+    seeded = []
+    errors = []
+    if snapshot is None:
+        return seeded, errors
+    for name, text in snapshot.get("registers", {}).items():
+        register_name = name.lower()
+        try:
+            setattr(state.regs, register_name, int(text, 16))
+            seeded.append(name.upper())
+        except Exception as error:
+            errors.append("{}={}: {}".format(name, text, error))
+    return seeded, errors
+
+
+def _probe_branch(project, candidate, snapshot=None):
     offset = candidate["branchOffset"].lower()
     observed = [value.lower() for value in candidate.get("observedSuccessors", [])]
+    seed_kind = "trace-register-snapshot" if snapshot is not None else "blank-unconstrained"
     limitation = (
-        "The probe begins at the branch with unconstrained state and does not prove reachability "
-        "from the real function entry. Configure state from trace/Frida evidence before upgrading confidence."
+        "A trace-register snapshot reproduces selected observed registers but not uncaptured memory, SIMD state, "
+        "or the full entry path; it remains candidate evidence."
+        if snapshot is not None else
+        "The probe begins at the branch with unconstrained state and does not prove reachability from the real function entry."
     )
     try:
         address = project.loader.main_object.mapped_base + _offset(offset)
         state = configure_state(project.factory.blank_state(addr=address))
+        seeded_registers, seed_errors = _apply_trace_snapshot(state, snapshot)
         state.options.add(angr.options.LAZY_SOLVES)
         successors = project.factory.successors(state, num_inst=1, opt_level=0)
         records = []
@@ -260,9 +285,12 @@ def _probe_branch(project, candidate):
         return {
             "offset": offset,
             "status": status,
+            "seedKind": seed_kind,
+            "sourceSeq": snapshot.get("seq") if snapshot is not None else None,
+            "seededRegisters": seeded_registers,
             "observedSuccessors": observed,
             "successors": records,
-            "constraints": constraints,
+            "constraints": constraints + ["seed-warning: " + item for item in seed_errors],
             "limitation": limitation,
             "error": None,
         }
@@ -270,6 +298,9 @@ def _probe_branch(project, candidate):
         return {
             "offset": offset,
             "status": "probe_error",
+            "seedKind": seed_kind,
+            "sourceSeq": snapshot.get("seq") if snapshot is not None else None,
+            "seededRegisters": [],
             "observedSuccessors": observed,
             "successors": [],
             "constraints": [],
@@ -287,11 +318,16 @@ def analyze(binary_path, prefer_emulated, probe_opaque):
     blocks = _reconcile_blocks(project, cfg)
     probes = []
     if probe_opaque:
-        probes = [_probe_branch(project, item) for item in REPORT.get("opaqueBranchCandidates", [])]
+        for item in REPORT.get("opaqueBranchCandidates", []):
+            probes.append(_probe_branch(project, item))
+            for snapshot in item.get("observations", []):
+                if snapshot.get("registers"):
+                    probes.append(_probe_branch(project, item, snapshot))
     warnings.extend([
         "Static CFG successors absent from the dynamic trace may be unexecuted, infeasible, or CFG recovery artifacts.",
         "Dynamic-only edges may indicate indirect control flow or static CFG recovery gaps.",
         "Unconstrained branch probes are hypothesis generators, not proof of real-input reachability.",
+        "Trace-seeded probes contain selected register values only; missing memory and architectural state can change feasibility.",
     ])
     with open(binary_path, "rb") as source:
         binary_sha256 = hashlib.sha256(source.read()).hexdigest()
@@ -417,7 +453,10 @@ pub fn parse_angr_ollvm_result_bundle(bytes: &[u8]) -> Result<AngrOllvmResultBun
 mod tests {
     use super::*;
     use crate::query::evidence_score::{score_evidence, EvidenceScoreSignal};
-    use crate::query::ollvm::{DynamicBasicBlock, OllvmScope, OpaqueBranchCandidate};
+    use crate::query::ollvm::{
+        BranchStateObservation, DynamicBasicBlock, DynamicBranchProfile, OllvmScope,
+        OpaqueBranchCandidate,
+    };
 
     fn sample_report() -> OllvmReport {
         OllvmReport {
@@ -451,6 +490,18 @@ mod tests {
                 instructions: Vec::new(),
             }],
             edges: Vec::new(),
+            branch_profiles: vec![DynamicBranchProfile {
+                branch_offset: "0x104".to_string(),
+                disasm: "b.eq 0x120".to_string(),
+                execution_count: 2,
+                observed_taken_count: 2,
+                observed_fallthrough_count: 0,
+                observed_other_count: 0,
+                observed_successors: vec!["0x120".to_string()],
+                condition_source_offsets: vec!["0x100".to_string()],
+                observations: Vec::new(),
+                observations_truncated: false,
+            }],
             dispatcher_candidates: Vec::new(),
             opaque_branch_candidates: vec![OpaqueBranchCandidate {
                 branch_offset: "0x104".to_string(),
@@ -461,6 +512,15 @@ mod tests {
                 observed_other_count: 0,
                 observed_successors: vec!["0x120".to_string()],
                 condition_source_offsets: vec!["0x100".to_string()],
+                observations: vec![BranchStateObservation {
+                    seq: 4,
+                    outcome: "taken".to_string(),
+                    successor: "0x120".to_string(),
+                    registers: [("NZCV".to_string(), "0x40000000".to_string())]
+                        .into_iter()
+                        .collect(),
+                }],
+                observations_truncated: false,
                 rationale: "single observed outcome".to_string(),
                 assessment: score_evidence(
                     "opaque-branch",
@@ -490,6 +550,8 @@ mod tests {
         assert!(generated.script.contains("CFGFast"));
         assert!(generated.script.contains("def configure_state(state)"));
         assert!(generated.script.contains("project.factory.successors"));
+        assert!(generated.script.contains("trace-register-snapshot"));
+        assert!(generated.script.contains("_apply_trace_snapshot"));
         assert!(generated.script.contains("trace-ui/angr-ollvm-v1"));
         assert!(generated
             .script

@@ -33,11 +33,13 @@
 - [x] IDA / OLLVM：ASLR 稳定动态 CFG、dispatcher/opaque branch 候选、IDAPython 注释桥和 IDA annotation JSON 回导。
 - [x] angr / OLLVM：生成用户手动执行的 Python bridge，以 exact ELF SHA-256 为锚点，对账静态/动态 CFG，并导回候选级 symbolic branch probe 结果。
 - [x] Frida Capture → angr State Seed：导入用户手动捕获的 registers/buffers/call metadata，生成 module-aware `configure_state(state)`，保持运行和 Hook 由用户控制。
+- [x] Frida Capture → Crypto Materials：按 callId/label/phase 索引密码材料，并确定性验证完整捕获的 MD5/SHA/HMAC/PBKDF2 公式。
+- [x] OLLVM State / Multi-run：重建 dispatcher register snapshots/transitions，保存 branch-time register snapshots，angr 同时生成 blank/trace-seeded probe，并比较 2–16 个受控运行的分支结果。
 
 ## 3. 当前限制
 
 - [x] 已支持从 Frida 捕获导出 X0-X7、可选 SP/LR 与 memory state seed；capture point 与 symbolic address 是否语义一致仍需人工核验。
-- [ ] 多运行 opaque branch 稳定性矩阵和 dispatcher state-register 状态机尚未实现。
+- [ ] 将 OLLVM 多运行矩阵进一步绑定 exact ELF Build ID/SHA-256，并增加跨版本 dispatcher state mapping。
 
 - [x] 分析记录已随 Trace 内容校验持久化，应用重启后可以恢复。
 - [x] Crypto、正向污点和自动调查支持统一后台任务、进度与取消。

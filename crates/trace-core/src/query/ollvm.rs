@@ -1,3 +1,5 @@
+use std::collections::BTreeMap;
+
 use serde::{Deserialize, Serialize};
 
 use crate::query::evidence_score::EvidenceAssessment;
@@ -99,6 +101,51 @@ pub struct DynamicCfgEdge {
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
+pub struct DispatcherStateSnapshot {
+    pub seq: u32,
+    #[serde(default)]
+    pub values: BTreeMap<String, String>,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct DispatcherStateTransition {
+    pub register: String,
+    pub from_value: String,
+    pub to_value: String,
+    pub execution_count: u64,
+    pub sample_seq: u32,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct BranchStateObservation {
+    pub seq: u32,
+    pub outcome: String,
+    pub successor: String,
+    #[serde(default)]
+    pub registers: BTreeMap<String, String>,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct DynamicBranchProfile {
+    pub branch_offset: String,
+    pub disasm: String,
+    pub execution_count: u64,
+    pub observed_taken_count: u64,
+    pub observed_fallthrough_count: u64,
+    pub observed_other_count: u64,
+    pub observed_successors: Vec<String>,
+    pub condition_source_offsets: Vec<String>,
+    #[serde(default)]
+    pub observations: Vec<BranchStateObservation>,
+    #[serde(default)]
+    pub observations_truncated: bool,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct DispatcherCandidate {
     pub block_id: String,
     pub start_offset: String,
@@ -109,6 +156,12 @@ pub struct DispatcherCandidate {
     pub indirect_branch_count: u64,
     pub backward_edge_count: u32,
     pub state_registers: Vec<String>,
+    #[serde(default)]
+    pub state_snapshots: Vec<DispatcherStateSnapshot>,
+    #[serde(default)]
+    pub state_transitions: Vec<DispatcherStateTransition>,
+    #[serde(default)]
+    pub state_snapshots_truncated: bool,
     pub rationale: String,
     pub assessment: EvidenceAssessment,
 }
@@ -124,6 +177,10 @@ pub struct OpaqueBranchCandidate {
     pub observed_other_count: u64,
     pub observed_successors: Vec<String>,
     pub condition_source_offsets: Vec<String>,
+    #[serde(default)]
+    pub observations: Vec<BranchStateObservation>,
+    #[serde(default)]
+    pub observations_truncated: bool,
     pub rationale: String,
     pub assessment: EvidenceAssessment,
 }
@@ -139,11 +196,116 @@ pub struct OllvmReport {
     pub edge_count: u32,
     pub blocks: Vec<DynamicBasicBlock>,
     pub edges: Vec<DynamicCfgEdge>,
+    #[serde(default)]
+    pub branch_profiles: Vec<DynamicBranchProfile>,
     pub dispatcher_candidates: Vec<DispatcherCandidate>,
     pub opaque_branch_candidates: Vec<OpaqueBranchCandidate>,
     pub instructions_truncated: bool,
     pub blocks_truncated: bool,
     pub edges_truncated: bool,
+    pub limitations: Vec<String>,
+    pub next_steps: Vec<String>,
+}
+
+#[derive(Clone, Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct OllvmTraceCase {
+    pub session_id: String,
+    pub label: String,
+    #[serde(default)]
+    pub node_id: Option<u32>,
+    #[serde(default)]
+    pub module_name: Option<String>,
+    #[serde(default)]
+    pub start_seq: Option<u32>,
+    #[serde(default)]
+    pub end_seq: Option<u32>,
+    #[serde(default)]
+    pub include_child_calls: bool,
+}
+
+#[derive(Clone, Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct OllvmMultiTraceRequest {
+    pub cases: Vec<OllvmTraceCase>,
+    #[serde(default = "default_max_blocks")]
+    pub max_blocks: u32,
+    #[serde(default = "default_max_edges")]
+    pub max_edges: u32,
+}
+
+#[derive(Clone, Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct OllvmCaseSummary {
+    pub session_id: String,
+    pub label: String,
+    pub module_name: String,
+    pub block_count: u32,
+    pub edge_count: u32,
+    pub dispatcher_candidate_count: u32,
+    pub branch_profile_count: u32,
+    pub opaque_branch_candidate_count: u32,
+}
+
+#[derive(Clone, Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct OllvmDispatcherCaseEvidence {
+    pub label: String,
+    pub present: bool,
+    pub candidate: bool,
+    pub visit_count: u64,
+    pub score: u8,
+    pub successors: Vec<String>,
+    pub state_registers: Vec<String>,
+    pub state_transition_count: u32,
+}
+
+#[derive(Clone, Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct OllvmDispatcherStability {
+    pub start_offset: String,
+    pub present_in_runs: u32,
+    pub candidate_in_runs: u32,
+    pub common_state_registers: Vec<String>,
+    pub observed_state_registers: Vec<String>,
+    pub cases: Vec<OllvmDispatcherCaseEvidence>,
+    pub rationale: String,
+    pub assessment: EvidenceAssessment,
+}
+
+#[derive(Clone, Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct OllvmBranchCaseEvidence {
+    pub label: String,
+    pub present: bool,
+    pub execution_count: u64,
+    pub observed_taken_count: u64,
+    pub observed_fallthrough_count: u64,
+    pub observed_other_count: u64,
+    pub observed_successors: Vec<String>,
+}
+
+#[derive(Clone, Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct OllvmBranchStability {
+    pub branch_offset: String,
+    pub present_in_runs: u32,
+    pub stable_single_outcome: bool,
+    pub alternate_outcomes_observed: bool,
+    pub classification: String,
+    pub cases: Vec<OllvmBranchCaseEvidence>,
+    pub rationale: String,
+    pub assessment: EvidenceAssessment,
+}
+
+#[derive(Clone, Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct OllvmMultiTraceReport {
+    pub schema_version: String,
+    pub cases: Vec<OllvmCaseSummary>,
+    pub dispatcher_stability: Vec<OllvmDispatcherStability>,
+    pub branch_stability: Vec<OllvmBranchStability>,
+    pub verification_gate_met: bool,
     pub limitations: Vec<String>,
     pub next_steps: Vec<String>,
 }
@@ -266,11 +428,27 @@ def apply_trace_ui_report():
     for candidate in REPORT.get("dispatcherCandidates", []):
         ea = _ea(candidate["startOffset"])
         _append_comment(ea, "[Trace UI] OLLVM dispatcher candidate: " + candidate.get("rationale", ""), True)
+        transitions = candidate.get("stateTransitions", [])[:8]
+        if transitions:
+            summary = "; ".join("{} {}->{} x{}".format(
+                item.get("register", "?"),
+                item.get("fromValue", "?"),
+                item.get("toValue", "?"),
+                item.get("executionCount", 0),
+            ) for item in transitions)
+            _append_comment(ea, "[Trace UI] observed dispatcher state transitions: " + summary, True)
         idc.set_color(ea, idc.CIC_ITEM, 0x00A5FF)
 
     for candidate in REPORT.get("opaqueBranchCandidates", []):
         ea = _ea(candidate["branchOffset"])
         _append_comment(ea, "[Trace UI] opaque-branch candidate: " + candidate.get("rationale", ""), True)
+        seeded = [item for item in candidate.get("observations", []) if item.get("registers")]
+        if seeded:
+            summary = "; ".join("line {} {}".format(
+                item.get("seq", 0) + 1,
+                ",".join("{}={}".format(name, value) for name, value in sorted(item.get("registers", {}).items())),
+            ) for item in seeded[:4])
+            _append_comment(ea, "[Trace UI] observed branch register states: " + summary, True)
         idc.set_color(ea, idc.CIC_ITEM, 0x80D0FF)
 
     if ADD_USER_XREFS:
@@ -402,6 +580,7 @@ mod tests {
                 instructions: Vec::new(),
             }],
             edges: Vec::new(),
+            branch_profiles: Vec::new(),
             dispatcher_candidates: Vec::new(),
             opaque_branch_candidates: Vec::new(),
             instructions_truncated: false,

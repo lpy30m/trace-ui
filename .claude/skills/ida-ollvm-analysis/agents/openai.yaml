@@ -1,7 +1,7 @@
 interface:
   display_name: "IDA and angr OLLVM Analysis"
-  short_description: "Reconcile OLLVM traces with IDA and angr"
-  default_prompt: "Use $ida-ollvm-analysis to analyze this trace for OLLVM candidates and generate manual IDA or angr bridges."
+  short_description: "Compare OLLVM traces and bridge IDA/angr evidence"
+  default_prompt: "Use $ida-ollvm-analysis to compare OLLVM state and branch evidence, then generate manual IDA or angr bridges."
 
 dependencies:
   tools:

@@ -102,7 +102,9 @@ For detailed capture selection rules, use `$frida-hook-generation`.
 
 **"Inspect the Frida output I captured manually or turn it into angr state."**
 → `inspect_frida_capture{file_path}` for JSON arrays, send envelopes, NDJSON, or
-`TRACE_UI_JSON`-prefixed CLI logs. Select an exact event index, then call
+`TRACE_UI_JSON`-prefixed CLI logs. Use `analyze_frida_crypto_materials{file_path}` to index explicit
+key/password/salt/IV/nonce/input/output labels and deterministically recompute observable
+MD5/SHA/HMAC/PBKDF2 calls. Select an exact event index, then call
 `generate_angr_state_seed{file_path,event_index,include_sp?,include_lr?}`. Treat module rebasing as
 build-specific and heap/stack addresses as process-specific. Never claim the seed proves real-entry or
 branch reachability.
@@ -117,9 +119,16 @@ dynamic candidates; unexecuted paths are unknown. For the full workflow, use `$i
 → `analyze_ollvm` on a narrow call-tree node/range, then `generate_angr_ollvm_script`. Give the
 generated Python to the user for manual execution against the exact ELF/shared object. Inspect the
 resulting `trace-ui/angr-ollvm-v1` JSON with `inspect_angr_ollvm_results`. CFGFast/CFGEmulated
-differences and blank-state branch probes are candidate evidence only. Seed `configure_state(state)`
-from trace or Frida captures before increasing confidence. For the full workflow, use
+differences, blank-state probes, and automatically emitted trace-register-seeded probes are candidate
+evidence only. Trace snapshots omit memory and may omit architectural state; add memory/input evidence
+to `configure_state(state)` or merge a Frida seed before increasing confidence. For the full workflow, use
 `$ida-ollvm-analysis`.
+
+**"Does this dispatcher or opaque branch stay stable across runs?"**
+→ open two to sixteen controlled traces, then `compare_ollvm_traces{cases:[...]}` with a scope for each
+run. Treat `alternate-outcomes-observed` as evidence against patching the branch as globally opaque.
+`stable-single-outcome-across-runs` raises confidence only to Candidate/Related because untested states
+and unexecuted paths remain unknown.
 
 **"Is this a real white-box/key-fused implementation?"**
 → Do not decide from one trace or one table. Run `analyze_crypto_implementations` with the exact ELF,
@@ -170,8 +179,8 @@ recomputes to a known digest.
 | Taint | `taint_analysis` (backward), `forward_taint_analysis`, `get_tainted_lines`, `start_forward_taint_analysis` |
 | Functions | `analyze_function` (node_id / name / list) |
 | Diff | `compare_traces`, `start_trace_diff` |
-| Frida | `generate_frida_hook`, `inspect_frida_capture`, `generate_angr_state_seed` (user executes hooks manually) |
-| IDA / angr / OLLVM | `analyze_ollvm`, `generate_ida_ollvm_script`, `inspect_ida_annotations`, `generate_angr_ollvm_script`, `inspect_angr_ollvm_results` |
+| Frida | `generate_frida_hook`, `inspect_frida_capture`, `analyze_frida_crypto_materials`, `generate_angr_state_seed` (user executes hooks manually) |
+| IDA / angr / OLLVM | `analyze_ollvm`, `compare_ollvm_traces`, `generate_ida_ollvm_script`, `inspect_ida_annotations`, `generate_angr_ollvm_script`, `inspect_angr_ollvm_results` |
 | Orchestration | `auto_investigate`, `start_auto_investigation`, `start_crypto_investigation` |
 | Evidence store | `list_analyses`, `get_analysis`, `compare_analyses`, `export_analysis_report`, `delete_analysis` |
 | Recipes | `list_analysis_recipes`, `run_analysis_recipe`, `save_analysis_recipe`, `delete_analysis_recipe` |

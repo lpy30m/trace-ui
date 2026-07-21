@@ -603,6 +603,39 @@ export interface DynamicCfgEdge {
   backward: boolean;
 }
 
+export interface DispatcherStateSnapshot {
+  seq: number;
+  values: Record<string, string>;
+}
+
+export interface DispatcherStateTransition {
+  register: string;
+  fromValue: string;
+  toValue: string;
+  executionCount: number;
+  sampleSeq: number;
+}
+
+export interface BranchStateObservation {
+  seq: number;
+  outcome: string;
+  successor: string;
+  registers: Record<string, string>;
+}
+
+export interface DynamicBranchProfile {
+  branchOffset: string;
+  disasm: string;
+  executionCount: number;
+  observedTakenCount: number;
+  observedFallthroughCount: number;
+  observedOtherCount: number;
+  observedSuccessors: string[];
+  conditionSourceOffsets: string[];
+  observations: BranchStateObservation[];
+  observationsTruncated: boolean;
+}
+
 export interface DispatcherCandidate {
   blockId: string;
   startOffset: string;
@@ -613,6 +646,9 @@ export interface DispatcherCandidate {
   indirectBranchCount: number;
   backwardEdgeCount: number;
   stateRegisters: string[];
+  stateSnapshots: DispatcherStateSnapshot[];
+  stateTransitions: DispatcherStateTransition[];
+  stateSnapshotsTruncated: boolean;
   rationale: string;
   assessment: EvidenceAssessment;
 }
@@ -626,6 +662,8 @@ export interface OpaqueBranchCandidate {
   observedOtherCount: number;
   observedSuccessors: string[];
   conditionSourceOffsets: string[];
+  observations: BranchStateObservation[];
+  observationsTruncated: boolean;
   rationale: string;
   assessment: EvidenceAssessment;
 }
@@ -639,11 +677,84 @@ export interface OllvmReport {
   edgeCount: number;
   blocks: DynamicBasicBlock[];
   edges: DynamicCfgEdge[];
+  branchProfiles: DynamicBranchProfile[];
   dispatcherCandidates: DispatcherCandidate[];
   opaqueBranchCandidates: OpaqueBranchCandidate[];
   instructionsTruncated: boolean;
   blocksTruncated: boolean;
   edgesTruncated: boolean;
+  limitations: string[];
+  nextSteps: string[];
+}
+
+export interface OllvmTraceCase {
+  sessionId: string;
+  label: string;
+  nodeId: number | null;
+  moduleName: string | null;
+  startSeq: number | null;
+  endSeq: number | null;
+  includeChildCalls: boolean;
+}
+
+export interface OllvmDispatcherCaseEvidence {
+  label: string;
+  present: boolean;
+  candidate: boolean;
+  visitCount: number;
+  score: number;
+  successors: string[];
+  stateRegisters: string[];
+  stateTransitionCount: number;
+}
+
+export interface OllvmDispatcherStability {
+  startOffset: string;
+  presentInRuns: number;
+  candidateInRuns: number;
+  commonStateRegisters: string[];
+  observedStateRegisters: string[];
+  cases: OllvmDispatcherCaseEvidence[];
+  rationale: string;
+  assessment: EvidenceAssessment;
+}
+
+export interface OllvmBranchCaseEvidence {
+  label: string;
+  present: boolean;
+  executionCount: number;
+  observedTakenCount: number;
+  observedFallthroughCount: number;
+  observedOtherCount: number;
+  observedSuccessors: string[];
+}
+
+export interface OllvmBranchStability {
+  branchOffset: string;
+  presentInRuns: number;
+  stableSingleOutcome: boolean;
+  alternateOutcomesObserved: boolean;
+  classification: string;
+  cases: OllvmBranchCaseEvidence[];
+  rationale: string;
+  assessment: EvidenceAssessment;
+}
+
+export interface OllvmMultiTraceReport {
+  schemaVersion: string;
+  cases: Array<{
+    sessionId: string;
+    label: string;
+    moduleName: string;
+    blockCount: number;
+    edgeCount: number;
+    dispatcherCandidateCount: number;
+    branchProfileCount: number;
+    opaqueBranchCandidateCount: number;
+  }>;
+  dispatcherStability: OllvmDispatcherStability[];
+  branchStability: OllvmBranchStability[];
+  verificationGateMet: boolean;
   limitations: string[];
   nextSteps: string[];
 }
@@ -697,6 +808,9 @@ export interface AngrBlockResult {
 export interface AngrBranchProbe {
   offset: string;
   status: string;
+  seedKind: string | null;
+  sourceSeq: number | null;
+  seededRegisters: string[];
   observedSuccessors: string[];
   successors: AngrSuccessor[];
   constraints: string[];

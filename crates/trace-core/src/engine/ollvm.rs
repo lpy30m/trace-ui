@@ -3,8 +3,11 @@ use std::collections::{BTreeMap, HashMap, HashSet};
 use crate::error::{Result, TraceError};
 use crate::query::evidence_score::{score_evidence, EvidenceScoreSignal};
 use crate::query::ollvm::{
-    DispatcherCandidate, DynamicBasicBlock, DynamicBlockInstruction, DynamicCfgEdge,
-    OllvmAnalysisOptions, OllvmReport, OllvmScope, OpaqueBranchCandidate,
+    BranchStateObservation, DispatcherCandidate, DispatcherStateSnapshot,
+    DispatcherStateTransition, DynamicBasicBlock, DynamicBlockInstruction, DynamicBranchProfile,
+    DynamicCfgEdge, OllvmAnalysisOptions, OllvmBranchCaseEvidence, OllvmBranchStability,
+    OllvmCaseSummary, OllvmDispatcherCaseEvidence, OllvmDispatcherStability, OllvmMultiTraceReport,
+    OllvmMultiTraceRequest, OllvmReport, OllvmScope, OllvmTraceCase, OpaqueBranchCandidate,
 };
 use crate::utils::parse_hex_addr;
 
@@ -13,6 +16,10 @@ use super::TraceEngine;
 const CHUNK_SIZE: u32 = 4096;
 const MAX_EXECUTED_INSTRUCTIONS: usize = 1_000_000;
 const MAX_BLOCK_INSTRUCTIONS: usize = 256;
+const MAX_DISPATCHER_STATE_SNAPSHOTS: usize = 64;
+const MAX_BRANCH_STATE_OBSERVATIONS: usize = 8;
+const MAX_TOTAL_DISPATCHER_STATE_SNAPSHOTS: usize = 512;
+const MAX_TOTAL_BRANCH_STATE_OBSERVATIONS: usize = 512;
 
 #[derive(Clone, Debug)]
 struct ExecutedInsn {
@@ -50,6 +57,14 @@ struct BranchStats {
     other: u64,
     successors: HashSet<u64>,
     condition_sources: HashSet<u64>,
+    observations: Vec<BranchObservationWork>,
+}
+
+#[derive(Clone, Debug)]
+struct BranchObservationWork {
+    seq: u32,
+    outcome: String,
+    successor: u64,
 }
 
 struct BlockWork {
@@ -308,7 +323,21 @@ impl TraceEngine {
                 .cmp(&left.assessment.score)
                 .then_with(|| right.visit_count.cmp(&left.visit_count))
         });
-        let mut opaque_branch_candidates = build_opaque_candidates(branch_stats);
+        attach_dispatcher_state_evidence(self, session_id, &executed, &mut dispatcher_candidates);
+        let mut branch_profiles = build_branch_profiles(branch_stats);
+        branch_profiles.sort_by(|left, right| {
+            right
+                .execution_count
+                .cmp(&left.execution_count)
+                .then_with(|| {
+                    parse_hex_addr(&left.branch_offset)
+                        .unwrap_or(0)
+                        .cmp(&parse_hex_addr(&right.branch_offset).unwrap_or(0))
+                })
+        });
+        attach_branch_state_evidence(self, session_id, &mut branch_profiles);
+        branch_profiles.sort_by_key(|profile| parse_hex_addr(&profile.branch_offset).unwrap_or(0));
+        let mut opaque_branch_candidates = build_opaque_candidates(&branch_profiles);
         opaque_branch_candidates.sort_by(|left, right| {
             right
                 .assessment
@@ -363,6 +392,7 @@ impl TraceEngine {
             edge_count: total_edge_count.min(u32::MAX as usize) as u32,
             blocks: blocks.into_iter().map(|block| block.block).collect(),
             edges: all_edges,
+            branch_profiles,
             dispatcher_candidates,
             opaque_branch_candidates,
             instructions_truncated,
@@ -375,6 +405,8 @@ impl TraceEngine {
                     .to_string(),
                 "Dispatcher scoring uses repeated visits, fan-in/fan-out, indirect branches, state-like register operations, and backward edges."
                     .to_string(),
+                "Dispatcher state snapshots and branch register observations are reconstructed from trace register checkpoints; missing or unknown register values are omitted."
+                    .to_string(),
                 "Child call ranges are excluded by default when a call-tree node is selected; enable includeChildCalls to retain them."
                     .to_string(),
             ],
@@ -385,8 +417,50 @@ impl TraceEngine {
                     .to_string(),
                 "Use Frida 16 Stalker calls or blocks to widen runtime coverage, then import the resulting trace and rerun this analysis."
                     .to_string(),
+                "Use the trace-seeded probes in the generated angr script to compare observed concrete branch state with the unconstrained blank-state probe."
+                    .to_string(),
             ],
         })
+    }
+
+    pub fn compare_ollvm_traces(
+        &self,
+        request: OllvmMultiTraceRequest,
+    ) -> Result<OllvmMultiTraceReport> {
+        if !(2..=16).contains(&request.cases.len()) {
+            return Err(TraceError::InvalidArgument(
+                "OLLVM comparison requires two to sixteen trace cases".to_string(),
+            ));
+        }
+        let mut labels = HashSet::new();
+        let mut cases = Vec::with_capacity(request.cases.len());
+        for case in request.cases {
+            let label = case.label.trim();
+            if label.is_empty() {
+                return Err(TraceError::InvalidArgument(
+                    "OLLVM comparison case labels must not be empty".to_string(),
+                ));
+            }
+            if !labels.insert(label.to_string()) {
+                return Err(TraceError::InvalidArgument(format!(
+                    "Duplicate OLLVM comparison case label: {label}"
+                )));
+            }
+            let report = self.analyze_ollvm(
+                &case.session_id,
+                OllvmAnalysisOptions {
+                    node_id: case.node_id,
+                    module_name: case.module_name.clone(),
+                    start_seq: case.start_seq,
+                    end_seq: case.end_seq,
+                    include_child_calls: case.include_child_calls,
+                    max_blocks: request.max_blocks,
+                    max_edges: request.max_edges,
+                },
+            )?;
+            cases.push((case, report));
+        }
+        compare_ollvm_reports(cases).map_err(TraceError::InvalidArgument)
     }
 
     fn infer_ollvm_module(
@@ -538,16 +612,24 @@ fn build_transitions(
         let kind = if is_conditional_branch(&instruction.operation) {
             let stats = branch_stats.entry(instruction.offset).or_default();
             stats.successors.insert(next.offset);
-            if next.offset == instruction.offset.saturating_add(4) {
+            let (kind, outcome) = if next.offset == instruction.offset.saturating_add(4) {
                 stats.fallthrough = stats.fallthrough.saturating_add(1);
-                "conditional_fallthrough"
+                ("conditional_fallthrough", "fallthrough")
             } else if direct_target == Some(next.offset) {
                 stats.taken = stats.taken.saturating_add(1);
-                "conditional_taken"
+                ("conditional_taken", "taken")
             } else {
                 stats.other = stats.other.saturating_add(1);
-                "conditional_other"
+                ("conditional_other", "other")
+            };
+            if stats.observations.len() < MAX_BRANCH_STATE_OBSERVATIONS {
+                stats.observations.push(BranchObservationWork {
+                    seq: instruction.seq,
+                    outcome: outcome.to_string(),
+                    successor: next.offset,
+                });
             }
+            kind
         } else if instruction.operation == "b" {
             if direct_target.is_some_and(|target| target == next.offset) {
                 "branch"
@@ -850,6 +932,9 @@ fn build_dispatcher_candidates(
             indirect_branch_count: block.indirect_branch_count,
             backward_edge_count,
             state_registers: block.state_registers.clone(),
+            state_snapshots: Vec::new(),
+            state_transitions: Vec::new(),
+            state_snapshots_truncated: false,
             rationale,
             assessment,
         });
@@ -857,21 +942,212 @@ fn build_dispatcher_candidates(
     results
 }
 
-fn build_opaque_candidates(stats: HashMap<u64, BranchStats>) -> Vec<OpaqueBranchCandidate> {
-    let mut results = Vec::new();
-    for (offset, stats) in stats {
-        let observed_total = stats
-            .taken
-            .saturating_add(stats.fallthrough)
-            .saturating_add(stats.other);
-        let one_outcome = stats.other == 0
-            && ((stats.taken > 0 && stats.fallthrough == 0)
-                || (stats.fallthrough > 0 && stats.taken == 0));
-        if stats.execution_count < 2 || !one_outcome {
+fn canonical_register_name(value: &str) -> Option<String> {
+    let lower = value.trim().to_ascii_lowercase();
+    if lower == "nzcv" || lower == "sp" {
+        return Some(lower.to_ascii_uppercase());
+    }
+    let index = lower
+        .strip_prefix('x')
+        .or_else(|| lower.strip_prefix('w'))?
+        .parse::<u8>()
+        .ok()?;
+    (index <= 30).then(|| format!("X{index}"))
+}
+
+fn branch_relevant_registers(disasm: &str) -> Vec<String> {
+    let operation = operation_name(disasm);
+    if operation.starts_with("b.") {
+        return vec!["NZCV".to_string()];
+    }
+    for token in disasm.split(|character: char| !character.is_ascii_alphanumeric()) {
+        if let Some(register) = canonical_register_name(token) {
+            return vec![register];
+        }
+    }
+    Vec::new()
+}
+
+fn attach_dispatcher_state_evidence(
+    engine: &TraceEngine,
+    session_id: &str,
+    executed: &[ExecutedInsn],
+    candidates: &mut [DispatcherCandidate],
+) {
+    let mut remaining_snapshots = MAX_TOTAL_DISPATCHER_STATE_SNAPSHOTS;
+    for candidate in candidates {
+        let Ok(start_offset) = parse_hex_addr(&candidate.start_offset) else {
+            continue;
+        };
+        let mut registers: Vec<String> = candidate
+            .state_registers
+            .iter()
+            .filter_map(|register| canonical_register_name(register))
+            .collect::<HashSet<_>>()
+            .into_iter()
+            .collect();
+        registers.sort();
+        if registers.is_empty() {
             continue;
         }
-        let backward_successor = stats.successors.iter().any(|target| *target <= offset);
-        let complete_observations = observed_total >= stats.execution_count.saturating_sub(1);
+        let visit_seqs: Vec<u32> = executed
+            .iter()
+            .filter(|instruction| instruction.offset == start_offset)
+            .map(|instruction| instruction.seq)
+            .collect();
+        let snapshot_limit = MAX_DISPATCHER_STATE_SNAPSHOTS.min(remaining_snapshots);
+        candidate.state_snapshots_truncated = visit_seqs.len() > snapshot_limit;
+        let mut snapshots = Vec::new();
+        for seq in visit_seqs.into_iter().take(snapshot_limit) {
+            remaining_snapshots = remaining_snapshots.saturating_sub(1);
+            let Ok(state) = engine.get_registers_at(session_id, seq) else {
+                continue;
+            };
+            let values = registers
+                .iter()
+                .filter_map(|register| {
+                    let value = state.get(register)?;
+                    (value != "?").then(|| (register.clone(), value.clone()))
+                })
+                .collect::<BTreeMap<_, _>>();
+            if !values.is_empty() {
+                snapshots.push(DispatcherStateSnapshot { seq, values });
+            }
+        }
+        let mut transition_counts: BTreeMap<(String, String, String), (u64, u32)> = BTreeMap::new();
+        for pair in snapshots.windows(2) {
+            let (left, right) = (&pair[0], &pair[1]);
+            for register in &registers {
+                let (Some(from_value), Some(to_value)) =
+                    (left.values.get(register), right.values.get(register))
+                else {
+                    continue;
+                };
+                if from_value == to_value {
+                    continue;
+                }
+                transition_counts
+                    .entry((register.clone(), from_value.clone(), to_value.clone()))
+                    .and_modify(|entry| entry.0 = entry.0.saturating_add(1))
+                    .or_insert((1, left.seq));
+            }
+        }
+        candidate.state_transitions = transition_counts
+            .into_iter()
+            .map(
+                |((register, from_value, to_value), (execution_count, sample_seq))| {
+                    DispatcherStateTransition {
+                        register,
+                        from_value,
+                        to_value,
+                        execution_count,
+                        sample_seq,
+                    }
+                },
+            )
+            .collect();
+        candidate.state_transitions.sort_by(|left, right| {
+            right
+                .execution_count
+                .cmp(&left.execution_count)
+                .then_with(|| left.register.cmp(&right.register))
+        });
+        candidate.state_snapshots = snapshots;
+    }
+}
+
+fn build_branch_profiles(stats: HashMap<u64, BranchStats>) -> Vec<DynamicBranchProfile> {
+    stats
+        .into_iter()
+        .map(|(offset, stats)| {
+            let mut observed_successors: Vec<_> = stats
+                .successors
+                .into_iter()
+                .map(|target| format!("0x{target:x}"))
+                .collect();
+            observed_successors.sort();
+            let mut condition_source_offsets: Vec<_> = stats
+                .condition_sources
+                .into_iter()
+                .map(|source| format!("0x{source:x}"))
+                .collect();
+            condition_source_offsets.sort();
+            DynamicBranchProfile {
+                branch_offset: format!("0x{offset:x}"),
+                disasm: stats.disasm,
+                execution_count: stats.execution_count,
+                observed_taken_count: stats.taken,
+                observed_fallthrough_count: stats.fallthrough,
+                observed_other_count: stats.other,
+                observed_successors,
+                condition_source_offsets,
+                observations_truncated: stats.execution_count as usize > stats.observations.len(),
+                observations: stats
+                    .observations
+                    .into_iter()
+                    .map(|observation| BranchStateObservation {
+                        seq: observation.seq,
+                        outcome: observation.outcome,
+                        successor: format!("0x{:x}", observation.successor),
+                        registers: BTreeMap::new(),
+                    })
+                    .collect(),
+            }
+        })
+        .collect()
+}
+
+fn attach_branch_state_evidence(
+    engine: &TraceEngine,
+    session_id: &str,
+    profiles: &mut [DynamicBranchProfile],
+) {
+    let mut remaining_observations = MAX_TOTAL_BRANCH_STATE_OBSERVATIONS;
+    for profile in profiles {
+        let registers = branch_relevant_registers(&profile.disasm);
+        if registers.is_empty() {
+            continue;
+        }
+        let enrich_count = profile.observations.len().min(remaining_observations);
+        if enrich_count < profile.observations.len() {
+            profile.observations_truncated = true;
+        }
+        for observation in profile.observations.iter_mut().take(enrich_count) {
+            remaining_observations = remaining_observations.saturating_sub(1);
+            let Ok(state) = engine.get_registers_at(session_id, observation.seq) else {
+                continue;
+            };
+            observation.registers = registers
+                .iter()
+                .filter_map(|register| {
+                    let value = state.get(register)?;
+                    (value != "?").then(|| (register.clone(), value.clone()))
+                })
+                .collect();
+        }
+    }
+}
+
+fn build_opaque_candidates(profiles: &[DynamicBranchProfile]) -> Vec<OpaqueBranchCandidate> {
+    let mut results = Vec::new();
+    for profile in profiles {
+        let offset = parse_hex_addr(&profile.branch_offset).unwrap_or(0);
+        let observed_total = profile
+            .observed_taken_count
+            .saturating_add(profile.observed_fallthrough_count)
+            .saturating_add(profile.observed_other_count);
+        let one_outcome = profile.observed_other_count == 0
+            && ((profile.observed_taken_count > 0 && profile.observed_fallthrough_count == 0)
+                || (profile.observed_fallthrough_count > 0 && profile.observed_taken_count == 0));
+        if profile.execution_count < 2 || !one_outcome {
+            continue;
+        }
+        let backward_successor = profile
+            .observed_successors
+            .iter()
+            .filter_map(|target| parse_hex_addr(target).ok())
+            .any(|target| target <= offset);
+        let complete_observations = observed_total >= profile.execution_count.saturating_sub(1);
         let assessment = score_evidence(
             format!("opaque_branch: 0x{offset:x}"),
             false,
@@ -880,8 +1156,8 @@ fn build_opaque_candidates(stats: HashMap<u64, BranchStats>) -> Vec<OpaqueBranch
                     "repeated_branch",
                     "Branch executed repeatedly",
                     25,
-                    stats.execution_count >= 3,
-                    Some(format!("{} executions", stats.execution_count)),
+                    profile.execution_count >= 3,
+                    Some(format!("{} executions", profile.execution_count)),
                 ),
                 EvidenceScoreSignal::new(
                     "single_outcome",
@@ -890,22 +1166,17 @@ fn build_opaque_candidates(stats: HashMap<u64, BranchStats>) -> Vec<OpaqueBranch
                     one_outcome,
                     Some(format!(
                         "taken={}, fallthrough={}, other={}",
-                        stats.taken, stats.fallthrough, stats.other
+                        profile.observed_taken_count,
+                        profile.observed_fallthrough_count,
+                        profile.observed_other_count
                     )),
                 ),
                 EvidenceScoreSignal::new(
                     "condition_source",
                     "Nearby flag-producing instruction observed",
                     20,
-                    !stats.condition_sources.is_empty(),
-                    Some(
-                        stats
-                            .condition_sources
-                            .iter()
-                            .map(|source| format!("0x{source:x}"))
-                            .collect::<Vec<_>>()
-                            .join(", "),
-                    ),
+                    !profile.condition_source_offsets.is_empty(),
+                    Some(profile.condition_source_offsets.join(", ")),
                 ),
                 EvidenceScoreSignal::new(
                     "complete_observations",
@@ -914,7 +1185,7 @@ fn build_opaque_candidates(stats: HashMap<u64, BranchStats>) -> Vec<OpaqueBranch
                     complete_observations,
                     Some(format!(
                         "{observed_total}/{} classified",
-                        stats.execution_count
+                        profile.execution_count
                     )),
                 ),
                 EvidenceScoreSignal::new(
@@ -932,36 +1203,416 @@ fn build_opaque_candidates(stats: HashMap<u64, BranchStats>) -> Vec<OpaqueBranch
                     .to_string(),
             ],
         );
-        let mut observed_successors: Vec<_> = stats
-            .successors
-            .into_iter()
-            .map(|target| format!("0x{target:x}"))
-            .collect();
-        observed_successors.sort();
-        let mut condition_source_offsets: Vec<_> = stats
-            .condition_sources
-            .into_iter()
-            .map(|source| format!("0x{source:x}"))
-            .collect();
-        condition_source_offsets.sort();
         let rationale = format!(
             "{} executions produced one observed outcome (taken={}, fallthrough={}); alternate static path remains unverified",
-            stats.execution_count, stats.taken, stats.fallthrough
+            profile.execution_count,
+            profile.observed_taken_count,
+            profile.observed_fallthrough_count
         );
         results.push(OpaqueBranchCandidate {
-            branch_offset: format!("0x{offset:x}"),
-            disasm: stats.disasm,
-            execution_count: stats.execution_count,
-            observed_taken_count: stats.taken,
-            observed_fallthrough_count: stats.fallthrough,
-            observed_other_count: stats.other,
-            observed_successors,
-            condition_source_offsets,
+            branch_offset: profile.branch_offset.clone(),
+            disasm: profile.disasm.clone(),
+            execution_count: profile.execution_count,
+            observed_taken_count: profile.observed_taken_count,
+            observed_fallthrough_count: profile.observed_fallthrough_count,
+            observed_other_count: profile.observed_other_count,
+            observed_successors: profile.observed_successors.clone(),
+            condition_source_offsets: profile.condition_source_offsets.clone(),
+            observations: profile.observations.clone(),
+            observations_truncated: profile.observations_truncated,
             rationale,
             assessment,
         });
     }
     results
+}
+
+fn compare_ollvm_reports(
+    cases: Vec<(OllvmTraceCase, OllvmReport)>,
+) -> std::result::Result<OllvmMultiTraceReport, String> {
+    let Some(first_module) = cases
+        .first()
+        .map(|(_, report)| report.scope.module_name.clone())
+    else {
+        return Err("OLLVM comparison requires at least one case".to_string());
+    };
+    if cases
+        .iter()
+        .any(|(_, report)| !report.scope.module_name.eq_ignore_ascii_case(&first_module))
+    {
+        return Err("OLLVM comparison cases must analyze the same module basename".to_string());
+    }
+
+    let summaries = cases
+        .iter()
+        .map(|(case, report)| OllvmCaseSummary {
+            session_id: case.session_id.clone(),
+            label: case.label.clone(),
+            module_name: report.scope.module_name.clone(),
+            block_count: report.block_count,
+            edge_count: report.edge_count,
+            dispatcher_candidate_count: report.dispatcher_candidates.len() as u32,
+            branch_profile_count: report.branch_profiles.len() as u32,
+            opaque_branch_candidate_count: report.opaque_branch_candidates.len() as u32,
+        })
+        .collect();
+
+    let mut dispatcher_offsets = HashSet::new();
+    for (_, report) in &cases {
+        dispatcher_offsets.extend(
+            report
+                .dispatcher_candidates
+                .iter()
+                .map(|candidate| candidate.start_offset.to_ascii_lowercase()),
+        );
+    }
+    let mut dispatcher_stability = Vec::new();
+    for offset in dispatcher_offsets {
+        let mut evidence = Vec::new();
+        let mut candidate_register_sets = Vec::new();
+        for (case, report) in &cases {
+            let block = report
+                .blocks
+                .iter()
+                .find(|block| block.start_offset.eq_ignore_ascii_case(&offset));
+            let candidate = report
+                .dispatcher_candidates
+                .iter()
+                .find(|candidate| candidate.start_offset.eq_ignore_ascii_case(&offset));
+            let block_id = candidate
+                .map(|candidate| candidate.block_id.as_str())
+                .or_else(|| block.map(|block| block.block_id.as_str()));
+            let mut successors = block_id
+                .map(|block_id| {
+                    report
+                        .edges
+                        .iter()
+                        .filter(|edge| edge.source_block_id == block_id)
+                        .map(|edge| edge.target_offset.to_ascii_lowercase())
+                        .collect::<HashSet<_>>()
+                        .into_iter()
+                        .collect::<Vec<_>>()
+                })
+                .unwrap_or_default();
+            successors.sort_by_key(|value| parse_hex_addr(value).unwrap_or(0));
+            let state_registers = candidate
+                .map(|candidate| candidate.state_registers.clone())
+                .unwrap_or_default();
+            if candidate.is_some() {
+                candidate_register_sets.push(
+                    state_registers
+                        .iter()
+                        .filter_map(|register| canonical_register_name(register))
+                        .collect::<HashSet<_>>(),
+                );
+            }
+            evidence.push(OllvmDispatcherCaseEvidence {
+                label: case.label.clone(),
+                present: block.is_some(),
+                candidate: candidate.is_some(),
+                visit_count: candidate
+                    .map(|candidate| candidate.visit_count)
+                    .or_else(|| block.map(|block| block.visit_count))
+                    .unwrap_or_default(),
+                score: candidate
+                    .map(|candidate| candidate.assessment.score)
+                    .unwrap_or_default(),
+                successors,
+                state_registers,
+                state_transition_count: candidate
+                    .map(|candidate| candidate.state_transitions.len() as u32)
+                    .unwrap_or_default(),
+            });
+        }
+        let present_in_runs = evidence.iter().filter(|item| item.present).count() as u32;
+        let candidate_in_runs = evidence.iter().filter(|item| item.candidate).count() as u32;
+        let mut observed_state_registers = candidate_register_sets
+            .iter()
+            .flat_map(|registers| registers.iter().cloned())
+            .collect::<HashSet<_>>()
+            .into_iter()
+            .collect::<Vec<_>>();
+        observed_state_registers.sort();
+        let mut common_state_registers =
+            candidate_register_sets.first().cloned().unwrap_or_default();
+        for registers in candidate_register_sets.iter().skip(1) {
+            common_state_registers.retain(|register| registers.contains(register));
+        }
+        let mut common_state_registers: Vec<_> = common_state_registers.into_iter().collect();
+        common_state_registers.sort();
+        let successor_signatures = evidence
+            .iter()
+            .filter(|item| item.present)
+            .map(|item| item.successors.join(","))
+            .collect::<HashSet<_>>();
+        let stable_successors = present_in_runs >= 2 && successor_signatures.len() == 1;
+        let transition_runs = evidence
+            .iter()
+            .filter(|item| item.state_transition_count > 0)
+            .count() as u32;
+        let assessment = score_evidence(
+            format!("ollvm_dispatcher_multirun:{offset}"),
+            false,
+            vec![
+                EvidenceScoreSignal::new(
+                    "present_all_runs",
+                    "Block observed in every controlled run",
+                    20,
+                    present_in_runs as usize == cases.len(),
+                    Some(format!("{present_in_runs}/{} runs", cases.len())),
+                ),
+                EvidenceScoreSignal::new(
+                    "candidate_all_runs",
+                    "Dispatcher candidate in every run",
+                    30,
+                    candidate_in_runs as usize == cases.len(),
+                    Some(format!("{candidate_in_runs}/{} runs", cases.len())),
+                ),
+                EvidenceScoreSignal::new(
+                    "stable_successors",
+                    "Observed successor set is stable across runs",
+                    15,
+                    stable_successors,
+                    None,
+                ),
+                EvidenceScoreSignal::new(
+                    "common_state_registers",
+                    "State-like registers recur across runs",
+                    15,
+                    !common_state_registers.is_empty(),
+                    Some(common_state_registers.join(", ")),
+                ),
+                EvidenceScoreSignal::new(
+                    "state_transitions",
+                    "Changing state-register values observed in multiple runs",
+                    20,
+                    transition_runs >= 2,
+                    Some(format!("{transition_runs} runs")),
+                ),
+            ],
+            vec![
+                "A stable central block can still be a normal switch or loop dispatcher."
+                    .to_string(),
+                "Cross-run structural stability does not prove OLLVM control-flow flattening."
+                    .to_string(),
+            ],
+        );
+        dispatcher_stability.push(OllvmDispatcherStability {
+            start_offset: offset.clone(),
+            present_in_runs,
+            candidate_in_runs,
+            common_state_registers,
+            observed_state_registers,
+            rationale: format!(
+                "candidate in {candidate_in_runs}/{} runs; block present in {present_in_runs}/{} runs",
+                cases.len(),
+                cases.len()
+            ),
+            cases: evidence,
+            assessment,
+        });
+    }
+    dispatcher_stability.sort_by(|left, right| {
+        right
+            .assessment
+            .score
+            .cmp(&left.assessment.score)
+            .then_with(|| {
+                parse_hex_addr(&left.start_offset)
+                    .unwrap_or(0)
+                    .cmp(&parse_hex_addr(&right.start_offset).unwrap_or(0))
+            })
+    });
+
+    let mut branch_offsets = HashSet::new();
+    for (_, report) in &cases {
+        branch_offsets.extend(
+            report
+                .branch_profiles
+                .iter()
+                .map(|profile| profile.branch_offset.to_ascii_lowercase()),
+        );
+    }
+    let mut branch_stability = Vec::new();
+    for offset in branch_offsets {
+        let mut evidence = Vec::new();
+        let mut outcomes = HashSet::new();
+        let mut all_single_outcome = true;
+        let mut repeated_in_all_present = true;
+        let mut condition_source_runs = 0u32;
+        for (case, report) in &cases {
+            let profile = report
+                .branch_profiles
+                .iter()
+                .find(|profile| profile.branch_offset.eq_ignore_ascii_case(&offset));
+            if let Some(profile) = profile {
+                let outcome = if profile.observed_other_count == 0
+                    && profile.observed_taken_count > 0
+                    && profile.observed_fallthrough_count == 0
+                {
+                    Some("taken")
+                } else if profile.observed_other_count == 0
+                    && profile.observed_fallthrough_count > 0
+                    && profile.observed_taken_count == 0
+                {
+                    Some("fallthrough")
+                } else {
+                    None
+                };
+                if let Some(outcome) = outcome {
+                    outcomes.insert(outcome);
+                } else {
+                    all_single_outcome = false;
+                }
+                repeated_in_all_present &= profile.execution_count >= 2;
+                if !profile.condition_source_offsets.is_empty() {
+                    condition_source_runs = condition_source_runs.saturating_add(1);
+                }
+                evidence.push(OllvmBranchCaseEvidence {
+                    label: case.label.clone(),
+                    present: true,
+                    execution_count: profile.execution_count,
+                    observed_taken_count: profile.observed_taken_count,
+                    observed_fallthrough_count: profile.observed_fallthrough_count,
+                    observed_other_count: profile.observed_other_count,
+                    observed_successors: profile.observed_successors.clone(),
+                });
+            } else {
+                evidence.push(OllvmBranchCaseEvidence {
+                    label: case.label.clone(),
+                    present: false,
+                    execution_count: 0,
+                    observed_taken_count: 0,
+                    observed_fallthrough_count: 0,
+                    observed_other_count: 0,
+                    observed_successors: Vec::new(),
+                });
+            }
+        }
+        let present_in_runs = evidence.iter().filter(|item| item.present).count() as u32;
+        let alternate_outcomes_observed = outcomes.len() > 1 || !all_single_outcome;
+        let stable_single_outcome = present_in_runs >= 2
+            && all_single_outcome
+            && outcomes.len() == 1
+            && !alternate_outcomes_observed;
+        let classification = if alternate_outcomes_observed {
+            "alternate-outcomes-observed"
+        } else if stable_single_outcome && present_in_runs as usize == cases.len() {
+            "stable-single-outcome-across-runs"
+        } else if stable_single_outcome {
+            "partial-coverage-single-outcome"
+        } else {
+            "insufficient-cross-run-evidence"
+        }
+        .to_string();
+        let successor_signatures = evidence
+            .iter()
+            .filter(|item| item.present)
+            .map(|item| item.observed_successors.join(","))
+            .collect::<HashSet<_>>();
+        let assessment = score_evidence(
+            format!("opaque_branch_multirun:{offset}"),
+            false,
+            vec![
+                EvidenceScoreSignal::new(
+                    "present_multiple_runs",
+                    "Branch observed in multiple runs",
+                    20,
+                    present_in_runs >= 2,
+                    Some(format!("{present_in_runs}/{} runs", cases.len())),
+                ),
+                EvidenceScoreSignal::new(
+                    "stable_single_outcome",
+                    "Same single outcome observed across runs",
+                    35,
+                    stable_single_outcome,
+                    Some(classification.clone()),
+                ),
+                EvidenceScoreSignal::new(
+                    "stable_successor",
+                    "Observed successor set is identical",
+                    20,
+                    stable_single_outcome && successor_signatures.len() == 1,
+                    None,
+                ),
+                EvidenceScoreSignal::new(
+                    "repeated_each_run",
+                    "Branch repeated in each run where present",
+                    15,
+                    present_in_runs >= 2 && repeated_in_all_present,
+                    None,
+                ),
+                EvidenceScoreSignal::new(
+                    "condition_sources",
+                    "Condition-source instructions recur across runs",
+                    10,
+                    condition_source_runs >= 2,
+                    Some(format!("{condition_source_runs} runs")),
+                ),
+            ],
+            vec![
+                "Even a stable single outcome across controlled runs does not prove the alternate path is infeasible."
+                    .to_string(),
+                "Observed alternate outcomes are evidence against treating the branch as globally opaque."
+                    .to_string(),
+            ],
+        );
+        let rationale = if alternate_outcomes_observed {
+            format!(
+                "Different outcomes or unclassified successors were observed across {present_in_runs} runs; do not patch this branch as opaque."
+            )
+        } else {
+            format!(
+                "The same single outcome was observed in {present_in_runs}/{} runs; untested states remain unknown.",
+                cases.len()
+            )
+        };
+        branch_stability.push(OllvmBranchStability {
+            branch_offset: offset,
+            present_in_runs,
+            stable_single_outcome,
+            alternate_outcomes_observed,
+            classification,
+            cases: evidence,
+            rationale,
+            assessment,
+        });
+    }
+    branch_stability.sort_by(|left, right| {
+        right
+            .assessment
+            .score
+            .cmp(&left.assessment.score)
+            .then_with(|| {
+                parse_hex_addr(&left.branch_offset)
+                    .unwrap_or(0)
+                    .cmp(&parse_hex_addr(&right.branch_offset).unwrap_or(0))
+            })
+    });
+
+    Ok(OllvmMultiTraceReport {
+        schema_version: "trace-ui/ollvm-multitrace-v1".to_string(),
+        cases: summaries,
+        dispatcher_stability,
+        branch_stability,
+        verification_gate_met: false,
+        limitations: vec![
+            "Module-relative offsets are comparable only when every trace came from the same binary build; this report does not prove Build ID or SHA-256 equality."
+                .to_string(),
+            "Only executed blocks, edges, and branch outcomes are compared. Missing coverage is not evidence of infeasibility."
+                .to_string(),
+            "Cross-run dispatcher and opaque-branch classifications remain Candidate/Related evidence."
+                .to_string(),
+        ],
+        next_steps: vec![
+            "Repeat with controlled input groups that exercise different state values and inspect branches classified as alternate-outcomes-observed."
+                .to_string(),
+            "Run the generated angr bridge manually with trace-seeded branch snapshots and compare the exact binary SHA-256."
+                .to_string(),
+            "Import the dynamic offsets into IDA and reconcile dispatcher/state transitions with static def-use and dominator structure."
+                .to_string(),
+        ],
+    })
 }
 
 #[cfg(test)]
@@ -993,7 +1644,8 @@ mod tests {
             insn(8, 0x108, "ret"),
         ];
         let (_, stats) = build_transitions(&executed, 0x100000);
-        let candidates = build_opaque_candidates(stats);
+        let profiles = build_branch_profiles(stats);
+        let candidates = build_opaque_candidates(&profiles);
         assert_eq!(candidates.len(), 1);
         assert_eq!(candidates[0].observed_fallthrough_count, 3);
         assert!(!candidates[0].assessment.verification_gate_met);
@@ -1004,5 +1656,116 @@ mod tests {
     fn extracts_last_branch_target_as_module_offset() {
         let instruction = insn(0, 0x100, "tbz w8, #3, 0x101234");
         assert_eq!(direct_target_offset(&instruction, 0x100000), Some(0x1234));
+    }
+
+    #[test]
+    fn branch_profiles_keep_bounded_outcome_observations() {
+        let executed = vec![
+            insn(0, 0x100, "cbz w8, 0x100200"),
+            insn(1, 0x200, "add w0, w0, #1"),
+            insn(2, 0x100, "cbz w8, 0x100200"),
+            insn(3, 0x104, "ret"),
+        ];
+        let (_, stats) = build_transitions(&executed, 0x100000);
+        let profiles = build_branch_profiles(stats);
+        let profile = profiles
+            .iter()
+            .find(|profile| profile.branch_offset == "0x100")
+            .unwrap();
+        assert_eq!(profile.observed_taken_count, 1);
+        assert_eq!(profile.observed_fallthrough_count, 1);
+        assert_eq!(profile.observations.len(), 2);
+        assert_eq!(branch_relevant_registers(&profile.disasm), vec!["X8"]);
+    }
+
+    fn report_with_branch(session_id: &str, taken: u64, fallthrough: u64) -> OllvmReport {
+        OllvmReport {
+            schema_version: "trace-ui/ollvm-v1".to_string(),
+            scope: OllvmScope {
+                session_id: session_id.to_string(),
+                node_id: None,
+                function_name: Some("target".to_string()),
+                module_name: "libtarget.so".to_string(),
+                module_base: "0x100000".to_string(),
+                start_seq: 0,
+                end_seq: 10,
+                child_calls_excluded: 0,
+            },
+            executed_instruction_count: taken + fallthrough,
+            unique_instruction_count: 2,
+            block_count: 0,
+            edge_count: 0,
+            blocks: Vec::new(),
+            edges: Vec::new(),
+            branch_profiles: vec![DynamicBranchProfile {
+                branch_offset: "0x104".to_string(),
+                disasm: "b.eq 0x200".to_string(),
+                execution_count: taken + fallthrough,
+                observed_taken_count: taken,
+                observed_fallthrough_count: fallthrough,
+                observed_other_count: 0,
+                observed_successors: if taken > 0 && fallthrough > 0 {
+                    vec!["0x108".to_string(), "0x200".to_string()]
+                } else if taken > 0 {
+                    vec!["0x200".to_string()]
+                } else {
+                    vec!["0x108".to_string()]
+                },
+                condition_source_offsets: vec!["0x100".to_string()],
+                observations: Vec::new(),
+                observations_truncated: false,
+            }],
+            dispatcher_candidates: Vec::new(),
+            opaque_branch_candidates: Vec::new(),
+            instructions_truncated: false,
+            blocks_truncated: false,
+            edges_truncated: false,
+            limitations: Vec::new(),
+            next_steps: Vec::new(),
+        }
+    }
+
+    fn trace_case(session_id: &str, label: &str) -> OllvmTraceCase {
+        OllvmTraceCase {
+            session_id: session_id.to_string(),
+            label: label.to_string(),
+            node_id: None,
+            module_name: Some("libtarget.so".to_string()),
+            start_seq: None,
+            end_seq: None,
+            include_child_calls: false,
+        }
+    }
+
+    #[test]
+    fn multirun_comparison_rejects_global_opaque_claim_after_alternate_outcomes() {
+        let compared = compare_ollvm_reports(vec![
+            (trace_case("a", "taken"), report_with_branch("a", 3, 0)),
+            (
+                trace_case("b", "fallthrough"),
+                report_with_branch("b", 0, 3),
+            ),
+        ])
+        .unwrap();
+        let branch = &compared.branch_stability[0];
+        assert!(branch.alternate_outcomes_observed);
+        assert!(!branch.stable_single_outcome);
+        assert_eq!(branch.classification, "alternate-outcomes-observed");
+        assert!(!branch.assessment.verification_gate_met);
+        assert!(!compared.verification_gate_met);
+    }
+
+    #[test]
+    fn multirun_stable_single_outcome_remains_candidate_only() {
+        let compared = compare_ollvm_reports(vec![
+            (trace_case("a", "run-a"), report_with_branch("a", 3, 0)),
+            (trace_case("b", "run-b"), report_with_branch("b", 4, 0)),
+        ])
+        .unwrap();
+        let branch = &compared.branch_stability[0];
+        assert!(branch.stable_single_outcome);
+        assert!(!branch.alternate_outcomes_observed);
+        assert_eq!(branch.classification, "stable-single-outcome-across-runs");
+        assert_ne!(branch.assessment.grade, "verified");
     }
 }

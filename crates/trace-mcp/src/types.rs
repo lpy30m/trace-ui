@@ -934,6 +934,20 @@ pub struct InspectFridaCaptureRequest {
 }
 
 #[derive(Debug, Deserialize, JsonSchema)]
+pub struct AnalyzeFridaCryptoMaterialsRequest {
+    #[schemars(
+        description = "Absolute path to user-captured trace-ui/frida-hook-v1 JSON/NDJSON/CLI log"
+    )]
+    pub file_path: String,
+    #[schemars(description = "Maximum returned materials (default: 1000, max: 5000)")]
+    #[serde(default = "default_frida_materials")]
+    pub max_materials: u32,
+    #[schemars(description = "Include weak direction-only input/output classifications")]
+    #[serde(default)]
+    pub include_unknown: bool,
+}
+
+#[derive(Debug, Deserialize, JsonSchema)]
 pub struct GenerateAngrStateSeedRequest {
     #[schemars(
         description = "Absolute path to a user-captured trace-ui/frida-hook-v1 JSON/NDJSON file"
@@ -953,6 +967,10 @@ pub struct GenerateAngrStateSeedRequest {
 
 fn default_frida_stalker_duration() -> u32 {
     10_000
+}
+
+fn default_frida_materials() -> u32 {
+    1_000
 }
 
 fn default_frida_max_bytes() -> u32 {
@@ -984,6 +1002,36 @@ pub struct AnalyzeOllvmRequest {
     #[serde(default = "default_ollvm_blocks")]
     pub max_blocks: u32,
     #[schemars(description = "Maximum returned edges (default: 3000, max: 50000)")]
+    #[serde(default = "default_ollvm_edges")]
+    pub max_edges: u32,
+}
+
+#[derive(Debug, Deserialize, Serialize, JsonSchema)]
+pub struct CompareOllvmTraceCaseRequest {
+    #[schemars(description = "Open trace session ID")]
+    pub session_id: String,
+    #[schemars(description = "Unique human-readable run label")]
+    pub label: String,
+    #[schemars(description = "Optional call-tree node ID for this run")]
+    pub node_id: Option<u32>,
+    #[schemars(
+        description = "Optional module basename; all cases must resolve to the same module"
+    )]
+    pub module_name: Option<String>,
+    #[schemars(description = "Optional 0-based first trace sequence for this run")]
+    pub start_seq: Option<u32>,
+    #[schemars(description = "Optional 0-based last trace sequence for this run")]
+    pub end_seq: Option<u32>,
+    #[serde(default)]
+    pub include_child_calls: bool,
+}
+
+#[derive(Debug, Deserialize, Serialize, JsonSchema)]
+pub struct CompareOllvmTracesRequest {
+    #[schemars(description = "Two to sixteen controlled trace cases")]
+    pub cases: Vec<CompareOllvmTraceCaseRequest>,
+    #[serde(default = "default_ollvm_blocks")]
+    pub max_blocks: u32,
     #[serde(default = "default_ollvm_edges")]
     pub max_edges: u32,
 }
@@ -1281,10 +1329,36 @@ mod tests {
     }
 
     #[test]
+    fn frida_crypto_material_request_uses_bounded_defaults() {
+        let request: AnalyzeFridaCryptoMaterialsRequest =
+            serde_json::from_value(serde_json::json!({
+                "file_path": "capture.ndjson"
+            }))
+            .unwrap();
+        assert_eq!(request.max_materials, 1_000);
+        assert!(!request.include_unknown);
+    }
+
+    #[test]
     fn ollvm_request_defaults_to_bounded_dynamic_cfg() {
         let request: AnalyzeOllvmRequest = serde_json::from_value(serde_json::json!({})).unwrap();
         assert!(!request.include_child_calls);
         assert_eq!(request.max_blocks, 1_000);
         assert_eq!(request.max_edges, 3_000);
+    }
+
+    #[test]
+    fn ollvm_multitrace_request_uses_bounded_defaults() {
+        let request: CompareOllvmTracesRequest = serde_json::from_value(serde_json::json!({
+            "cases": [
+                {"session_id":"a","label":"run-a"},
+                {"session_id":"b","label":"run-b"}
+            ]
+        }))
+        .unwrap();
+        assert_eq!(request.max_blocks, 1_000);
+        assert_eq!(request.max_edges, 3_000);
+        assert_eq!(request.cases.len(), 2);
+        assert!(!request.cases[0].include_child_calls);
     }
 }

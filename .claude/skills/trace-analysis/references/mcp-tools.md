@@ -79,6 +79,10 @@ Line numbers in taint `@LINE` specs are **1-based**; `start_seq`/`end_seq`/`seq`
 - **inspect_frida_capture** `{file_path}` reads user-captured JSON objects/arrays, Frida send envelopes,
   NDJSON, or `TRACE_UI_JSON`-prefixed CLI logs. It normalizes call IDs, module metadata, registers,
   buffers, returns, backtraces, and Stalker batch counts without running Frida.
+- **analyze_frida_crypto_materials** `{file_path,max_materials?=1000,include_unknown?=false}` groups
+  imported captures by callId and indexes key/password/salt/IV/nonce/AAD/tag/input/output/digest/MAC/KDF
+  candidates. Exact MD5/SHA, HMAC, and PBKDF2 recomputation may open the Verified gate for that captured
+  call. PBKDF2 work is bounded; label-only roles remain Related.
 - **generate_angr_state_seed** `{file_path,event_index,include_sp?=false,include_lr?=true}` returns a
   manual Python `configure_state(state)` function. It rebases pointers inside the captured module and
   seeds captured byte buffers. Heap/stack addresses remain process-specific, and capture-point
@@ -88,8 +92,14 @@ Line numbers in taint `@LINE` specs are **1-based**; `start_seq`/`end_seq`/`seq`
 
 - **analyze_ollvm** `{session_id?, node_id?, module_name?, start_seq?, end_seq?,
   include_child_calls?=false, max_blocks?=1000, max_edges?=3000}` builds an ASLR-stable dynamic CFG and
-  ranks dispatcher and opaque-branch candidates. Results cover executed instructions only and are not
-  proof of obfuscation.
+  ranks dispatcher and opaque-branch candidates. It also returns dispatcher state snapshots/transitions
+  and bounded branch register observations reconstructed from trace checkpoints. Results cover executed
+  instructions only and are not proof of obfuscation.
+- **compare_ollvm_traces** `{cases:[{session_id,label,node_id?,module_name?,start_seq?,end_seq?,
+  include_child_calls?}],max_blocks?=1000,max_edges?=3000}` compares two to sixteen controlled runs by
+  module-relative offset. It reports dispatcher/state-register stability and classifies branch outcomes.
+  `alternate-outcomes-observed` is evidence against a global opaque claim; stable single outcomes remain
+  Candidate/Related. The result is saved to the first case session.
 - **generate_ida_ollvm_script** accepts the same scope plus `ida_image_base?` and
   `add_user_xrefs?=false`. It returns IDAPython that applies dynamic comments/colors and can export
   `trace-ui/ida-ollvm-v1` annotations. The user runs it manually in IDA.
@@ -98,8 +108,9 @@ Line numbers in taint `@LINE` specs are **1-based**; `start_seq`/`end_seq`/`seq`
 - **generate_angr_ollvm_script** accepts the same trace scope plus
   `probe_opaque_branches?=true` and `use_cfg_emulated?=false`. It returns standalone Python that the
   user manually runs against the exact ELF/shared object. The script reconciles angr static CFG
-  successors with observed dynamic edges and writes `trace-ui/angr-ollvm-v1` JSON. Trace UI does not
-  install or execute angr.
+  successors with observed dynamic edges, performs blank-state probes, and performs trace-register-seeded
+  probes when bounded branch snapshots are available. Register-only seeds may omit memory or other state.
+  It writes `trace-ui/angr-ollvm-v1` JSON. Trace UI does not install or execute angr.
 - **inspect_angr_ollvm_results** `{file_path}` validates and returns an imported
   `trace-ui/angr-ollvm-v1` bundle, including binary SHA-256, mapped base, CFG kind, unobserved static
   successors, dynamic-only successors, and optional branch probes. Blank-state probes are candidate

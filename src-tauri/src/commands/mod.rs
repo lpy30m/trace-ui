@@ -706,6 +706,23 @@ pub async fn load_frida_capture(path: String) -> Result<trace_core::FridaCapture
 }
 
 #[tauri::command]
+pub async fn analyze_frida_crypto_materials(
+    bundle: trace_core::FridaCaptureBundle,
+    max_materials: Option<u32>,
+    include_unknown: Option<bool>,
+) -> Result<trace_core::CryptoMaterialReport, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        trace_core::analyze_frida_crypto_materials(
+            &bundle,
+            max_materials,
+            include_unknown.unwrap_or(false),
+        )
+    })
+    .await
+    .map_err(|error| format!("Task execution failed: {error}"))?
+}
+
+#[tauri::command]
 pub fn generate_angr_state_seed(
     bundle: trace_core::FridaCaptureBundle,
     event_index: u64,
@@ -771,6 +788,21 @@ pub async fn analyze_ollvm(
     tauri::async_runtime::spawn_blocking(move || {
         engine
             .analyze_ollvm(&session_id, options)
+            .map_err(|error| error.to_string())
+    })
+    .await
+    .map_err(|error| format!("Task execution failed: {error}"))?
+}
+
+#[tauri::command]
+pub async fn compare_ollvm_traces(
+    request: trace_core::OllvmMultiTraceRequest,
+    engine: State<'_, Arc<TraceEngine>>,
+) -> Result<trace_core::OllvmMultiTraceReport, String> {
+    let engine = engine.inner().clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        engine
+            .compare_ollvm_traces(request)
             .map_err(|error| error.to_string())
     })
     .await

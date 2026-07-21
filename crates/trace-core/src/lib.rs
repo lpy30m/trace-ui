@@ -54,8 +54,8 @@ pub use query::evidence_score::{
     score_evidence, EvidenceAssessment, EvidenceScoreFactor, EvidenceScoreSignal,
 };
 pub use query::frida_capture::{
-    generate_angr_state_seed, parse_frida_capture_bundle, AngrSeedMemoryRegion, AngrStateSeed,
-    FridaCaptureBundle, FridaCaptureEvent, FridaCapturedValue,
+    analyze_frida_crypto_materials, generate_angr_state_seed, parse_frida_capture_bundle,
+    AngrSeedMemoryRegion, AngrStateSeed, FridaCaptureBundle, FridaCaptureEvent, FridaCapturedValue,
 };
 pub use query::frida_hook::{
     generate_frida_hook, FridaArgumentKind, FridaArgumentSpec, FridaCaptureDirection,
@@ -69,9 +69,13 @@ pub use query::hash_match::{
     HashMemoryMatchResponse, HashMemoryMatchResult, HashTransform, HashTransformOptions,
 };
 pub use query::ollvm::{
-    generate_ida_ollvm_script, parse_ida_annotation_bundle, DispatcherCandidate, DynamicBasicBlock,
-    DynamicBlockInstruction, DynamicCfgEdge, IdaAnnotation, IdaAnnotationBundle, IdaOllvmScript,
-    OllvmAnalysisOptions, OllvmReport, OllvmScope, OpaqueBranchCandidate,
+    generate_ida_ollvm_script, parse_ida_annotation_bundle, BranchStateObservation,
+    DispatcherCandidate, DispatcherStateSnapshot, DispatcherStateTransition, DynamicBasicBlock,
+    DynamicBlockInstruction, DynamicBranchProfile, DynamicCfgEdge, IdaAnnotation,
+    IdaAnnotationBundle, IdaOllvmScript, OllvmAnalysisOptions, OllvmBranchCaseEvidence,
+    OllvmBranchStability, OllvmCaseSummary, OllvmDispatcherCaseEvidence, OllvmDispatcherStability,
+    OllvmMultiTraceReport, OllvmMultiTraceRequest, OllvmReport, OllvmScope, OllvmTraceCase,
+    OpaqueBranchCandidate,
 };
 pub use query::source_sink::{
     apply_resource_validation, classify_flow_endpoints, CallResourceContext,

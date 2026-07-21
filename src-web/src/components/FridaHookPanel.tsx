@@ -2,6 +2,7 @@ import React, { useCallback, useEffect, useMemo, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import type {
   AngrStateSeed,
+  CryptoMaterialReport,
   FridaArgumentKind,
   FridaArgumentSpec,
   FridaCaptureBundle,
@@ -84,10 +85,12 @@ export default function FridaHookPanel({ seed }: Props) {
   const [capturePath, setCapturePath] = useState<string | null>(null);
   const [selectedEventIndex, setSelectedEventIndex] = useState<number | null>(null);
   const [angrSeed, setAngrSeed] = useState<AngrStateSeed | null>(null);
+  const [fridaMaterials, setFridaMaterials] = useState<CryptoMaterialReport | null>(null);
+  const [includeUnknownMaterials, setIncludeUnknownMaterials] = useState(false);
   const [includeSp, setIncludeSp] = useState(false);
   const [includeLr, setIncludeLr] = useState(true);
   const [seedSavedPath, setSeedSavedPath] = useState<string | null>(null);
-  const [outputView, setOutputView] = useState<"script" | "capture" | "seed">("script");
+  const [outputView, setOutputView] = useState<"script" | "capture" | "materials" | "seed">("script");
 
   useEffect(() => {
     if (!seed) return;
@@ -206,12 +209,31 @@ export default function FridaHookPanel({ seed }: Props) {
       setCapturePath(selected);
       setSelectedEventIndex(preferred?.index ?? null);
       setAngrSeed(null);
+      setFridaMaterials(null);
       setSeedSavedPath(null);
       setOutputView("capture");
     } catch (reason) {
       setError(String(reason));
     }
   }, []);
+
+  const analyzeCaptureMaterials = useCallback(async (): Promise<CryptoMaterialReport | null> => {
+    if (!captureBundle) return null;
+    setError(null);
+    try {
+      const result = await invoke<CryptoMaterialReport>("analyze_frida_crypto_materials", {
+        bundle: captureBundle,
+        maxMaterials: 1_000,
+        includeUnknown: includeUnknownMaterials,
+      });
+      setFridaMaterials(result);
+      setOutputView("materials");
+      return result;
+    } catch (reason) {
+      setError(String(reason));
+      return null;
+    }
+  }, [captureBundle, includeUnknownMaterials]);
 
   const generateStateSeed = useCallback(async (): Promise<AngrStateSeed | null> => {
     if (!captureBundle || selectedEventIndex == null) return null;
@@ -383,6 +405,7 @@ export default function FridaHookPanel({ seed }: Props) {
           <button type="button" onClick={importCapture} style={buttonStyle}>Import capture</button>
           <button type="button" onClick={() => setOutputView("script")} style={{ ...buttonStyle, background: outputView === "script" ? "var(--bg-selected)" : "var(--bg-input)" }}>Script</button>
           <button type="button" disabled={!captureBundle} onClick={() => setOutputView("capture")} style={{ ...buttonStyle, background: outputView === "capture" ? "var(--bg-selected)" : "var(--bg-input)", opacity: captureBundle ? 1 : 0.5 }}>Capture</button>
+          <button type="button" disabled={!fridaMaterials} onClick={() => setOutputView("materials")} style={{ ...buttonStyle, background: outputView === "materials" ? "var(--bg-selected)" : "var(--bg-input)", opacity: fridaMaterials ? 1 : 0.5 }}>Materials</button>
           <button type="button" disabled={!angrSeed} onClick={() => setOutputView("seed")} style={{ ...buttonStyle, background: outputView === "seed" ? "var(--bg-selected)" : "var(--bg-input)", opacity: angrSeed ? 1 : 0.5 }}>angr seed</button>
           <span style={{ flex: 1 }} />
           {seedLabel && <span title={seedLabel} style={{ maxWidth: 240, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", color: "var(--text-tertiary)", fontSize: 10 }}>{seedLabel}</span>}
@@ -458,6 +481,8 @@ export default function FridaHookPanel({ seed }: Props) {
                     {selectedCaptureEvent.error && <div style={{ marginTop: 8, color: "#e5484d" }}>{selectedCaptureEvent.error}</div>}
                     {selectedCaptureEvent.backtrace.length > 0 && <pre style={{ marginTop: 8, padding: 7, overflow: "auto", background: "var(--bg-secondary)", fontSize: 10 }}>{selectedCaptureEvent.backtrace.join("\n")}</pre>}
                     <div style={{ display: "flex", gap: 8, alignItems: "center", marginTop: 12, paddingTop: 9, borderTop: "1px solid var(--border-color)" }}>
+                      <label style={{ display: "flex", alignItems: "center", gap: 4 }}><input type="checkbox" checked={includeUnknownMaterials} onChange={event => { setIncludeUnknownMaterials(event.target.checked); setFridaMaterials(null); }} />Include weak material roles</label>
+                      <button type="button" style={buttonStyle} onClick={analyzeCaptureMaterials}>Index crypto materials</button>
                       <label style={{ display: "flex", alignItems: "center", gap: 4 }}><input type="checkbox" checked={includeSp} onChange={event => { setIncludeSp(event.target.checked); setAngrSeed(null); }} />Seed SP</label>
                       <label style={{ display: "flex", alignItems: "center", gap: 4 }}><input type="checkbox" checked={includeLr} onChange={event => { setIncludeLr(event.target.checked); setAngrSeed(null); }} />Seed LR/X30</label>
                       <button type="button" style={{ ...buttonStyle, background: "var(--btn-primary)", color: "#fff", border: "none" }} onClick={generateStateSeed}>Generate angr seed</button>
@@ -465,6 +490,48 @@ export default function FridaHookPanel({ seed }: Props) {
                   </>
                 ) : <div style={{ color: "var(--text-secondary)" }}>Select a capture event.</div>}
               </div>
+            </div>
+          </div>
+        )}
+
+        {outputView === "materials" && fridaMaterials && (
+          <div style={{ flex: 1, minHeight: 0, display: "flex", flexDirection: "column", overflow: "hidden", fontSize: 11 }}>
+            <div style={{ padding: "7px 9px", borderBottom: "1px solid var(--border-color)", flexShrink: 0 }}>
+              <div style={{ display: "flex", gap: 10, alignItems: "center", flexWrap: "wrap" }}>
+                <strong>{fridaMaterials.materials.length} materials</strong>
+                <span>{fridaMaterials.verifiedMaterials} verified</span>
+                <span>{fridaMaterials.formulas.length} formulas / {fridaMaterials.verifiedFormulas} verified</span>
+                {fridaMaterials.materialsTruncated && <span style={{ color: "#d29922" }}>truncated</span>}
+                <button type="button" style={buttonStyle} onClick={analyzeCaptureMaterials}>Re-index</button>
+              </div>
+              <div style={{ marginTop: 4, color: "var(--text-secondary)" }}>Label/phase classifications remain Related unless exact MD5/SHA/HMAC/PBKDF2 recomputation opens the verification gate.</div>
+            </div>
+            <div style={{ flex: 1, minHeight: 0, overflow: "auto" }}>
+              {fridaMaterials.materials.map(material => (
+                <div key={material.materialId} style={{ padding: "7px 9px", borderBottom: "1px solid var(--border-color)" }}>
+                  <div style={{ display: "flex", gap: 8, alignItems: "center", flexWrap: "wrap" }}>
+                    <span style={{ minWidth: 76, padding: "1px 6px", textAlign: "center", borderRadius: 3, background: material.assessment.verificationGateMet ? "#238636" : "#9e6a03", color: "#fff", textTransform: "uppercase", fontSize: 10 }}>{material.assessment.grade} {material.assessment.score}</span>
+                    <strong>{material.kind}</strong>
+                    <span>{material.role}</span>
+                    {material.algorithm && <code>{material.algorithm}</code>}
+                    <span>{material.byteLen ?? "?"} bytes</span>
+                    <span>{material.functionName || "unknown function"}</span>
+                    <code>{material.register || ""}</code>
+                  </div>
+                  <div title={material.bytesHex || ""} style={{ marginTop: 4, overflowWrap: "anywhere", color: "var(--text-secondary)", fontFamily: "monospace" }}>{material.bytesHex || "no bytes"}</div>
+                  <div style={{ marginTop: 3, color: "var(--text-tertiary)" }}>{material.evidence.join(" · ")}</div>
+                </div>
+              ))}
+              {fridaMaterials.formulas.length > 0 && <div style={{ padding: "9px", fontWeight: 600, borderBottom: "1px solid var(--border-color)" }}>Verified/reconstructed formulas</div>}
+              {fridaMaterials.formulas.map(formula => (
+                <div key={formula.formulaId} style={{ padding: "7px 9px", borderBottom: "1px solid var(--border-color)", background: "var(--bg-secondary)" }}>
+                  <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
+                    <strong>{formula.operation}</strong><code>{formula.algorithm}</code><span>{formula.assessment.grade} {formula.assessment.score}</span>
+                  </div>
+                  <code style={{ display: "block", marginTop: 4, overflowWrap: "anywhere" }}>{formula.expression}</code>
+                </div>
+              ))}
+              {fridaMaterials.materials.length === 0 && <div style={{ padding: 14, color: "var(--text-secondary)" }}>No byte-bearing crypto material was classified from this capture.</div>}
             </div>
           </div>
         )}

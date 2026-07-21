@@ -1,13 +1,25 @@
 use std::collections::{BTreeMap, HashMap, HashSet};
 
+use hmac::{Hmac, Mac};
+use md5::Md5;
+use pbkdf2::pbkdf2_hmac;
 use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value};
+use sha1::Sha1;
+use sha2::{Digest, Sha256, Sha384, Sha512};
 
+use crate::query::crypto_material::{
+    CryptoFormula, CryptoMaterial, CryptoMaterialKind, CryptoMaterialReport,
+};
+use crate::query::evidence_score::{score_evidence, EvidenceScoreSignal};
 use crate::utils::parse_hex_addr;
 
 const FRIDA_CAPTURE_SCHEMA: &str = "trace-ui/frida-capture-v1";
 const FRIDA_HOOK_PROTOCOL: &str = "trace-ui/frida-hook-v1";
 const ANGR_STATE_SEED_SCHEMA: &str = "trace-ui/angr-state-seed-v1";
+const DEFAULT_MAX_FRIDA_MATERIALS: u32 = 1_000;
+const MAX_FRIDA_MATERIALS: u32 = 5_000;
+const MAX_FRIDA_PBKDF2_ITERATIONS: u32 = 1_000_000;
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -438,6 +450,685 @@ pub fn parse_frida_capture_bundle(bytes: &[u8]) -> Result<FridaCaptureBundle, St
     })
 }
 
+#[derive(Clone)]
+struct FridaMaterialEntry {
+    material_id: String,
+    call_id: String,
+    function_name: String,
+    label: String,
+    phase: String,
+    kind: CryptoMaterialKind,
+    bytes: Vec<u8>,
+}
+
+#[derive(Clone, Copy)]
+enum FridaHashAlgorithm {
+    Md5,
+    Sha1,
+    Sha256,
+    Sha384,
+    Sha512,
+}
+
+impl FridaHashAlgorithm {
+    fn name(self) -> &'static str {
+        match self {
+            Self::Md5 => "MD5",
+            Self::Sha1 => "SHA-1",
+            Self::Sha256 => "SHA-256",
+            Self::Sha384 => "SHA-384",
+            Self::Sha512 => "SHA-512",
+        }
+    }
+
+    fn output_len(self) -> usize {
+        match self {
+            Self::Md5 => 16,
+            Self::Sha1 => 20,
+            Self::Sha256 => 32,
+            Self::Sha384 => 48,
+            Self::Sha512 => 64,
+        }
+    }
+
+    fn digest(self, input: &[u8]) -> Vec<u8> {
+        match self {
+            Self::Md5 => Md5::digest(input).to_vec(),
+            Self::Sha1 => Sha1::digest(input).to_vec(),
+            Self::Sha256 => Sha256::digest(input).to_vec(),
+            Self::Sha384 => Sha384::digest(input).to_vec(),
+            Self::Sha512 => Sha512::digest(input).to_vec(),
+        }
+    }
+
+    fn hmac(self, key: &[u8], input: &[u8]) -> Option<Vec<u8>> {
+        macro_rules! calculate {
+            ($digest:ty) => {{
+                let mut mac = Hmac::<$digest>::new_from_slice(key).ok()?;
+                mac.update(input);
+                Some(mac.finalize().into_bytes().to_vec())
+            }};
+        }
+        match self {
+            Self::Md5 => calculate!(Md5),
+            Self::Sha1 => calculate!(Sha1),
+            Self::Sha256 => calculate!(Sha256),
+            Self::Sha384 => calculate!(Sha384),
+            Self::Sha512 => calculate!(Sha512),
+        }
+    }
+
+    fn pbkdf2(self, password: &[u8], salt: &[u8], iterations: u32, length: usize) -> Vec<u8> {
+        let mut output = vec![0u8; length];
+        match self {
+            Self::Md5 => pbkdf2_hmac::<Md5>(password, salt, iterations, &mut output),
+            Self::Sha1 => pbkdf2_hmac::<Sha1>(password, salt, iterations, &mut output),
+            Self::Sha256 => pbkdf2_hmac::<Sha256>(password, salt, iterations, &mut output),
+            Self::Sha384 => pbkdf2_hmac::<Sha384>(password, salt, iterations, &mut output),
+            Self::Sha512 => pbkdf2_hmac::<Sha512>(password, salt, iterations, &mut output),
+        }
+        output
+    }
+}
+
+fn detect_frida_hash_algorithm(function_name: &str) -> Option<FridaHashAlgorithm> {
+    let normalized = function_name
+        .chars()
+        .filter(|character| character.is_ascii_alphanumeric())
+        .collect::<String>()
+        .to_ascii_lowercase();
+    if normalized.contains("sha512") {
+        Some(FridaHashAlgorithm::Sha512)
+    } else if normalized.contains("sha384") {
+        Some(FridaHashAlgorithm::Sha384)
+    } else if normalized.contains("sha256") {
+        Some(FridaHashAlgorithm::Sha256)
+    } else if normalized.contains("sha1") {
+        Some(FridaHashAlgorithm::Sha1)
+    } else if normalized.contains("md5") {
+        Some(FridaHashAlgorithm::Md5)
+    } else {
+        None
+    }
+}
+
+fn frida_label_tokens(label: &str) -> HashSet<String> {
+    label
+        .split(|character: char| !character.is_ascii_alphanumeric())
+        .filter(|token| !token.is_empty())
+        .map(str::to_ascii_lowercase)
+        .collect()
+}
+
+fn classify_frida_material(
+    capture: &FridaCapturedValue,
+    function_name: &str,
+) -> (CryptoMaterialKind, String, bool) {
+    let tokens = frida_label_tokens(&capture.label);
+    let function = function_name.to_ascii_lowercase();
+    let explicit = |values: &[&str]| values.iter().any(|value| tokens.contains(*value));
+    if explicit(&["key", "secret", "secretkey", "mackey", "hmackey"]) {
+        (CryptoMaterialKind::Key, "key".to_string(), true)
+    } else if explicit(&["password", "passwd", "passphrase", "pass"]) {
+        (CryptoMaterialKind::Password, "password".to_string(), true)
+    } else if explicit(&["salt"]) {
+        (CryptoMaterialKind::Salt, "salt".to_string(), true)
+    } else if explicit(&["nonce"]) {
+        (CryptoMaterialKind::Nonce, "nonce".to_string(), true)
+    } else if explicit(&["iv", "initializationvector"]) {
+        (CryptoMaterialKind::Iv, "iv".to_string(), true)
+    } else if explicit(&["counter", "ctr"]) {
+        (CryptoMaterialKind::Counter, "counter".to_string(), true)
+    } else if explicit(&["aad", "associateddata"]) {
+        (CryptoMaterialKind::Aad, "aad".to_string(), true)
+    } else if explicit(&["tag", "authtag", "authenticationtag"]) {
+        (
+            CryptoMaterialKind::AuthTag,
+            "authenticationTag".to_string(),
+            true,
+        )
+    } else if explicit(&[
+        "digest", "hash", "md5", "sha1", "sha256", "sha384", "sha512",
+    ]) {
+        (CryptoMaterialKind::Digest, "digest".to_string(), true)
+    } else if explicit(&["mac", "hmac"]) {
+        (CryptoMaterialKind::Mac, "mac".to_string(), true)
+    } else if explicit(&["plaintext", "plain"]) {
+        (CryptoMaterialKind::Plaintext, "plaintext".to_string(), true)
+    } else if explicit(&["ciphertext", "cipher"]) {
+        (
+            CryptoMaterialKind::Ciphertext,
+            "ciphertext".to_string(),
+            true,
+        )
+    } else if explicit(&["input", "message", "data", "source", "src"]) {
+        (CryptoMaterialKind::Input, "input".to_string(), true)
+    } else if explicit(&["output", "result", "destination", "dst"]) {
+        (CryptoMaterialKind::Output, "output".to_string(), true)
+    } else if capture.phase == "leave" || capture.direction == "output" {
+        let kind = if function.contains("encrypt") {
+            CryptoMaterialKind::Ciphertext
+        } else if function.contains("decrypt") {
+            CryptoMaterialKind::Plaintext
+        } else {
+            CryptoMaterialKind::Output
+        };
+        (kind, "output".to_string(), false)
+    } else {
+        let kind = if function.contains("encrypt") {
+            CryptoMaterialKind::Plaintext
+        } else if function.contains("decrypt") {
+            CryptoMaterialKind::Ciphertext
+        } else {
+            CryptoMaterialKind::Input
+        };
+        (kind, "input".to_string(), false)
+    }
+}
+
+fn captured_material_bytes(capture: &FridaCapturedValue) -> Option<Vec<u8>> {
+    if capture.read_error.is_some() {
+        return None;
+    }
+    let value = capture.value.as_deref()?;
+    match capture.kind.as_str() {
+        "byteArray" => decode_hex(value),
+        "utf8String" => Some(value.as_bytes().to_vec()),
+        "utf16String" => Some(value.encode_utf16().flat_map(u16::to_le_bytes).collect()),
+        _ => None,
+    }
+}
+
+fn crypto_kind_name(kind: CryptoMaterialKind) -> &'static str {
+    match kind {
+        CryptoMaterialKind::Key => "key",
+        CryptoMaterialKind::ExpandedKey => "expandedKey",
+        CryptoMaterialKind::Password => "password",
+        CryptoMaterialKind::Salt => "salt",
+        CryptoMaterialKind::Iv => "iv",
+        CryptoMaterialKind::Nonce => "nonce",
+        CryptoMaterialKind::Counter => "counter",
+        CryptoMaterialKind::Aad => "aad",
+        CryptoMaterialKind::AuthTag => "authTag",
+        CryptoMaterialKind::Input => "input",
+        CryptoMaterialKind::Output => "output",
+        CryptoMaterialKind::Plaintext => "plaintext",
+        CryptoMaterialKind::Ciphertext => "ciphertext",
+        CryptoMaterialKind::Digest => "digest",
+        CryptoMaterialKind::Mac => "mac",
+        CryptoMaterialKind::DerivedKey => "derivedKey",
+        CryptoMaterialKind::Unknown => "unknown",
+    }
+}
+
+fn mark_frida_material_verified(
+    materials: &mut [CryptoMaterial],
+    material_id: &str,
+    evidence: String,
+) {
+    let Some(material) = materials
+        .iter_mut()
+        .find(|material| material.material_id == material_id)
+    else {
+        return;
+    };
+    material.evidence.push(evidence.clone());
+    material.assessment = score_evidence(
+        format!("frida_crypto_material:{material_id}"),
+        true,
+        vec![
+            EvidenceScoreSignal::new(
+                "captured_bytes",
+                "Exact bytes imported from user-captured Frida output",
+                30,
+                true,
+                material.bytes_hex.clone(),
+            ),
+            EvidenceScoreSignal::new(
+                "semantic_recomputation",
+                "Observed output was deterministically recomputed",
+                70,
+                true,
+                Some(evidence),
+            ),
+        ],
+        vec![
+            "Verification applies to the imported call bytes, not to every invocation or the entire native function."
+                .to_string(),
+        ],
+    );
+}
+
+pub fn analyze_frida_crypto_materials(
+    bundle: &FridaCaptureBundle,
+    max_materials: Option<u32>,
+    include_unknown: bool,
+) -> Result<CryptoMaterialReport, String> {
+    if bundle.schema != FRIDA_CAPTURE_SCHEMA {
+        return Err(format!(
+            "unsupported Frida capture schema: {}",
+            bundle.schema
+        ));
+    }
+    let max_materials = max_materials
+        .unwrap_or(DEFAULT_MAX_FRIDA_MATERIALS)
+        .clamp(1, MAX_FRIDA_MATERIALS) as usize;
+    let mut materials = Vec::new();
+    let mut entries = Vec::new();
+    let mut integer_values: HashMap<String, Vec<(String, u64)>> = HashMap::new();
+    let mut materials_truncated = false;
+    for event in &bundle.events {
+        let Some(call_id) = event.call_id.as_deref() else {
+            continue;
+        };
+        for capture in &event.captures {
+            if capture.kind == "integer" {
+                if let Some(value) = capture
+                    .value
+                    .as_deref()
+                    .and_then(|value| parse_hex_addr(value).ok())
+                {
+                    integer_values
+                        .entry(call_id.to_string())
+                        .or_default()
+                        .push((capture.label.clone(), value));
+                }
+                continue;
+            }
+            let Some(bytes) = captured_material_bytes(capture) else {
+                continue;
+            };
+            if bytes.is_empty() {
+                continue;
+            }
+            let (kind, role, explicit_role) =
+                classify_frida_material(capture, &event.function_name);
+            if !include_unknown && !explicit_role && kind == CryptoMaterialKind::Input {
+                continue;
+            }
+            if materials.len() >= max_materials {
+                materials_truncated = true;
+                break;
+            }
+            let material_id = format!("frida-material-{}", materials.len() + 1);
+            let address = capture
+                .pointer
+                .as_deref()
+                .and_then(|pointer| parse_hex_addr(pointer).ok());
+            let algorithm = detect_frida_hash_algorithm(&event.function_name)
+                .map(|algorithm| algorithm.name().to_string());
+            let mut evidence = vec![format!(
+                "Imported from {} event {} callId {} X{} {} phase.",
+                event.event, event.index, call_id, capture.index, capture.phase
+            )];
+            if explicit_role {
+                evidence.push(format!(
+                    "Capture label '{}' explicitly suggests role {}.",
+                    capture.label, role
+                ));
+            } else {
+                evidence.push(format!(
+                    "Role {} was inferred from capture direction/phase and function name; treat it as Related evidence.",
+                    role
+                ));
+            }
+            let assessment = score_evidence(
+                format!("frida_crypto_material:{material_id}"),
+                false,
+                vec![
+                    EvidenceScoreSignal::new(
+                        "captured_bytes",
+                        "Exact imported capture bytes",
+                        30,
+                        true,
+                        Some(format!("{} bytes", bytes.len())),
+                    ),
+                    EvidenceScoreSignal::new(
+                        "explicit_role_label",
+                        "Explicit crypto role label",
+                        35,
+                        explicit_role,
+                        Some(capture.label.clone()),
+                    ),
+                    EvidenceScoreSignal::new(
+                        "call_correlation",
+                        "Capture correlated by callId and phase",
+                        20,
+                        true,
+                        Some(call_id.to_string()),
+                    ),
+                    EvidenceScoreSignal::new(
+                        "algorithm_name",
+                        "Hash/HMAC/KDF algorithm indicated by function name",
+                        15,
+                        algorithm.is_some(),
+                        algorithm.clone(),
+                    ),
+                ],
+                vec![
+                    "Labels and ABI positions are role hints until deterministic recomputation or independent API semantics confirm them."
+                        .to_string(),
+                ],
+            );
+            materials.push(CryptoMaterial {
+                material_id: material_id.clone(),
+                kind,
+                role,
+                algorithm,
+                bytes_hex: Some(bytes_hex(&bytes)),
+                ascii_preview: Some(
+                    bytes
+                        .iter()
+                        .take(96)
+                        .map(|byte| {
+                            if byte.is_ascii_graphic() || *byte == b' ' {
+                                *byte as char
+                            } else {
+                                '.'
+                            }
+                        })
+                        .collect(),
+                ),
+                byte_len: Some(bytes.len() as u32),
+                address: address.map(|address| format!("0x{address:x}")),
+                observation_seq: u32::try_from(event.index).ok(),
+                completion_seq: u32::try_from(event.index).ok(),
+                function_name: Some(event.function_name.clone()),
+                register: Some(format!("X{}", capture.index)),
+                source: "frida-capture".to_string(),
+                evidence,
+                assessment,
+            });
+            entries.push(FridaMaterialEntry {
+                material_id,
+                call_id: call_id.to_string(),
+                function_name: event.function_name.clone(),
+                label: capture.label.clone(),
+                phase: capture.phase.clone(),
+                kind,
+                bytes,
+            });
+        }
+        if materials_truncated {
+            break;
+        }
+    }
+
+    let mut formulas = Vec::new();
+    let mut grouped: BTreeMap<String, Vec<FridaMaterialEntry>> = BTreeMap::new();
+    for entry in entries {
+        grouped
+            .entry(entry.call_id.clone())
+            .or_default()
+            .push(entry);
+    }
+    for (call_id, call_entries) in grouped {
+        let Some(first) = call_entries.first() else {
+            continue;
+        };
+        let Some(algorithm) = detect_frida_hash_algorithm(&first.function_name) else {
+            continue;
+        };
+        let function_lower = first.function_name.to_ascii_lowercase();
+        let is_hmac = function_lower.contains("hmac");
+        let input_entries: Vec<_> = call_entries
+            .iter()
+            .filter(|entry| {
+                entry.phase == "enter"
+                    && matches!(
+                        entry.kind,
+                        CryptoMaterialKind::Input
+                            | CryptoMaterialKind::Plaintext
+                            | CryptoMaterialKind::Password
+                    )
+            })
+            .collect();
+        let key_entries: Vec<_> = call_entries
+            .iter()
+            .filter(|entry| entry.kind == CryptoMaterialKind::Key)
+            .collect();
+        let output_entries: Vec<_> = call_entries
+            .iter()
+            .filter(|entry| {
+                entry.phase == "leave"
+                    && entry.bytes.len() == algorithm.output_len()
+                    && matches!(
+                        entry.kind,
+                        CryptoMaterialKind::Output
+                            | CryptoMaterialKind::Digest
+                            | CryptoMaterialKind::Mac
+                            | CryptoMaterialKind::AuthTag
+                    )
+            })
+            .collect();
+        if function_lower.contains("pbkdf2") {
+            let password = call_entries.iter().find(|entry| {
+                entry.phase == "enter"
+                    && matches!(
+                        entry.kind,
+                        CryptoMaterialKind::Password | CryptoMaterialKind::Input
+                    )
+            });
+            let salt = call_entries
+                .iter()
+                .find(|entry| entry.phase == "enter" && entry.kind == CryptoMaterialKind::Salt);
+            let derived = call_entries.iter().find(|entry| {
+                entry.phase == "leave"
+                    && matches!(
+                        entry.kind,
+                        CryptoMaterialKind::Output | CryptoMaterialKind::DerivedKey
+                    )
+            });
+            let iterations = integer_values.get(&call_id).and_then(|values| {
+                values
+                    .iter()
+                    .find(|(label, _)| {
+                        let normalized = label.to_ascii_lowercase();
+                        normalized.contains("iter")
+                            || normalized.contains("round")
+                            || normalized.contains("count")
+                    })
+                    .or_else(|| values.first())
+                    .map(|(_, value)| *value)
+            });
+            if let (Some(password), Some(salt), Some(derived), Some(iterations)) =
+                (password, salt, derived, iterations)
+            {
+                if let Ok(iterations) = u32::try_from(iterations) {
+                    if (1..=MAX_FRIDA_PBKDF2_ITERATIONS).contains(&iterations)
+                        && algorithm.pbkdf2(
+                            &password.bytes,
+                            &salt.bytes,
+                            iterations,
+                            derived.bytes.len(),
+                        ) == derived.bytes
+                    {
+                        let evidence = format!(
+                            "Imported callId {call_id}: PBKDF2-{}({}, {}, {}, {}) recomputes to the captured output.",
+                            algorithm.name(),
+                            password.label,
+                            salt.label,
+                            iterations,
+                            derived.bytes.len()
+                        );
+                        for material_id in [
+                            &password.material_id,
+                            &salt.material_id,
+                            &derived.material_id,
+                        ] {
+                            mark_frida_material_verified(
+                                &mut materials,
+                                material_id,
+                                evidence.clone(),
+                            );
+                        }
+                        if let Some(material) = materials
+                            .iter_mut()
+                            .find(|material| material.material_id == derived.material_id)
+                        {
+                            material.kind = CryptoMaterialKind::DerivedKey;
+                            material.role = "derivedKey".to_string();
+                        }
+                        formulas.push(CryptoFormula {
+                            formula_id: format!("frida-formula-{}", formulas.len() + 1),
+                            operation: "PBKDF2".to_string(),
+                            algorithm: algorithm.name().to_string(),
+                            expression: format!(
+                                "PBKDF2-{}({}, {}, iterations={}, length={}) = {}",
+                                algorithm.name(),
+                                password.label,
+                                salt.label,
+                                iterations,
+                                derived.bytes.len(),
+                                derived.label
+                            ),
+                            input_material_ids: vec![
+                                password.material_id.clone(),
+                                salt.material_id.clone(),
+                            ],
+                            output_material_id: Some(derived.material_id.clone()),
+                            call_seq: None,
+                            function_name: Some(first.function_name.clone()),
+                            evidence: vec![evidence.clone()],
+                            assessment: score_evidence(
+                                format!("frida_crypto_formula:{call_id}"),
+                                true,
+                                vec![EvidenceScoreSignal::new(
+                                    "semantic_recomputation",
+                                    "Captured PBKDF2 output matches deterministic recomputation",
+                                    100,
+                                    true,
+                                    Some(evidence),
+                                )],
+                                vec![
+                                    "Verification is scoped to the imported call bytes, iteration count, PRF, and output length."
+                                        .to_string(),
+                                ],
+                            ),
+                        });
+                    }
+                }
+            }
+            continue;
+        }
+        'verify: for input in &input_entries {
+            for output in &output_entries {
+                let recomputed = if is_hmac {
+                    let Some(key) = key_entries.first() else {
+                        continue;
+                    };
+                    algorithm.hmac(&key.bytes, &input.bytes)
+                } else {
+                    Some(algorithm.digest(&input.bytes))
+                };
+                if recomputed.as_deref() != Some(output.bytes.as_slice()) {
+                    continue;
+                }
+                let operation = if is_hmac { "HMAC" } else { "Digest" };
+                let mut input_ids = Vec::new();
+                if is_hmac {
+                    input_ids.push(key_entries[0].material_id.clone());
+                }
+                input_ids.push(input.material_id.clone());
+                let expression = if is_hmac {
+                    format!(
+                        "HMAC-{}({}, {}) = {}",
+                        algorithm.name(),
+                        key_entries[0].label,
+                        input.label,
+                        output.label
+                    )
+                } else {
+                    format!("{}({}) = {}", algorithm.name(), input.label, output.label)
+                };
+                let evidence = format!(
+                    "Imported callId {call_id}: exact captured bytes recompute to the observed {} output.",
+                    algorithm.name()
+                );
+                mark_frida_material_verified(&mut materials, &input.material_id, evidence.clone());
+                mark_frida_material_verified(&mut materials, &output.material_id, evidence.clone());
+                if is_hmac {
+                    mark_frida_material_verified(
+                        &mut materials,
+                        &key_entries[0].material_id,
+                        evidence.clone(),
+                    );
+                }
+                formulas.push(CryptoFormula {
+                    formula_id: format!("frida-formula-{}", formulas.len() + 1),
+                    operation: operation.to_string(),
+                    algorithm: algorithm.name().to_string(),
+                    expression,
+                    input_material_ids: input_ids,
+                    output_material_id: Some(output.material_id.clone()),
+                    call_seq: None,
+                    function_name: Some(first.function_name.clone()),
+                    evidence: vec![evidence.clone()],
+                    assessment: score_evidence(
+                        format!("frida_crypto_formula:{call_id}"),
+                        true,
+                        vec![EvidenceScoreSignal::new(
+                            "semantic_recomputation",
+                            "Captured output matches deterministic recomputation",
+                            100,
+                            true,
+                            Some(evidence),
+                        )],
+                        vec![
+                            "Verification is scoped to the imported call bytes and selected capture lengths."
+                                .to_string(),
+                        ],
+                    ),
+                });
+                break 'verify;
+            }
+        }
+    }
+
+    let mut material_counts = BTreeMap::new();
+    for material in &materials {
+        *material_counts
+            .entry(crypto_kind_name(material.kind).to_string())
+            .or_default() += 1;
+    }
+    let verified_materials = materials
+        .iter()
+        .filter(|material| material.assessment.verification_gate_met)
+        .count() as u32;
+    let verified_formulas = formulas
+        .iter()
+        .filter(|formula| formula.assessment.verification_gate_met)
+        .count() as u32;
+    Ok(CryptoMaterialReport {
+        materials,
+        formulas,
+        material_counts,
+        verified_materials,
+        verified_formulas,
+        annotations_scanned: bundle.events.len().min(u32::MAX as usize) as u32,
+        materials_truncated,
+        coverage: vec![
+            "Imported Frida byteArray/UTF-8/UTF-16 captures are grouped by callId and classified by explicit labels, phase, direction, and function name."
+                .to_string(),
+            "MD5/SHA, HMAC, and PBKDF2 outputs are deterministically recomputed when the required captured bytes and integer parameters are present in one call."
+                .to_string(),
+        ],
+        limitations: vec![
+            "Trace UI analyzes only the user-imported capture file and never attaches, spawns, loads, or executes Frida."
+                .to_string(),
+            "UTF-8/UTF-16 captures are re-encoded text and may not preserve invalid bytes or terminators; prefer byteArray for verification."
+                .to_string(),
+            "Role labels remain Related evidence unless deterministic recomputation or independently verified API semantics confirm them."
+                .to_string(),
+            "Capture max_bytes and pointer read failures can truncate key, input, output, salt, or digest material."
+                .to_string(),
+            format!(
+                "PBKDF2 recomputation is bounded to {MAX_FRIDA_PBKDF2_ITERATIONS} iterations per imported call."
+            ),
+        ],
+    })
+}
+
 fn decode_hex(value: &str) -> Option<Vec<u8>> {
     let cleaned: String = value
         .chars()
@@ -737,6 +1428,177 @@ TRACE_UI_JSON {"protocol":"trace-ui/frida-hook-v1","eventId":"one:event:2","hook
     #[test]
     fn rejects_non_ascii_byte_array_text_without_panicking() {
         assert_eq!(decode_hex("𐀀"), None);
+    }
+
+    #[test]
+    fn indexes_and_verifies_sha256_material_from_one_captured_call() {
+        let capture = serde_json::json!([
+            {
+                "protocol": FRIDA_HOOK_PROTOCOL,
+                "hookId": "sha",
+                "event": "hook-enter",
+                "functionName": "SHA256",
+                "timestampMs": 1,
+                "threadId": 1,
+                "callId": "sha:1",
+                "captures": [{
+                    "index": 0,
+                    "label": "data",
+                    "kind": "byteArray",
+                    "direction": "input",
+                    "phase": "enter",
+                    "pointer": "0x1000",
+                    "value": "616263",
+                    "byteLength": 3
+                }]
+            },
+            {
+                "protocol": FRIDA_HOOK_PROTOCOL,
+                "hookId": "sha",
+                "event": "hook-leave",
+                "functionName": "SHA256",
+                "timestampMs": 2,
+                "threadId": 1,
+                "callId": "sha:1",
+                "captures": [{
+                    "index": 2,
+                    "label": "digest",
+                    "kind": "byteArray",
+                    "direction": "output",
+                    "phase": "leave",
+                    "pointer": "0x2000",
+                    "value": "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad",
+                    "byteLength": 32
+                }]
+            }
+        ]);
+        let bundle = parse_frida_capture_bundle(&serde_json::to_vec(&capture).unwrap()).unwrap();
+        let report = analyze_frida_crypto_materials(&bundle, None, false).unwrap();
+        assert_eq!(report.formulas.len(), 1);
+        assert_eq!(report.verified_formulas, 1);
+        assert_eq!(report.verified_materials, 2);
+        assert!(report
+            .materials
+            .iter()
+            .any(|material| material.kind == CryptoMaterialKind::Digest));
+    }
+
+    #[test]
+    fn verifies_hmac_key_input_and_mac_from_one_captured_call() {
+        let key = b"secret";
+        let input = b"message";
+        let expected = FridaHashAlgorithm::Sha256.hmac(key, input).unwrap();
+        let capture = serde_json::json!([
+            {
+                "protocol": FRIDA_HOOK_PROTOCOL,
+                "hookId": "hmac",
+                "event": "hook-enter",
+                "functionName": "HMAC_SHA256",
+                "timestampMs": 1,
+                "threadId": 1,
+                "callId": "hmac:1",
+                "captures": [
+                    {"index":0,"label":"key","kind":"byteArray","direction":"input","phase":"enter","pointer":"0x1000","value":bytes_hex(key)},
+                    {"index":1,"label":"data","kind":"byteArray","direction":"input","phase":"enter","pointer":"0x2000","value":bytes_hex(input)}
+                ]
+            },
+            {
+                "protocol": FRIDA_HOOK_PROTOCOL,
+                "hookId": "hmac",
+                "event": "hook-leave",
+                "functionName": "HMAC_SHA256",
+                "timestampMs": 2,
+                "threadId": 1,
+                "callId": "hmac:1",
+                "captures": [{"index":2,"label":"mac","kind":"byteArray","direction":"output","phase":"leave","pointer":"0x3000","value":bytes_hex(&expected)}]
+            }
+        ]);
+        let bundle = parse_frida_capture_bundle(&serde_json::to_vec(&capture).unwrap()).unwrap();
+        let report = analyze_frida_crypto_materials(&bundle, None, false).unwrap();
+        assert_eq!(report.verified_formulas, 1);
+        assert_eq!(report.verified_materials, 3);
+        assert_eq!(report.formulas[0].operation, "HMAC");
+        assert_eq!(report.formulas[0].input_material_ids.len(), 2);
+    }
+
+    #[test]
+    fn verifies_pbkdf2_password_salt_iterations_and_derived_key() {
+        let password = b"password";
+        let salt = b"salt";
+        let mut derived = vec![0u8; 32];
+        pbkdf2_hmac::<Sha256>(password, salt, 2, &mut derived);
+        let capture = serde_json::json!([
+            {
+                "protocol": FRIDA_HOOK_PROTOCOL,
+                "hookId": "kdf",
+                "event": "hook-enter",
+                "functionName": "PBKDF2_HMAC_SHA256",
+                "timestampMs": 1,
+                "threadId": 1,
+                "callId": "kdf:1",
+                "captures": [
+                    {"index":0,"label":"password","kind":"byteArray","direction":"input","phase":"enter","pointer":"0x1000","value":bytes_hex(password)},
+                    {"index":1,"label":"salt","kind":"byteArray","direction":"input","phase":"enter","pointer":"0x2000","value":bytes_hex(salt)},
+                    {"index":2,"label":"iterations","kind":"integer","direction":"input","phase":"enter","pointer":"0x2","value":"0x2"}
+                ]
+            },
+            {
+                "protocol": FRIDA_HOOK_PROTOCOL,
+                "hookId": "kdf",
+                "event": "hook-leave",
+                "functionName": "PBKDF2_HMAC_SHA256",
+                "timestampMs": 2,
+                "threadId": 1,
+                "callId": "kdf:1",
+                "captures": [{"index":3,"label":"output","kind":"byteArray","direction":"output","phase":"leave","pointer":"0x3000","value":bytes_hex(&derived)}]
+            }
+        ]);
+        let bundle = parse_frida_capture_bundle(&serde_json::to_vec(&capture).unwrap()).unwrap();
+        let report = analyze_frida_crypto_materials(&bundle, None, false).unwrap();
+        assert_eq!(report.verified_formulas, 1);
+        assert!(report
+            .materials
+            .iter()
+            .any(|material| material.kind == CryptoMaterialKind::Salt));
+        assert!(report
+            .materials
+            .iter()
+            .any(|material| material.kind == CryptoMaterialKind::DerivedKey));
+    }
+
+    #[test]
+    fn skips_pbkdf2_recomputation_above_the_iteration_limit() {
+        let capture = serde_json::json!([
+            {
+                "protocol": FRIDA_HOOK_PROTOCOL,
+                "hookId": "kdf-limit",
+                "event": "hook-enter",
+                "functionName": "PBKDF2_HMAC_SHA256",
+                "timestampMs": 1,
+                "threadId": 1,
+                "callId": "kdf-limit:1",
+                "captures": [
+                    {"index":0,"label":"password","kind":"byteArray","direction":"input","phase":"enter","pointer":"0x1000","value":"70617373776f7264"},
+                    {"index":1,"label":"salt","kind":"byteArray","direction":"input","phase":"enter","pointer":"0x2000","value":"73616c74"},
+                    {"index":2,"label":"iterations","kind":"integer","direction":"input","phase":"enter","pointer":"0xf4241","value":"0xf4241"}
+                ]
+            },
+            {
+                "protocol": FRIDA_HOOK_PROTOCOL,
+                "hookId": "kdf-limit",
+                "event": "hook-leave",
+                "functionName": "PBKDF2_HMAC_SHA256",
+                "timestampMs": 2,
+                "threadId": 1,
+                "callId": "kdf-limit:1",
+                "captures": [{"index":3,"label":"output","kind":"byteArray","direction":"output","phase":"leave","pointer":"0x3000","value":"0000000000000000000000000000000000000000000000000000000000000000"}]
+            }
+        ]);
+        let bundle = parse_frida_capture_bundle(&serde_json::to_vec(&capture).unwrap()).unwrap();
+        let report = analyze_frida_crypto_materials(&bundle, None, false).unwrap();
+        assert_eq!(report.verified_formulas, 0);
+        assert_eq!(report.verified_materials, 0);
+        assert!(report.formulas.is_empty());
     }
 
     #[test]

@@ -1,11 +1,11 @@
 ---
 name: ida-ollvm-analysis
-description: Analyze ARM64 dynamic traces for OLLVM control-flow-flattening and opaque-branch candidates, bridge module-relative evidence to IDA and angr, and inspect results exported back through the trace-ui MCP server. Use when the user wants ASLR-stable dynamic CFG evidence, dispatcher or opaque predicate leads, trace-to-IDA annotations, static/dynamic CFG reconciliation, or bounded symbolic branch probes. Treat all OLLVM and angr structural classifications as candidates unless independently proven.
+description: Analyze ARM64 dynamic traces for OLLVM control-flow-flattening and opaque-branch candidates, compare dispatcher/state/branch stability across controlled runs, bridge module-relative evidence to IDA and angr, and inspect results exported back through the trace-ui MCP server. Use for ASLR-stable dynamic CFG evidence, dispatcher state trajectories, opaque predicate leads, trace-seeded symbolic probes, trace-to-IDA annotations, or static/dynamic CFG reconciliation. Treat all OLLVM and angr structural classifications as candidates unless independently proven.
 ---
 
 # Analyze OLLVM traces and bridge them to IDA or angr
 
-Use `mcp__trace-ui__analyze_ollvm`, `mcp__trace-ui__generate_ida_ollvm_script`,
+Use `mcp__trace-ui__analyze_ollvm`, `mcp__trace-ui__compare_ollvm_traces`, `mcp__trace-ui__generate_ida_ollvm_script`,
 `mcp__trace-ui__inspect_ida_annotations`, `mcp__trace-ui__generate_angr_ollvm_script`,
 `mcp__trace-ui__inspect_angr_ollvm_results`, `mcp__trace-ui__inspect_frida_capture`, and
 `mcp__trace-ui__generate_angr_state_seed`.
@@ -15,7 +15,9 @@ Use `mcp__trace-ui__analyze_ollvm`, `mcp__trace-ui__generate_ida_ollvm_script`,
 1. Open the trace and orient with `get_call_tree` or `analyze_function`.
 2. Scope the analysis to a call-tree `node_id` whenever possible. Otherwise provide `module_name` plus a narrow `start_seq`/`end_seq` range.
 3. Run `analyze_ollvm` with `include_child_calls:false` unless nested calls are intentionally part of the target.
-4. Review dynamic blocks, edges, dispatcher candidates, opaque-branch candidates, scores, and limitations. Verify important candidates with `get_trace_lines`.
+4. Review dynamic blocks, edges, dispatcher candidates, dispatcher state snapshots/transitions,
+   conditional branch profiles, opaque-branch candidates, scores, and limitations. Verify important
+   candidates with `get_trace_lines`.
 5. Choose one or both bridges:
    - Run `generate_ida_ollvm_script` for manual execution in the matching IDA database. Keep
      `add_user_xrefs:false` by default. Inspect exported `trace-ui/ida-ollvm-v1` JSON with
@@ -23,9 +25,12 @@ Use `mcp__trace-ui__analyze_ollvm`, `mcp__trace-ui__generate_ida_ollvm_script`,
    - Run `generate_angr_ollvm_script` for manual execution in a separate Python/angr environment
      against the exact ELF/shared object. Import `trace-ui/angr-ollvm-v1` JSON with
      `inspect_angr_ollvm_results`.
-6. Reconcile dynamic observed successors with angr static successors. Investigate unobserved-static
+6. For controlled runs, call `compare_ollvm_traces` with two to sixteen case-specific scopes. Prioritize
+   `alternate-outcomes-observed` as evidence against a globally opaque classification; stable single
+   outcomes remain candidates.
+7. Reconcile dynamic observed successors with angr static successors. Investigate unobserved-static
    and dynamic-only edges, but do not assume either side is complete.
-7. Inspect manually captured Frida JSON with `inspect_frida_capture`, select an exact event, and use
+8. Inspect manually captured Frida JSON with `inspect_frida_capture`, select an exact event, and use
    `generate_angr_state_seed` to produce a candidate `configure_state(state)` function. Match the
    capture point to the symbolic state address before increasing confidence.
 
@@ -34,11 +39,16 @@ Use `mcp__trace-ui__analyze_ollvm`, `mcp__trace-ui__generate_ida_ollvm_script`,
 - All addresses in reports are module-relative and ASLR-stable. Align them to IDA with the image base used by the generated script.
 - A dispatcher score is a ranking signal based on repeated visits, fan-in/fan-out, indirect branches, backward edges, and state-like registers. It is not proof of control-flow flattening.
 - An opaque-branch candidate reflects a repeatedly observed single outcome near flag-producing instructions. The unexecuted path is unknown.
+- An alternate outcome observed in another controlled run contradicts a global opaque-branch claim for
+  the tested build/scope. It does not explain why the outcome changed.
+- Dispatcher state transitions are reconstructed from trace register checkpoints at candidate block
+  entry. Missing/unknown registers and truncated snapshots are normal coverage limits.
 - Dynamic traces contain only executed instructions. Do not infer missing blocks, alternate paths, or complete static CFG coverage.
 - CFGFast successors absent from the trace may be unexecuted, infeasible, or CFG recovery artifacts.
 - Dynamic-only successors may reflect indirect control flow, trace scope boundaries, or static CFG recovery gaps.
-- The generated angr probe starts at the branch with a blank, unconstrained state. It does not prove
-  that the successor is reachable from the real function entry or real inputs.
+- The generated angr bridge emits both blank-state probes and trace-register-seeded probes when branch
+  snapshots exist. Neither proves real-entry reachability; trace-seeded probes may still lack memory,
+  SIMD, flags, or other architectural state.
 - Require the exact ELF/shared object and record its SHA-256 before comparing module offsets.
 - Excluding child call ranges usually produces a cleaner function-local CFG. Include them only when the investigation explicitly needs interprocedural flow.
 - Do not mark OLLVM findings `Verified` solely from structural evidence.
