@@ -1101,6 +1101,21 @@ pub struct GenerateAngrOllvmScriptRequest {
     #[serde(default)]
     pub use_cfg_emulated: bool,
     #[schemars(
+        description = "Continue the first trace-register seed and exact Frida seed through a bounded symbolic flow (default: true). Blank-state probes remain single-step."
+    )]
+    #[serde(default = "default_true")]
+    pub explore_seeded_flows: bool,
+    #[schemars(
+        description = "Maximum bounded symbolic-flow depth per seeded probe (1-64, default: 8)"
+    )]
+    #[serde(default = "default_angr_flow_depth")]
+    pub flow_max_depth: u32,
+    #[schemars(
+        description = "Maximum symbolic states explored per seeded probe (1-256, default: 32)"
+    )]
+    #[serde(default = "default_angr_flow_states")]
+    pub flow_max_states_per_probe: u32,
+    #[schemars(
         description = "Optional absolute path to a user-captured trace-ui/frida-hook-v1 file. Must be paired with frida_event_index; Trace UI reads the file but never executes Frida."
     )]
     pub frida_capture_path: Option<String>,
@@ -1130,6 +1145,14 @@ fn default_ollvm_blocks() -> u32 {
 
 fn default_ollvm_edges() -> u32 {
     3_000
+}
+
+fn default_angr_flow_depth() -> u32 {
+    8
+}
+
+fn default_angr_flow_states() -> u32 {
+    32
 }
 
 #[derive(Debug, Deserialize, JsonSchema)]
@@ -1361,6 +1384,9 @@ mod tests {
         assert!(request.frida_event_index.is_none());
         assert!(!request.frida_include_sp);
         assert!(request.frida_include_lr);
+        assert!(request.explore_seeded_flows);
+        assert_eq!(request.flow_max_depth, 8);
+        assert_eq!(request.flow_max_states_per_probe, 32);
     }
 
     #[test]

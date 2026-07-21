@@ -126,6 +126,9 @@ condition-source offset, then pass `frida_capture_path` and the exact `hook-ente
 generator rejects module/offset mismatches and embeds captured GPR/memory as a separate candidate probe.
 Missing flags, SIMD, memory, and entry-path state still prevent Verified classification. For the full workflow, use
 `$ida-ollvm-analysis`.
+Keep bounded seeded-flow enabled to continue the first trace-register seed and exact Frida seed when
+the question is the post-branch execution flow. Interpret loop/depth/state/dead-end/external endings as
+Candidate/Related leads; depth/state limits explicitly mean incomplete exploration.
 
 **"Does this dispatcher or opaque branch stay stable across runs?"**
 → open two to sixteen controlled traces, then `compare_ollvm_traces{cases:[...]}` with a scope and

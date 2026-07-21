@@ -29,7 +29,8 @@ Use `mcp__trace-ui__list_frida_hook_recipes`, `mcp__trace-ui__generate_frida_hoo
    opt-in and explain that heap/stack addresses are process-specific.
 10. For an OLLVM branch probe, generate the Hook at the reported branch or condition-source module
     offset, select its `hook-enter` event, and pass `frida_capture_path` plus `frida_event_index` to
-    `generate_angr_ollvm_script`. Do not bypass an exact-offset mismatch.
+    `generate_angr_ollvm_script`. Do not bypass an exact-offset mismatch. When post-branch flow is the
+    question, retain bounded seeded-flow and keep its depth/state caps small; the user still runs angr manually.
 
 ## Request fields
 

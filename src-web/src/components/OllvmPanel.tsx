@@ -100,6 +100,9 @@ export default function OllvmPanel({ sessionId, onJumpToSeq, onPrepareFridaHook 
   const [savedPath, setSavedPath] = useState<string | null>(null);
   const [angrProbeOpaque, setAngrProbeOpaque] = useState(true);
   const [angrCfgEmulated, setAngrCfgEmulated] = useState(false);
+  const [angrExploreFlows, setAngrExploreFlows] = useState(true);
+  const [angrFlowDepth, setAngrFlowDepth] = useState("8");
+  const [angrFlowStates, setAngrFlowStates] = useState("32");
   const [angrScript, setAngrScript] = useState<AngrOllvmScript | null>(null);
   const [angrResults, setAngrResults] = useState<AngrOllvmResultBundle | null>(null);
   const [angrSavedPath, setAngrSavedPath] = useState<string | null>(null);
@@ -383,6 +386,9 @@ export default function OllvmPanel({ sessionId, onJumpToSeq, onPrepareFridaHook 
         report,
         probeOpaqueBranches: angrProbeOpaque,
         useCfgEmulated: angrCfgEmulated,
+        exploreSeededFlows: angrExploreFlows,
+        flowMaxDepth: optionalNumber(angrFlowDepth) ?? 8,
+        flowMaxStatesPerProbe: optionalNumber(angrFlowStates) ?? 32,
         fridaBundle: selectedAngrFridaEvent ? angrFridaBundle : null,
         fridaEventIndex: selectedAngrFridaEvent?.index ?? null,
         fridaIncludeSp: angrFridaIncludeSp,
@@ -395,7 +401,7 @@ export default function OllvmPanel({ sessionId, onJumpToSeq, onPrepareFridaHook 
       setError(String(reason));
       return null;
     }
-  }, [angrCfgEmulated, angrFridaBundle, angrFridaIncludeLr, angrFridaIncludeSp, angrProbeOpaque, report, selectedAngrFridaEvent]);
+  }, [angrCfgEmulated, angrExploreFlows, angrFlowDepth, angrFlowStates, angrFridaBundle, angrFridaIncludeLr, angrFridaIncludeSp, angrProbeOpaque, report, selectedAngrFridaEvent]);
 
   const saveAngrScript = useCallback(async () => {
     if (!report) return;
@@ -413,6 +419,9 @@ export default function OllvmPanel({ sessionId, onJumpToSeq, onPrepareFridaHook 
         report,
         probeOpaqueBranches: angrProbeOpaque,
         useCfgEmulated: angrCfgEmulated,
+        exploreSeededFlows: angrExploreFlows,
+        flowMaxDepth: optionalNumber(angrFlowDepth) ?? 8,
+        flowMaxStatesPerProbe: optionalNumber(angrFlowStates) ?? 32,
         fridaBundle: selectedAngrFridaEvent ? angrFridaBundle : null,
         fridaEventIndex: selectedAngrFridaEvent?.index ?? null,
         fridaIncludeSp: angrFridaIncludeSp,
@@ -422,7 +431,7 @@ export default function OllvmPanel({ sessionId, onJumpToSeq, onPrepareFridaHook 
     } catch (reason) {
       setError(String(reason));
     }
-  }, [angrCfgEmulated, angrFridaBundle, angrFridaIncludeLr, angrFridaIncludeSp, angrProbeOpaque, angrScript, generateAngrScript, report, selectedAngrFridaEvent]);
+  }, [angrCfgEmulated, angrExploreFlows, angrFlowDepth, angrFlowStates, angrFridaBundle, angrFridaIncludeLr, angrFridaIncludeSp, angrProbeOpaque, angrScript, generateAngrScript, report, selectedAngrFridaEvent]);
 
   const importAngrResults = useCallback(async () => {
     if (!report) return;
@@ -772,6 +781,21 @@ export default function OllvmPanel({ sessionId, onJumpToSeq, onPrepareFridaHook 
                 <input type="checkbox" checked={angrCfgEmulated} onChange={event => { setAngrCfgEmulated(event.target.checked); setAngrScript(null); }} />
                 prefer CFGEmulated
               </label>
+              <span>Seeded flow</span>
+              <label style={{ display: "flex", alignItems: "center", gap: 5 }}>
+                <input type="checkbox" disabled={!angrProbeOpaque} checked={angrExploreFlows && angrProbeOpaque} onChange={event => { setAngrExploreFlows(event.target.checked); setAngrScript(null); }} />
+                bounded continuation
+              </label>
+              <span>Flow bounds</span>
+              <div style={{ display: "flex", alignItems: "center", gap: 5 }}>
+                <input aria-label="Seeded flow depth" title="Maximum symbolic flow depth" type="number" min={1} max={64} disabled={!angrProbeOpaque || !angrExploreFlows} style={{ ...inputStyle, width: 58 }} value={angrFlowDepth} onChange={event => { setAngrFlowDepth(event.target.value); setAngrScript(null); }} />
+                <span>depth /</span>
+                <input aria-label="Seeded flow states" title="Maximum symbolic states per probe" type="number" min={1} max={256} disabled={!angrProbeOpaque || !angrExploreFlows} style={{ ...inputStyle, width: 64 }} value={angrFlowStates} onChange={event => { setAngrFlowStates(event.target.value); setAngrScript(null); }} />
+                <span>states</span>
+              </div>
+            </div>
+            <div style={{ marginTop: 6, color: "var(--text-tertiary)", lineHeight: 1.4 }}>
+              Flow continuation applies only to the first trace-register seed per candidate and an exact-offset Frida seed. Blank-state probes remain single-step.
             </div>
             <div style={{ marginTop: 10, paddingTop: 9, borderTop: "1px solid var(--border-color)" }}>
               <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
@@ -827,6 +851,7 @@ export default function OllvmPanel({ sessionId, onJumpToSeq, onPrepareFridaHook 
                 <div>{angrResults.architecture} mapped at {angrResults.mappedBase}</div>
                 <div title={angrResults.binarySha256} style={{ overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>SHA-256 {angrResults.binarySha256}</div>
                 <div>{angrResults.blocks.length} blocks / {angrResults.branchProbes.length} probes</div>
+                {angrResults.flowConfig?.enabled && <div>{angrResults.branchProbes.filter(probe => probe.flowExploration).length} bounded flows / depth {angrResults.flowConfig.maxDepth} / {angrResults.flowConfig.maxStatesPerProbe} states each</div>}
                 {angrResults.fridaSeed && <div>Frida event #{angrResults.fridaSeed.sourceEventIndex} at {angrResults.fridaSeed.captureOffset} → {angrResults.fridaSeed.matchedProbeOffsets.join(", ")}</div>}
               </div>
             )}
@@ -839,7 +864,7 @@ export default function OllvmPanel({ sessionId, onJumpToSeq, onPrepareFridaHook 
           {angrDisplay === "results" && angrResults && (
             <div style={{ flex: 1, minWidth: 0, overflow: "auto", fontSize: 11 }}>
               <div style={{ padding: "8px 10px", borderBottom: "1px solid var(--border-color)", color: "var(--text-secondary)" }}>
-                Unobserved static successors may be unexecuted, infeasible, or CFG recovery artifacts. A blank-state probe does not prove reachability from the real entry state.
+                Unobserved static successors may be unexecuted, infeasible, or CFG recovery artifacts. Blank-state and bounded seeded-flow probes do not prove reachability from the real entry state.
               </div>
               {angrResults.blocks.map(block => (
                 <div key={block.offset} style={{ display: "grid", gridTemplateColumns: "100px 90px 110px 130px minmax(180px, 1fr)", gap: 7, alignItems: "center", padding: "6px 8px", borderBottom: "1px solid var(--border-color)" }}>
@@ -867,6 +892,24 @@ export default function OllvmPanel({ sessionId, onJumpToSeq, onPrepareFridaHook 
                     {probe.error && <span style={{ color: "#e5484d" }}>{probe.error}</span>}
                   </div>
                   <div style={{ marginTop: 4, paddingLeft: 108, color: "var(--text-secondary)" }}>{probe.limitation}</div>
+                  {probe.flowExploration && (
+                    <details style={{ marginTop: 6, marginLeft: 108 }}>
+                      <summary style={{ cursor: "pointer", color: probe.flowExploration.truncated ? "#d29922" : "#3fb950" }}>
+                        {probe.flowExploration.paths.length} bounded paths / {probe.flowExploration.exploredStates} states{probe.flowExploration.truncated ? " / truncated" : ""}
+                      </summary>
+                      <div style={{ marginTop: 5, color: "var(--text-tertiary)" }}>{probe.flowExploration.limitation}</div>
+                      {probe.flowExploration.paths.map((path, pathIndex) => (
+                        <div key={`${probe.offset}-flow-${pathIndex}`} style={{ display: "grid", gridTemplateColumns: "110px minmax(180px, 1fr) 90px", gap: 7, alignItems: "center", marginTop: 5, padding: "4px 6px", background: "var(--bg-secondary)", borderRadius: 3 }}>
+                          <code title={path.constraints.join("\n")}>{path.status} · {path.constraintCount}c</code>
+                          <span title={path.offsets.join(" -> ")} style={{ overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{path.offsets.join(" -> ") || path.terminalAddress}</span>
+                          {path.terminalOffset
+                            ? <button type="button" style={buttonStyle} onClick={() => jumpOffset(path.terminalOffset!)}>{path.terminalOffset}</button>
+                            : <code>{path.terminalAddress}</code>}
+                          {path.error && <span style={{ gridColumn: "1 / -1", color: "#e5484d" }}>{path.error}</span>}
+                        </div>
+                      ))}
+                    </details>
+                  )}
                 </div>
               ))}
             </div>

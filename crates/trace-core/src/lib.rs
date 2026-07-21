@@ -35,8 +35,9 @@ pub use query::analysis_summary::{
 };
 pub use query::angr::{
     generate_angr_ollvm_script, generate_angr_ollvm_script_with_seed,
-    parse_angr_ollvm_result_bundle, AngrBlockResult, AngrBranchProbe, AngrOllvmFridaSeedProvenance,
-    AngrOllvmResultBundle, AngrOllvmScript, AngrSuccessor,
+    generate_angr_ollvm_script_with_seed_and_flow, parse_angr_ollvm_result_bundle, AngrBlockResult,
+    AngrBranchProbe, AngrFlowExploration, AngrFlowPath, AngrOllvmFlowConfig,
+    AngrOllvmFridaSeedProvenance, AngrOllvmResultBundle, AngrOllvmScript, AngrSuccessor,
 };
 pub use query::crypto_functions::{
     CryptoFamily, CryptoFunctionCandidate, CryptoFunctionIo, CryptoFunctionReport,

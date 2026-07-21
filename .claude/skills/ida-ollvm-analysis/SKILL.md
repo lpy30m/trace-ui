@@ -1,6 +1,6 @@
 ---
 name: ida-ollvm-analysis
-description: Analyze ARM64 dynamic traces for OLLVM control-flow-flattening and opaque-branch candidates, compare dispatcher/state/branch stability across controlled runs, bridge module-relative evidence and exact-offset Frida captures to IDA and angr, and inspect exported results through the trace-ui MCP server. Use for ASLR-stable dynamic CFG evidence, dispatcher state trajectories, opaque predicate leads, trace/Frida-seeded symbolic probes, trace-to-IDA annotations, or static/dynamic CFG reconciliation. Treat all OLLVM and angr structural classifications as candidates unless independently proven.
+description: Analyze ARM64 dynamic traces for OLLVM control-flow-flattening and opaque-branch candidates, compare dispatcher/state/branch stability across controlled runs, bridge module-relative evidence and exact-offset Frida captures to IDA and angr, continue trace/Frida seeds through bounded symbolic flows, and inspect exported results through the trace-ui MCP server. Use for ASLR-stable dynamic CFG evidence, dispatcher state trajectories, opaque predicate leads, seeded execution-flow candidates, trace-to-IDA annotations, or static/dynamic CFG reconciliation. Treat all OLLVM and angr structural classifications as candidates unless independently proven.
 ---
 
 # Analyze OLLVM traces and bridge them to IDA or angr
@@ -37,6 +37,10 @@ Use `mcp__trace-ui__analyze_ollvm`, `mcp__trace-ui__compare_ollvm_traces`, `mcp_
    event, then call `generate_angr_ollvm_script` with `frida_capture_path` and `frida_event_index`.
    The tool must reject module or offset mismatches. Use `generate_angr_state_seed` separately when a
    reusable standalone `configure_state(state)` function is desired.
+9. Keep bounded seeded-flow enabled when the question is where a captured state can travel after the
+   candidate branch. Start with `flow_max_depth:8` and `flow_max_states_per_probe:32`; lower them when
+   several candidates branch heavily. Inspect loop/depth-limit/state-limit/dead-end/external-target
+   endings and the final bounded path constraints as leads, not recovered control flow.
 
 ## Interpretation rules
 
@@ -56,6 +60,10 @@ Use `mcp__trace-ui__analyze_ollvm`, `mcp__trace-ui__compare_ollvm_traces`, `mcp_
 - An embedded Frida probe is emitted only when the hook-enter target exactly matches the candidate
   branch or condition source. It may add X0-X28/FP/LR/SP and byteArray memory, but missing flags, SIMD,
   unread buffers, or entry-path constraints keep the result Candidate/Related.
+- Bounded seeded-flow continuation applies only to the first trace-register seed per candidate and an
+  exact-offset Frida seed. Blank state remains single-step. A `loop-detected` result is useful evidence
+  for a dispatcher cycle, while `depth-limit` or `state-limit` means the exploration is incomplete;
+  none of these statuses proves a deobfuscated CFG or real-entry reachability.
 - Require the exact ELF/shared object for every case and enable `require_matching_binary`. A matching
   supplied SHA-256 confirms the selected files are identical, not that the trace format cryptographically
   attests which image was mapped at runtime.
@@ -72,8 +80,8 @@ Prefer comments/colors first. Enable `add_user_xrefs:true` only when the user wa
 
 Trace UI generates a standalone Python script but does not install or execute angr. The user runs it
 manually. Prefer CFGFast first; enable CFGEmulated only for a narrow scope and accept fallback. Treat
-static CFG reconciliation and unconstrained probes as Candidate/Related evidence, never Verified by
-themselves.
+static CFG reconciliation, unconstrained probes, and bounded seeded-flow paths as Candidate/Related
+evidence, never Verified by themselves. Keep depth within 1-64 and states per probe within 1-256.
 
 ## Reporting
 

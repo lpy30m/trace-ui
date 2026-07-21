@@ -822,7 +822,14 @@ export interface AngrOllvmScript {
   script: string;
   schemaVersion: string;
   fridaSeed: AngrOllvmFridaSeedProvenance | null;
+  flowConfig: AngrOllvmFlowConfig;
   warnings: string[];
+}
+
+export interface AngrOllvmFlowConfig {
+  enabled: boolean;
+  maxDepth: number;
+  maxStatesPerProbe: number;
 }
 
 export interface AngrOllvmFridaSeedProvenance {
@@ -867,8 +874,29 @@ export interface AngrBranchProbe {
   observedSuccessors: string[];
   successors: AngrSuccessor[];
   constraints: string[];
+  flowExploration: AngrFlowExploration | null;
   limitation: string;
   error: string | null;
+}
+
+export interface AngrFlowPath {
+  status: string;
+  offsets: string[];
+  jumpKinds: string[];
+  terminalAddress: string;
+  terminalOffset: string | null;
+  constraintCount: number;
+  constraints: string[];
+  error: string | null;
+}
+
+export interface AngrFlowExploration {
+  maxDepth: number;
+  maxStates: number;
+  exploredStates: number;
+  truncated: boolean;
+  paths: AngrFlowPath[];
+  limitation: string;
 }
 
 export interface AngrOllvmResultBundle {
@@ -880,6 +908,7 @@ export interface AngrOllvmResultBundle {
   angrVersion: string;
   cfgKind: string;
   fridaSeed: AngrOllvmFridaSeedProvenance | null;
+  flowConfig: AngrOllvmFlowConfig | null;
   blocks: AngrBlockResult[];
   branchProbes: AngrBranchProbe[];
   warnings: string[];

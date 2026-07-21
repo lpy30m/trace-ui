@@ -886,6 +886,9 @@ pub fn generate_angr_ollvm_script(
     report: trace_core::OllvmReport,
     probe_opaque_branches: Option<bool>,
     use_cfg_emulated: Option<bool>,
+    explore_seeded_flows: Option<bool>,
+    flow_max_depth: Option<u32>,
+    flow_max_states_per_probe: Option<u32>,
     frida_bundle: Option<trace_core::FridaCaptureBundle>,
     frida_event_index: Option<u64>,
     frida_include_sp: Option<bool>,
@@ -905,11 +908,16 @@ pub fn generate_angr_ollvm_script(
                     .to_string(),
             ),
         };
-    trace_core::generate_angr_ollvm_script_with_seed(
+    trace_core::generate_angr_ollvm_script_with_seed_and_flow(
         &report,
         probe_opaque_branches.unwrap_or(true),
         use_cfg_emulated.unwrap_or(false),
         frida_seed.as_ref(),
+        trace_core::AngrOllvmFlowConfig {
+            enabled: explore_seeded_flows.unwrap_or(true),
+            max_depth: flow_max_depth.unwrap_or(8),
+            max_states_per_probe: flow_max_states_per_probe.unwrap_or(32),
+        },
     )
 }
 
@@ -919,6 +927,9 @@ pub async fn save_angr_ollvm_script(
     report: trace_core::OllvmReport,
     probe_opaque_branches: Option<bool>,
     use_cfg_emulated: Option<bool>,
+    explore_seeded_flows: Option<bool>,
+    flow_max_depth: Option<u32>,
+    flow_max_states_per_probe: Option<u32>,
     frida_bundle: Option<trace_core::FridaCaptureBundle>,
     frida_event_index: Option<u64>,
     frida_include_sp: Option<bool>,
@@ -938,11 +949,16 @@ pub async fn save_angr_ollvm_script(
                     .to_string(),
             ),
         };
-        let generated = trace_core::generate_angr_ollvm_script_with_seed(
+        let generated = trace_core::generate_angr_ollvm_script_with_seed_and_flow(
             &report,
             probe_opaque_branches.unwrap_or(true),
             use_cfg_emulated.unwrap_or(false),
             frida_seed.as_ref(),
+            trace_core::AngrOllvmFlowConfig {
+                enabled: explore_seeded_flows.unwrap_or(true),
+                max_depth: flow_max_depth.unwrap_or(8),
+                max_states_per_probe: flow_max_states_per_probe.unwrap_or(32),
+            },
         )?;
         let trimmed = path.trim();
         if trimmed.is_empty() {

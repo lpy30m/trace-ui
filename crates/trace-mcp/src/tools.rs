@@ -12,18 +12,20 @@ use rmcp::{
 use crate::types::*;
 use trace_core::{
     analyze_frida_crypto_materials as build_frida_crypto_materials, api_types::TraceLine,
-    apply_resource_validation, classify_flow_endpoints, generate_angr_ollvm_script_with_seed,
+    apply_resource_validation, classify_flow_endpoints,
+    generate_angr_ollvm_script_with_seed_and_flow,
     generate_angr_state_seed as build_angr_state_seed, generate_frida_hook as build_frida_hook,
     generate_ida_ollvm_script, list_frida_hook_recipes as build_frida_hook_recipes,
     parse_angr_ollvm_result_bundle, parse_frida_capture_bundle, parse_hex_addr,
     parse_ida_annotation_bundle, score_evidence, summarize_dependency_graph, AnalysisEvidence,
-    BuildOptions, CryptoFunctionsOptions, CryptoMaterialKind, CryptoMaterialMultiTraceRequest,
-    CryptoMaterialOptions, CryptoMaterialTraceCase, DepTreeOptions, EvidenceScoreSignal,
-    ForwardSliceOptions, FridaArgumentKind, FridaArgumentSpec, FridaCaptureDirection,
-    FridaHookRequest, FridaStalkerMode, HashAlgorithm, HashMatchRequest, HashTransformOptions,
-    OllvmAnalysisOptions, OllvmMultiTraceRequest, OllvmTraceCase, SearchOptions, SliceOptions,
-    StringQueryOptions, TraceDiffOptions, TraceEngine, ValueEndian, ValueSearchKind,
-    ValueSearchRequest, WhiteBoxMultiTraceRequest, WhiteBoxOptions, WhiteBoxTraceCaseRequest,
+    AngrOllvmFlowConfig, BuildOptions, CryptoFunctionsOptions, CryptoMaterialKind,
+    CryptoMaterialMultiTraceRequest, CryptoMaterialOptions, CryptoMaterialTraceCase,
+    DepTreeOptions, EvidenceScoreSignal, ForwardSliceOptions, FridaArgumentKind, FridaArgumentSpec,
+    FridaCaptureDirection, FridaHookRequest, FridaStalkerMode, HashAlgorithm, HashMatchRequest,
+    HashTransformOptions, OllvmAnalysisOptions, OllvmMultiTraceRequest, OllvmTraceCase,
+    SearchOptions, SliceOptions, StringQueryOptions, TraceDiffOptions, TraceEngine, ValueEndian,
+    ValueSearchKind, ValueSearchRequest, WhiteBoxMultiTraceRequest, WhiteBoxOptions,
+    WhiteBoxTraceCaseRequest,
 };
 
 fn decode_hex_bytes(value: &str) -> Result<Vec<u8>, String> {
@@ -4369,7 +4371,7 @@ impl TraceToolHandler {
 
     #[tool(
         name = "generate_angr_ollvm_script",
-        description = "Analyze a trace-scoped function/range and generate a standalone Python angr bridge for manual execution. The script reconciles static/dynamic CFG evidence, runs blank/trace-register probes, and can embed one user-captured Frida 16 hook-enter seed only when its module-relative offset exactly matches an opaque branch or recorded condition source. Trace UI never executes Frida or angr; all structural results remain Candidate/Related."
+        description = "Analyze a trace-scoped function/range and generate a standalone Python angr bridge for manual execution. The script reconciles static/dynamic CFG evidence, runs blank/trace-register probes, optionally continues the first trace seed and exact Frida seed through strictly bounded symbolic flows, and can embed one user-captured Frida 16 hook-enter seed only when its module-relative offset exactly matches an opaque branch or recorded condition source. Trace UI never executes Frida or angr; all structural results remain Candidate/Related."
     )]
     async fn generate_angr_ollvm_script(
         &self,
@@ -4412,11 +4414,16 @@ impl TraceToolHandler {
                     )
                 }
             };
-            Ok(json(&generate_angr_ollvm_script_with_seed(
+            Ok(json(&generate_angr_ollvm_script_with_seed_and_flow(
                 &report,
                 req.probe_opaque_branches,
                 req.use_cfg_emulated,
                 frida_seed.as_ref(),
+                AngrOllvmFlowConfig {
+                    enabled: req.explore_seeded_flows,
+                    max_depth: req.flow_max_depth,
+                    max_states_per_probe: req.flow_max_states_per_probe,
+                },
             )?))
         })
         .await

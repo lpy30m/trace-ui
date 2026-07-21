@@ -114,7 +114,8 @@ Line numbers in taint `@LINE` specs are **1-based**; `start_seq`/`end_seq`/`seq`
 - **inspect_ida_annotations** `{file_path}` validates and returns module-relative names/comments from a
   JSON file exported manually by the generated IDAPython bridge.
 - **generate_angr_ollvm_script** accepts the same trace scope plus
-  `probe_opaque_branches?=true`, `use_cfg_emulated?=false`, and optional
+  `probe_opaque_branches?=true`, `use_cfg_emulated?=false`,
+  `explore_seeded_flows?=true`, `flow_max_depth?=8`, `flow_max_states_per_probe?=32`, and optional
   `frida_capture_path`, `frida_event_index`, `frida_include_sp?=false`, `frida_include_lr?=true`.
   The Frida fields must select a user-captured hook-enter event whose module-relative target exactly
   matches an opaque branch or one of its recorded condition-source offsets; mismatches are rejected.
@@ -123,7 +124,10 @@ Line numbers in taint `@LINE` specs are **1-based**; `start_seq`/`end_seq`/`seq`
   successors with observed dynamic edges, performs blank-state probes, and performs trace-register-seeded
   probes when bounded branch snapshots are available. An exact-offset Frida seed adds captured registers
   and byteArray memory regions as a separate candidate probe. Missing flags, SIMD, memory, or entry-path
-  constraints can still change feasibility.
+  constraints can still change feasibility. Bounded continuation applies to the first trace seed per
+  candidate and the exact Frida seed, records loop/depth/state/dead-end/external path endings plus the
+  final four bounded constraints per path, and rejects
+  result JSON that exceeds the configured 1-64 depth or 1-256 state bounds.
   It writes `trace-ui/angr-ollvm-v1` JSON. Trace UI does not install or execute angr.
 - **inspect_angr_ollvm_results** `{file_path}` validates and returns an imported
   `trace-ui/angr-ollvm-v1` bundle, including binary SHA-256, mapped base, CFG kind, unobserved static

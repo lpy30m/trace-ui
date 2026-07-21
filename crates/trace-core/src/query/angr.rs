@@ -12,7 +12,26 @@ pub struct AngrOllvmScript {
     pub schema_version: String,
     #[serde(default)]
     pub frida_seed: Option<AngrOllvmFridaSeedProvenance>,
+    pub flow_config: AngrOllvmFlowConfig,
     pub warnings: Vec<String>,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AngrOllvmFlowConfig {
+    pub enabled: bool,
+    pub max_depth: u32,
+    pub max_states_per_probe: u32,
+}
+
+impl Default for AngrOllvmFlowConfig {
+    fn default() -> Self {
+        Self {
+            enabled: true,
+            max_depth: 8,
+            max_states_per_probe: 32,
+        }
+    }
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -84,9 +103,41 @@ pub struct AngrBranchProbe {
     pub successors: Vec<AngrSuccessor>,
     #[serde(default)]
     pub constraints: Vec<String>,
+    #[serde(default)]
+    pub flow_exploration: Option<AngrFlowExploration>,
     pub limitation: String,
     #[serde(default)]
     pub error: Option<String>,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AngrFlowPath {
+    pub status: String,
+    #[serde(default)]
+    pub offsets: Vec<String>,
+    #[serde(default)]
+    pub jump_kinds: Vec<String>,
+    pub terminal_address: String,
+    #[serde(default)]
+    pub terminal_offset: Option<String>,
+    pub constraint_count: u64,
+    #[serde(default)]
+    pub constraints: Vec<String>,
+    #[serde(default)]
+    pub error: Option<String>,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AngrFlowExploration {
+    pub max_depth: u32,
+    pub max_states: u32,
+    pub explored_states: u32,
+    pub truncated: bool,
+    #[serde(default)]
+    pub paths: Vec<AngrFlowPath>,
+    pub limitation: String,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -101,6 +152,8 @@ pub struct AngrOllvmResultBundle {
     pub cfg_kind: String,
     #[serde(default)]
     pub frida_seed: Option<AngrOllvmFridaSeedProvenance>,
+    #[serde(default)]
+    pub flow_config: Option<AngrOllvmFlowConfig>,
     #[serde(default)]
     pub blocks: Vec<AngrBlockResult>,
     #[serde(default)]
@@ -132,6 +185,16 @@ pub fn generate_angr_ollvm_script(
     use_cfg_emulated: bool,
 ) -> Result<AngrOllvmScript, String> {
     generate_angr_ollvm_script_with_seed(report, probe_opaque_branches, use_cfg_emulated, None)
+}
+
+fn validate_flow_config(config: &AngrOllvmFlowConfig) -> Result<(), String> {
+    if !(1..=64).contains(&config.max_depth) {
+        return Err("angr seeded-flow max depth must be between 1 and 64".to_string());
+    }
+    if !(1..=256).contains(&config.max_states_per_probe) {
+        return Err("angr seeded-flow max states per probe must be between 1 and 256".to_string());
+    }
+    Ok(())
 }
 
 fn allowed_seed_register(name: &str) -> bool {
@@ -270,8 +333,28 @@ pub fn generate_angr_ollvm_script_with_seed(
     use_cfg_emulated: bool,
     frida_seed: Option<&AngrStateSeed>,
 ) -> Result<AngrOllvmScript, String> {
+    generate_angr_ollvm_script_with_seed_and_flow(
+        report,
+        probe_opaque_branches,
+        use_cfg_emulated,
+        frida_seed,
+        AngrOllvmFlowConfig::default(),
+    )
+}
+
+pub fn generate_angr_ollvm_script_with_seed_and_flow(
+    report: &OllvmReport,
+    probe_opaque_branches: bool,
+    use_cfg_emulated: bool,
+    frida_seed: Option<&AngrStateSeed>,
+    mut flow_config: AngrOllvmFlowConfig,
+) -> Result<AngrOllvmScript, String> {
     if report.scope.module_name.trim().is_empty() {
         return Err("OLLVM report module name must not be empty".to_string());
+    }
+    validate_flow_config(&flow_config)?;
+    if !probe_opaque_branches {
+        flow_config.enabled = false;
     }
     if frida_seed.is_some() && !probe_opaque_branches {
         return Err("Frida OLLVM seed merging requires opaque branch probes".to_string());
@@ -318,6 +401,9 @@ SCHEMA = "trace-ui/angr-ollvm-v1"
 REPORT = json.loads(__REPORT_JSON__)
 DEFAULT_PROBE_OPAQUE_BRANCHES = __PROBE_OPAQUE__
 DEFAULT_CFG_EMULATED = __CFG_EMULATED__
+DEFAULT_EXPLORE_SEEDED_FLOWS = __EXPLORE_FLOWS__
+DEFAULT_FLOW_MAX_DEPTH = __FLOW_MAX_DEPTH__
+DEFAULT_FLOW_MAX_STATES = __FLOW_MAX_STATES__
 FRIDA_SEED = json.loads(__FRIDA_SEED_JSON__)
 
 
@@ -465,7 +551,102 @@ def _apply_frida_seed(state):
     return seeded_registers, seeded_memory, errors
 
 
-def _probe_branch(project, candidate, snapshot=None):
+def _flow_path(project, status, state, offsets, jump_kinds, error=None):
+    return {
+        "status": status,
+        "offsets": offsets,
+        "jumpKinds": jump_kinds,
+        "terminalAddress": hex(state.addr),
+        "terminalOffset": _mapped_offset(project, state.addr),
+        "constraintCount": len(state.solver.constraints),
+        "constraints": [str(item)[:500] for item in state.solver.constraints[-4:]],
+        "error": error,
+    }
+
+
+def _explore_seeded_flow(project, branch_offset, initial_states, max_depth, max_states):
+    limitation = (
+        "Bounded symbolic continuation starts after the candidate branch from a partial trace/Frida seed. "
+        "It does not prove function-entry reachability, path completeness, or OLLVM removal."
+    )
+    queue = []
+    paths = []
+    truncated = False
+    for state in initial_states:
+        try:
+            if not state.solver.satisfiable():
+                continue
+        except Exception:
+            continue
+        offset = _mapped_offset(project, state.addr)
+        offsets = [branch_offset]
+        if offset is not None:
+            offsets.append(offset.lower())
+        queue.append((state, 1, offsets, [state.history.jumpkind or "unknown"]))
+        if len(queue) >= max_states:
+            truncated = len(initial_states) > len(queue)
+            break
+    explored = 0
+    while queue and explored < max_states:
+        state, depth, offsets, jump_kinds = queue.pop(0)
+        explored += 1
+        current_offset = _mapped_offset(project, state.addr)
+        if current_offset is None:
+            paths.append(_flow_path(project, "external-target", state, offsets, jump_kinds))
+            continue
+        current_offset = current_offset.lower()
+        if current_offset in offsets[:-1]:
+            paths.append(_flow_path(project, "loop-detected", state, offsets, jump_kinds))
+            continue
+        if depth >= max_depth:
+            truncated = True
+            paths.append(_flow_path(project, "depth-limit", state, offsets, jump_kinds))
+            continue
+        try:
+            successors = project.factory.successors(state, opt_level=0)
+        except Exception as error:
+            paths.append(_flow_path(project, "step-error", state, offsets, jump_kinds, str(error)))
+            continue
+        flat = []
+        for successor in successors.flat_successors:
+            try:
+                if successor.solver.satisfiable():
+                    flat.append(successor)
+            except Exception:
+                continue
+        if not flat:
+            status = "unconstrained" if successors.unconstrained_successors else "dead-end"
+            paths.append(_flow_path(project, status, state, offsets, jump_kinds))
+            continue
+        for successor in flat:
+            if explored + len(queue) >= max_states:
+                truncated = True
+                break
+            next_offset = _mapped_offset(project, successor.addr)
+            next_offsets = list(offsets)
+            if next_offset is not None:
+                next_offsets.append(next_offset.lower())
+            queue.append((
+                successor,
+                depth + 1,
+                next_offsets,
+                jump_kinds + [successor.history.jumpkind or "unknown"],
+            ))
+    if queue:
+        truncated = True
+        state, _, offsets, jump_kinds = queue[0]
+        paths.append(_flow_path(project, "state-limit", state, offsets, jump_kinds))
+    return {
+        "maxDepth": max_depth,
+        "maxStates": max_states,
+        "exploredStates": explored,
+        "truncated": truncated,
+        "paths": paths,
+        "limitation": limitation,
+    }
+
+
+def _probe_branch(project, candidate, snapshot=None, explore_flow=False, flow_max_depth=8, flow_max_states=32):
     offset = candidate["branchOffset"].lower()
     observed = [value.lower() for value in candidate.get("observedSuccessors", [])]
     seed_kind = "trace-register-snapshot" if snapshot is not None else "blank-unconstrained"
@@ -498,6 +679,15 @@ def _probe_branch(project, candidate, snapshot=None):
         else:
             status = "no_satisfiable_successor_{}".format(status_context)
         constraints = [str(item)[:500] for item in state.solver.constraints[-4:]]
+        flow = None
+        if explore_flow and snapshot is not None:
+            flow = _explore_seeded_flow(
+                project,
+                offset,
+                list(successors.flat_successors),
+                flow_max_depth,
+                flow_max_states,
+            )
         return {
             "offset": offset,
             "status": status,
@@ -510,6 +700,7 @@ def _probe_branch(project, candidate, snapshot=None):
             "observedSuccessors": observed,
             "successors": records,
             "constraints": constraints + ["seed-warning: " + item for item in seed_errors],
+            "flowExploration": flow,
             "limitation": limitation,
             "error": None,
         }
@@ -526,12 +717,13 @@ def _probe_branch(project, candidate, snapshot=None):
             "observedSuccessors": observed,
             "successors": [],
             "constraints": [],
+            "flowExploration": None,
             "limitation": limitation,
             "error": str(error),
         }
 
 
-def _probe_branch_with_frida(project, candidate):
+def _probe_branch_with_frida(project, candidate, explore_flow=False, flow_max_depth=8, flow_max_states=32):
     branch_offset = candidate["branchOffset"].lower()
     source_offset = FRIDA_SEED["captureOffset"].lower()
     condition_sources = [value.lower() for value in candidate.get("conditionSourceOffsets", [])]
@@ -553,6 +745,7 @@ def _probe_branch_with_frida(project, candidate):
                 "observedSuccessors": [value.lower() for value in candidate.get("observedSuccessors", [])],
                 "successors": [],
                 "constraints": [],
+                "flowExploration": None,
                 "limitation": "The exact condition-source offset could not be bounded to the candidate branch.",
                 "error": "condition-source to branch distance is invalid or exceeds 64 ARM64 instructions",
             }
@@ -588,6 +781,15 @@ def _probe_branch_with_frida(project, candidate):
             status = "single_satisfiable_successor_with_frida_capture"
         else:
             status = "no_satisfiable_successor_with_frida_capture"
+        flow = None
+        if explore_flow:
+            flow = _explore_seeded_flow(
+                project,
+                branch_offset,
+                list(successors.flat_successors),
+                flow_max_depth,
+                flow_max_states,
+            )
         return {
             "offset": branch_offset,
             "status": status,
@@ -600,6 +802,7 @@ def _probe_branch_with_frida(project, candidate):
             "observedSuccessors": [value.lower() for value in candidate.get("observedSuccessors", [])],
             "successors": records,
             "constraints": ["seed-warning: " + item for item in seed_errors],
+            "flowExploration": flow,
             "limitation": limitation,
             "error": None,
         }
@@ -616,12 +819,13 @@ def _probe_branch_with_frida(project, candidate):
             "observedSuccessors": [value.lower() for value in candidate.get("observedSuccessors", [])],
             "successors": [],
             "constraints": [],
+            "flowExploration": None,
             "limitation": limitation,
             "error": str(error),
         }
 
 
-def analyze(binary_path, prefer_emulated, probe_opaque):
+def analyze(binary_path, prefer_emulated, probe_opaque, explore_flows, flow_max_depth, flow_max_states):
     project = angr.Project(binary_path, auto_load_libs=False)
     cfg, cfg_kind, warnings = _build_cfg(project, prefer_emulated)
     architecture = project.arch.name
@@ -632,11 +836,24 @@ def analyze(binary_path, prefer_emulated, probe_opaque):
     if probe_opaque:
         for item in REPORT.get("opaqueBranchCandidates", []):
             probes.append(_probe_branch(project, item))
-            for snapshot in item.get("observations", []):
+            for snapshot_index, snapshot in enumerate(item.get("observations", [])):
                 if snapshot.get("registers"):
-                    probes.append(_probe_branch(project, item, snapshot))
+                    probes.append(_probe_branch(
+                        project,
+                        item,
+                        snapshot,
+                        explore_flow=explore_flows and snapshot_index == 0,
+                        flow_max_depth=flow_max_depth,
+                        flow_max_states=flow_max_states,
+                    ))
             if FRIDA_SEED is not None:
-                frida_probe = _probe_branch_with_frida(project, item)
+                frida_probe = _probe_branch_with_frida(
+                    project,
+                    item,
+                    explore_flow=explore_flows,
+                    flow_max_depth=flow_max_depth,
+                    flow_max_states=flow_max_states,
+                )
                 if frida_probe is not None:
                     probes.append(frida_probe)
     warnings.extend([
@@ -645,6 +862,8 @@ def analyze(binary_path, prefer_emulated, probe_opaque):
         "Unconstrained branch probes are hypothesis generators, not proof of real-input reachability.",
         "Trace-seeded probes contain selected register values only; missing memory and architectural state can change feasibility.",
     ])
+    if explore_flows and probe_opaque:
+        warnings.append("Bounded seeded-flow paths stop at configured depth/state limits and remain candidate execution-flow evidence.")
     if FRIDA_SEED is not None:
         warnings.append("Frida-seeded probes are emitted only for an exact module-relative branch or condition-source offset match; they remain candidate evidence.")
     with open(binary_path, "rb") as source:
@@ -658,6 +877,11 @@ def analyze(binary_path, prefer_emulated, probe_opaque):
         "angrVersion": getattr(angr, "__version__", "unknown"),
         "cfgKind": cfg_kind,
         "fridaSeed": FRIDA_SEED.get("provenance") if FRIDA_SEED is not None else None,
+        "flowConfig": {
+            "enabled": bool(explore_flows and probe_opaque),
+            "maxDepth": flow_max_depth,
+            "maxStatesPerProbe": flow_max_states,
+        },
         "blocks": blocks,
         "branchProbes": probes,
         "warnings": warnings,
@@ -672,16 +896,28 @@ def main():
     parser.add_argument("--cfg-fast", action="store_false", dest="cfg_emulated", help="Force CFGFast")
     parser.add_argument("--probe-opaque", action="store_true", default=DEFAULT_PROBE_OPAQUE_BRANCHES, help="Probe opaque-branch candidates from unconstrained state")
     parser.add_argument("--skip-probes", action="store_false", dest="probe_opaque", help="Skip symbolic branch probes")
+    parser.add_argument("--explore-seeded-flows", action="store_true", default=DEFAULT_EXPLORE_SEEDED_FLOWS, help="Continue the first trace seed and exact Frida seed through a bounded symbolic flow")
+    parser.add_argument("--skip-seeded-flows", action="store_false", dest="explore_seeded_flows", help="Disable bounded symbolic flow continuation")
+    parser.add_argument("--flow-depth", type=int, default=DEFAULT_FLOW_MAX_DEPTH, choices=range(1, 65), metavar="1..64", help="Maximum symbolic flow depth per seeded probe")
+    parser.add_argument("--flow-max-states", type=int, default=DEFAULT_FLOW_MAX_STATES, choices=range(1, 257), metavar="1..256", help="Maximum symbolic states per seeded probe")
     args = parser.parse_args()
     binary_path = os.path.abspath(args.binary)
     if not os.path.isfile(binary_path):
         parser.error("binary does not exist: {}".format(binary_path))
-    result = analyze(binary_path, args.cfg_emulated, args.probe_opaque)
+    result = analyze(
+        binary_path,
+        args.cfg_emulated,
+        args.probe_opaque,
+        args.explore_seeded_flows,
+        args.flow_depth,
+        args.flow_max_states,
+    )
     output_path = os.path.abspath(args.output)
     with open(output_path, "w", encoding="utf-8") as output:
         json.dump(result, output, ensure_ascii=False, indent=2)
-    print("[Trace UI] wrote {} block reconciliations and {} branch probes to {}".format(
-        len(result["blocks"]), len(result["branchProbes"]), output_path
+    flow_count = sum(1 for probe in result["branchProbes"] if probe.get("flowExploration") is not None)
+    print("[Trace UI] wrote {} block reconciliations, {} branch probes, and {} bounded flows to {}".format(
+        len(result["blocks"]), len(result["branchProbes"]), flow_count, output_path
     ))
 
 
@@ -702,12 +938,27 @@ if __name__ == "__main__":
             "__CFG_EMULATED__",
             if use_cfg_emulated { "True" } else { "False" },
         )
+        .replace(
+            "__EXPLORE_FLOWS__",
+            if flow_config.enabled { "True" } else { "False" },
+        )
+        .replace("__FLOW_MAX_DEPTH__", &flow_config.max_depth.to_string())
+        .replace(
+            "__FLOW_MAX_STATES__",
+            &flow_config.max_states_per_probe.to_string(),
+        )
         .replace("__FRIDA_SEED_JSON__", &frida_seed_literal);
     let mut warnings = vec![
         "Trace UI generates the script but does not install or execute angr; run it manually in an isolated Python environment.".to_string(),
         "Use the exact ELF/shared object that produced the trace. Module offsets are aligned to angr's main-object mapped base.".to_string(),
         "Static CFG differences and unconstrained symbolic branch probes remain candidate evidence until validated with real entry state and inputs.".to_string(),
     ];
+    if flow_config.enabled {
+        warnings.push(format!(
+            "Bounded symbolic flow continuation is enabled for the first trace-register seed and exact Frida seed (depth {}, at most {} states per probe). Paths remain Candidate/Related evidence.",
+            flow_config.max_depth, flow_config.max_states_per_probe
+        ));
+    }
     if frida_seed_provenance.is_some() {
         warnings.push(
             "The embedded Frida seed is applied only to exact branch/condition-source offset matches. Missing flags, SIMD state, memory, and entry-path constraints can still change feasibility."
@@ -724,6 +975,7 @@ if __name__ == "__main__":
         script,
         schema_version: "trace-ui/angr-ollvm-v1".to_string(),
         frida_seed: frida_seed_provenance,
+        flow_config,
         warnings,
     })
 }
@@ -782,6 +1034,25 @@ pub fn parse_angr_ollvm_result_bundle(bytes: &[u8]) -> Result<AngrOllvmResultBun
             "angr result contains a Frida branch probe without top-level provenance".to_string(),
         );
     }
+    if let Some(config) = &bundle.flow_config {
+        validate_flow_config(config)?;
+        if !config.enabled
+            && bundle
+                .branch_probes
+                .iter()
+                .any(|probe| probe.flow_exploration.is_some())
+        {
+            return Err(
+                "angr result contains seeded-flow paths while flowConfig is disabled".to_string(),
+            );
+        }
+    } else if bundle
+        .branch_probes
+        .iter()
+        .any(|probe| probe.flow_exploration.is_some())
+    {
+        return Err("angr result contains seeded-flow paths without flowConfig".to_string());
+    }
     for block in &bundle.blocks {
         parse_hex_addr(&block.offset)?;
         for offset in block
@@ -811,6 +1082,84 @@ pub fn parse_angr_ollvm_result_bundle(bytes: &[u8]) -> Result<AngrOllvmResultBun
             parse_hex_addr(&successor.address)?;
             if let Some(offset) = &successor.offset {
                 parse_hex_addr(offset)?;
+            }
+        }
+        if let Some(flow) = &probe.flow_exploration {
+            let config = bundle
+                .flow_config
+                .as_ref()
+                .ok_or_else(|| "angr seeded-flow result lacks flowConfig".to_string())?;
+            if !config.enabled {
+                return Err("angr seeded-flow result is disabled by flowConfig".to_string());
+            }
+            if !probe.seed_kind.as_deref().is_some_and(|kind| {
+                kind == "trace-register-snapshot" || kind.starts_with("frida-capture-")
+            }) {
+                return Err(format!(
+                    "angr seeded-flow is attached to a non-seeded probe at {}",
+                    probe.offset
+                ));
+            }
+            if flow.max_depth != config.max_depth || flow.max_states != config.max_states_per_probe
+            {
+                return Err(format!(
+                    "angr seeded-flow bounds do not match flowConfig at {}",
+                    probe.offset
+                ));
+            }
+            if flow.explored_states > flow.max_states {
+                return Err(format!(
+                    "angr seeded-flow exploredStates exceeds maxStates at {}",
+                    probe.offset
+                ));
+            }
+            if flow.paths.len() > flow.max_states as usize + 1 {
+                return Err(format!(
+                    "angr seeded-flow path count exceeds the bounded limit at {}",
+                    probe.offset
+                ));
+            }
+            for path in &flow.paths {
+                parse_hex_addr(&path.terminal_address)?;
+                if let Some(offset) = &path.terminal_offset {
+                    parse_hex_addr(offset)?;
+                }
+                if path.offsets.is_empty() {
+                    return Err(format!(
+                        "angr seeded-flow path is empty at {}",
+                        probe.offset
+                    ));
+                }
+                if path.offsets.len() > flow.max_depth as usize + 1 {
+                    return Err(format!(
+                        "angr seeded-flow path depth exceeds the configured limit at {}",
+                        probe.offset
+                    ));
+                }
+                for offset in &path.offsets {
+                    parse_hex_addr(offset)?;
+                }
+                if path.constraints.len() > 4
+                    || path
+                        .constraints
+                        .iter()
+                        .any(|constraint| constraint.len() > 500)
+                {
+                    return Err(format!(
+                        "angr seeded-flow constraints exceed the bounded limit at {}",
+                        probe.offset
+                    ));
+                }
+                if path
+                    .offsets
+                    .first()
+                    .is_some_and(|offset| !offset.eq_ignore_ascii_case(&probe.offset))
+                {
+                    return Err(format!(
+                        "angr seeded-flow path does not begin at probe offset {}",
+                        probe.offset
+                    ));
+                }
             }
         }
     }
@@ -953,6 +1302,17 @@ mod tests {
         assert!(generated.script.contains("trace-register-snapshot"));
         assert!(generated.script.contains("_apply_trace_snapshot"));
         assert!(generated.script.contains("_probe_branch_with_frida"));
+        assert!(generated.script.contains("_explore_seeded_flow"));
+        assert!(generated
+            .script
+            .contains("DEFAULT_EXPLORE_SEEDED_FLOWS = True"));
+        assert!(generated.script.contains("DEFAULT_FLOW_MAX_DEPTH = 8"));
+        assert!(generated.script.contains("DEFAULT_FLOW_MAX_STATES = 32"));
+        assert!(!generated.script.contains("__FLOW_"));
+        assert!(!generated.script.contains("__EXPLORE_FLOWS__"));
+        assert!(generated.flow_config.enabled);
+        assert_eq!(generated.flow_config.max_depth, 8);
+        assert_eq!(generated.flow_config.max_states_per_probe, 32);
         assert!(generated.script.contains("trace-ui/angr-ollvm-v1"));
         assert!(generated
             .script
@@ -1118,5 +1478,100 @@ mod tests {
             parsed.branch_probes[0].source_offset.as_deref(),
             Some("0x100")
         );
+    }
+
+    #[test]
+    fn validates_bounded_seeded_flow_results() {
+        let valid = br#"{
+          "schema":"trace-ui/angr-ollvm-v1",
+          "moduleName":"libtarget.so",
+          "binarySha256":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          "mappedBase":"0x400000",
+          "architecture":"AARCH64",
+          "angrVersion":"9.2",
+          "cfgKind":"CFGFast",
+          "flowConfig":{"enabled":true,"maxDepth":8,"maxStatesPerProbe":32},
+          "blocks":[],
+          "branchProbes":[{
+            "offset":"0x104",
+            "status":"single_satisfiable_successor_with_trace_register_snapshot",
+            "seedKind":"trace-register-snapshot",
+            "sourceSeq":4,
+            "sourceOffset":"0x104",
+            "seededRegisters":["NZCV"],
+            "observedSuccessors":["0x120"],
+            "successors":[],
+            "constraints":[],
+            "flowExploration":{
+              "maxDepth":8,
+              "maxStates":32,
+              "exploredStates":1,
+              "truncated":false,
+              "paths":[{
+                "status":"dead-end",
+                "offsets":["0x104","0x120"],
+                "jumpKinds":["Ijk_Boring"],
+                "terminalAddress":"0x400120",
+                "terminalOffset":"0x120",
+                "constraintCount":1,
+                "constraints":["x0 == 1"]
+              }],
+              "limitation":"Candidate only"
+            },
+            "limitation":"Candidate only"
+          }],
+          "warnings":[]
+        }"#;
+
+        let parsed = parse_angr_ollvm_result_bundle(valid).unwrap();
+        let flow = parsed.branch_probes[0].flow_exploration.as_ref().unwrap();
+        assert_eq!(flow.paths[0].offsets, vec!["0x104", "0x120"]);
+
+        let mut invalid: serde_json::Value = serde_json::from_slice(valid).unwrap();
+        invalid["branchProbes"][0]["flowExploration"]["exploredStates"] = serde_json::json!(33);
+        let bytes = serde_json::to_vec(&invalid).unwrap();
+        assert!(parse_angr_ollvm_result_bundle(&bytes)
+            .unwrap_err()
+            .contains("exploredStates exceeds maxStates"));
+
+        let mut missing_config: serde_json::Value = serde_json::from_slice(valid).unwrap();
+        missing_config.as_object_mut().unwrap().remove("flowConfig");
+        let bytes = serde_json::to_vec(&missing_config).unwrap();
+        assert!(parse_angr_ollvm_result_bundle(&bytes)
+            .unwrap_err()
+            .contains("without flowConfig"));
+
+        let mut blank_flow: serde_json::Value = serde_json::from_slice(valid).unwrap();
+        blank_flow["branchProbes"][0]["seedKind"] = serde_json::json!("blank-unconstrained");
+        let bytes = serde_json::to_vec(&blank_flow).unwrap();
+        assert!(parse_angr_ollvm_result_bundle(&bytes)
+            .unwrap_err()
+            .contains("non-seeded probe"));
+
+        let mut excessive_constraints: serde_json::Value = serde_json::from_slice(valid).unwrap();
+        excessive_constraints["branchProbes"][0]["flowExploration"]["paths"][0]["constraints"] =
+            serde_json::json!(["a", "b", "c", "d", "e"]);
+        let bytes = serde_json::to_vec(&excessive_constraints).unwrap();
+        assert!(parse_angr_ollvm_result_bundle(&bytes)
+            .unwrap_err()
+            .contains("constraints exceed the bounded limit"));
+    }
+
+    #[test]
+    fn rejects_unbounded_seeded_flow_generation_options() {
+        let invalid = AngrOllvmFlowConfig {
+            enabled: true,
+            max_depth: 65,
+            max_states_per_probe: 32,
+        };
+        assert!(generate_angr_ollvm_script_with_seed_and_flow(
+            &sample_report(),
+            true,
+            false,
+            None,
+            invalid,
+        )
+        .unwrap_err()
+        .contains("max depth"));
     }
 }
