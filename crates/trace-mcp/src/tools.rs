@@ -4220,7 +4220,7 @@ impl TraceToolHandler {
 
     #[tool(
         name = "compare_ollvm_traces",
-        description = "Compare two to sixteen controlled ARM64 trace scopes by module-relative offset. Reports dispatcher stability, state-register recurrence, and whether conditional branches keep one outcome or show alternate outcomes across runs. Alternate outcomes are evidence against globally opaque classification. Results remain candidate evidence and are saved to the first case session."
+        description = "Compare two to sixteen controlled ARM64 trace scopes by module-relative offset. Each case may bind the exact ELF; differing supplied SHA-256 values are rejected, and requireMatchingBinary requires complete identity coverage. Reports dispatcher stability, state-register recurrence, and branch outcomes. Alternate outcomes are evidence against globally opaque classification. Results remain candidate evidence and are saved to the first case session."
     )]
     async fn compare_ollvm_traces(
         &self,
@@ -4247,8 +4247,10 @@ impl TraceToolHandler {
                         start_seq: case.start_seq,
                         end_seq: case.end_seq,
                         include_child_calls: case.include_child_calls,
+                        static_binary_path: case.static_binary_path,
                     })
                     .collect(),
+                require_matching_binary: req.require_matching_binary,
                 max_blocks: req.max_blocks,
                 max_edges: req.max_edges,
             };
@@ -4259,6 +4261,13 @@ impl TraceToolHandler {
             for case in &report.cases {
                 push_unique(&mut evidence.modules, case.module_name.clone());
             }
+            if let Some(binary_sha256) = report.binary_sha256.as_ref() {
+                push_unique(&mut evidence.digests, binary_sha256.clone());
+            }
+            push_unique(
+                &mut evidence.operations,
+                format!("elf_identity:{}", report.binary_identity_status),
+            );
             for candidate in &report.dispatcher_stability {
                 push_unique(&mut evidence.addresses, candidate.start_offset.clone());
                 push_unique(

@@ -695,6 +695,17 @@ export interface OllvmTraceCase {
   startSeq: number | null;
   endSeq: number | null;
   includeChildCalls: boolean;
+  staticBinaryPath: string | null;
+}
+
+export interface ElfBinaryIdentity {
+  binaryPath: string;
+  binarySha256: string;
+  fileSize: number;
+  format: string;
+  architecture: string;
+  elfMachine: number;
+  buildId: string | null;
 }
 
 export interface OllvmDispatcherCaseEvidence {
@@ -751,7 +762,12 @@ export interface OllvmMultiTraceReport {
     dispatcherCandidateCount: number;
     branchProfileCount: number;
     opaqueBranchCandidateCount: number;
+    binaryIdentity: ElfBinaryIdentity | null;
   }>;
+  binaryIdentityStatus: string;
+  sameBinaryConfirmed: boolean;
+  binarySha256: string | null;
+  buildId: string | null;
   dispatcherStability: OllvmDispatcherStability[];
   branchStability: OllvmBranchStability[];
   verificationGateMet: boolean;

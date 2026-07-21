@@ -125,8 +125,9 @@ to `configure_state(state)` or merge a Frida seed before increasing confidence. 
 `$ida-ollvm-analysis`.
 
 **"Does this dispatcher or opaque branch stay stable across runs?"**
-→ open two to sixteen controlled traces, then `compare_ollvm_traces{cases:[...]}` with a scope for each
-run. Treat `alternate-outcomes-observed` as evidence against patching the branch as globally opaque.
+→ open two to sixteen controlled traces, then `compare_ollvm_traces{cases:[...]}` with a scope and
+`static_binary_path` for each run; enable `require_matching_binary:true`. Differing supplied ELF SHA-256
+values are rejected. Treat `alternate-outcomes-observed` as evidence against patching the branch as globally opaque.
 `stable-single-outcome-across-runs` raises confidence only to Candidate/Related because untested states
 and unexecuted paths remain unknown.
 

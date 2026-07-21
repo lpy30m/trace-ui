@@ -50,6 +50,7 @@ pub use query::crypto_semantic_verify::{
     validate_pkcs7, verify_aes_cbc, verify_aes_ctr, verify_aes_ecb, verify_aes_gcm, AesDirection,
     AesGcmSemanticVerification, AesSemanticVerification, SemanticVerificationStatus,
 };
+pub use query::elf_identity::{inspect_elf_binary, ElfBinaryIdentity};
 pub use query::evidence_score::{
     score_evidence, EvidenceAssessment, EvidenceScoreFactor, EvidenceScoreSignal,
 };

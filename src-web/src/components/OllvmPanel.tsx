@@ -26,6 +26,7 @@ interface EditableOllvmCase {
   nodeId: string;
   startSeq: string;
   endSeq: string;
+  staticBinaryPath: string;
 }
 
 const buttonStyle: React.CSSProperties = {
@@ -82,6 +83,7 @@ export default function OllvmPanel({ sessionId, onJumpToSeq }: Props) {
   const [report, setReport] = useState<OllvmReport | null>(null);
   const [comparison, setComparison] = useState<OllvmMultiTraceReport | null>(null);
   const [compareCases, setCompareCases] = useState<EditableOllvmCase[]>([]);
+  const [requireMatchingBinary, setRequireMatchingBinary] = useState(true);
   const [comparing, setComparing] = useState(false);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -170,6 +172,7 @@ export default function OllvmPanel({ sessionId, onJumpToSeq }: Props) {
           nodeId: current ? nodeId : "",
           startSeq: current ? startSeq : "",
           endSeq: current ? endSeq : "",
+          staticBinaryPath: "",
         };
       }));
     } catch (reason) {
@@ -182,8 +185,25 @@ export default function OllvmPanel({ sessionId, onJumpToSeq }: Props) {
   }, [refreshCompareSessions, section]);
 
   const selectedCompareCases = useMemo(() => compareCases.filter(item => item.selected), [compareCases]);
+  const compareBinaryReady = !requireMatchingBinary || selectedCompareCases.every(item => item.staticBinaryPath.trim());
+  const selectElfForSelectedCases = useCallback(async () => {
+    if (selectedCompareCases.length === 0) return;
+    const { open } = await import("@tauri-apps/plugin-dialog");
+    const selected = await open({
+      multiple: false,
+      directory: false,
+      title: "Select exact ELF/shared object for selected OLLVM runs",
+      filters: [{ name: "ELF/shared object", extensions: ["so", "elf", "bin"] }],
+    });
+    if (typeof selected !== "string") return;
+    const selectedIds = new Set(selectedCompareCases.map(item => item.sessionId));
+    setCompareCases(items => items.map(item => selectedIds.has(item.sessionId)
+      ? { ...item, staticBinaryPath: selected }
+      : item));
+    setComparison(null);
+  }, [selectedCompareCases]);
   const compareRuns = useCallback(async () => {
-    if (selectedCompareCases.length < 2) return;
+    if (selectedCompareCases.length < 2 || !compareBinaryReady) return;
     setComparing(true);
     setError(null);
     try {
@@ -197,7 +217,9 @@ export default function OllvmPanel({ sessionId, onJumpToSeq }: Props) {
             startSeq: optionalNumber(item.startSeq),
             endSeq: optionalNumber(item.endSeq),
             includeChildCalls,
+            staticBinaryPath: item.staticBinaryPath.trim() || null,
           })),
+          requireMatchingBinary,
           maxBlocks: 1_000,
           maxEdges: 3_000,
         },
@@ -209,7 +231,7 @@ export default function OllvmPanel({ sessionId, onJumpToSeq }: Props) {
     } finally {
       setComparing(false);
     }
-  }, [includeChildCalls, moduleName, selectedCompareCases]);
+  }, [compareBinaryReady, includeChildCalls, moduleName, requireMatchingBinary, selectedCompareCases]);
 
   const updateCompareCase = (index: number, patch: Partial<EditableOllvmCase>) => {
     setCompareCases(items => items.map((item, itemIndex) => itemIndex === index ? { ...item, ...patch } : item));
@@ -545,8 +567,8 @@ export default function OllvmPanel({ sessionId, onJumpToSeq }: Props) {
           <div style={{ color: "var(--text-secondary)", marginBottom: 9 }}>
             Compare the same module/function across controlled runs. A branch that shows both outcomes is evidence against treating it as globally opaque; stable single-outcome results remain candidates only.
           </div>
-          <div style={{ display: "grid", gridTemplateColumns: "26px minmax(150px, 1fr) minmax(120px, 220px) 90px 90px 90px", gap: 5, alignItems: "center" }}>
-            <span /><strong>Open trace</strong><strong>Case label</strong><strong>Node ID</strong><strong>Start seq</strong><strong>End seq</strong>
+          <div style={{ display: "grid", gridTemplateColumns: "26px minmax(140px, 1fr) minmax(110px, 180px) 80px 80px 80px minmax(190px, 1.4fr)", gap: 5, alignItems: "center" }}>
+            <span /><strong>Open trace</strong><strong>Case label</strong><strong>Node ID</strong><strong>Start seq</strong><strong>End seq</strong><strong>Exact ELF</strong>
             {compareCases.map((item, index) => (
               <React.Fragment key={item.sessionId}>
                 <input type="checkbox" checked={item.selected} onChange={event => updateCompareCase(index, { selected: event.target.checked })} />
@@ -555,25 +577,38 @@ export default function OllvmPanel({ sessionId, onJumpToSeq }: Props) {
                 <input style={inputStyle} value={item.nodeId} onChange={event => updateCompareCase(index, { nodeId: event.target.value })} placeholder="optional" />
                 <input style={inputStyle} value={item.startSeq} onChange={event => updateCompareCase(index, { startSeq: event.target.value })} placeholder="auto" />
                 <input style={inputStyle} value={item.endSeq} onChange={event => updateCompareCase(index, { endSeq: event.target.value })} placeholder="auto" />
+                <input style={inputStyle} value={item.staticBinaryPath} onChange={event => { updateCompareCase(index, { staticBinaryPath: event.target.value }); setComparison(null); }} placeholder="required by default" title={item.staticBinaryPath} />
               </React.Fragment>
             ))}
           </div>
           <div style={{ display: "flex", gap: 6, marginTop: 9 }}>
             <button type="button" style={buttonStyle} onClick={refreshCompareSessions}>Refresh sessions</button>
+            <button type="button" style={buttonStyle} disabled={selectedCompareCases.length === 0} onClick={selectElfForSelectedCases}>Apply ELF to selected</button>
+            <label style={{ display: "flex", alignItems: "center", gap: 4 }}>
+              <input type="checkbox" checked={requireMatchingBinary} onChange={event => { setRequireMatchingBinary(event.target.checked); setComparison(null); }} />
+              Require exact SHA-256 match
+            </label>
             <button
               type="button"
-              style={{ ...buttonStyle, background: "var(--btn-primary)", color: "#fff", border: "none", opacity: selectedCompareCases.length < 2 || comparing ? 0.6 : 1 }}
-              disabled={selectedCompareCases.length < 2 || comparing}
+              style={{ ...buttonStyle, background: "var(--btn-primary)", color: "#fff", border: "none", opacity: selectedCompareCases.length < 2 || !compareBinaryReady || comparing ? 0.6 : 1 }}
+              disabled={selectedCompareCases.length < 2 || !compareBinaryReady || comparing}
               onClick={compareRuns}
             >
               {comparing ? "Comparing..." : `Compare ${selectedCompareCases.length} runs`}
             </button>
             <span style={{ alignSelf: "center", color: "var(--text-tertiary)" }}>Module: {moduleName.trim() || "infer per run"}</span>
           </div>
+          {!compareBinaryReady && <div style={{ marginTop: 7, color: "#d29922" }}>Select the exact ELF for every selected run, or explicitly disable the matching requirement.</div>}
           {comparison && (
             <div style={{ marginTop: 12, borderTop: "1px solid var(--border-color)" }}>
               <div style={{ padding: "8px 0", color: "var(--text-secondary)" }}>
                 {comparison.cases.length} runs · {comparison.dispatcherStability.length} dispatcher offsets · {comparison.branchStability.length} conditional branch offsets · verification gate remains closed
+              </div>
+              <div style={{ padding: 8, marginBottom: 8, border: `1px solid ${comparison.sameBinaryConfirmed ? "#2da44e" : "#d29922"}`, borderRadius: 4, background: "var(--bg-secondary)" }}>
+                <strong>{comparison.binaryIdentityStatus}</strong>
+                {comparison.binarySha256 && <code style={{ display: "block", marginTop: 4, overflowWrap: "anywhere" }}>SHA-256 {comparison.binarySha256}</code>}
+                {comparison.buildId && <code style={{ display: "block", marginTop: 3 }}>Build ID {comparison.buildId}</code>}
+                <div style={{ marginTop: 4, color: "var(--text-tertiary)" }}>Identity confirmation applies to the selected ELF files; OLLVM classifications remain Candidate/Related.</div>
               </div>
               <h4 style={{ margin: "8px 0" }}>Dispatcher stability</h4>
               {comparison.dispatcherStability.map(candidate => (

@@ -1024,12 +1024,19 @@ pub struct CompareOllvmTraceCaseRequest {
     pub end_seq: Option<u32>,
     #[serde(default)]
     pub include_child_calls: bool,
+    #[schemars(description = "Optional path to the exact ELF/shared object used by this run")]
+    pub static_binary_path: Option<String>,
 }
 
 #[derive(Debug, Deserialize, Serialize, JsonSchema)]
 pub struct CompareOllvmTracesRequest {
     #[schemars(description = "Two to sixteen controlled trace cases")]
     pub cases: Vec<CompareOllvmTraceCaseRequest>,
+    #[schemars(
+        description = "Require every case to provide a static ELF and reject comparison unless all SHA-256 values match"
+    )]
+    #[serde(default)]
+    pub require_matching_binary: bool,
     #[serde(default = "default_ollvm_blocks")]
     pub max_blocks: u32,
     #[serde(default = "default_ollvm_edges")]
@@ -1360,5 +1367,7 @@ mod tests {
         assert_eq!(request.max_edges, 3_000);
         assert_eq!(request.cases.len(), 2);
         assert!(!request.cases[0].include_child_calls);
+        assert!(request.cases[0].static_binary_path.is_none());
+        assert!(!request.require_matching_binary);
     }
 }

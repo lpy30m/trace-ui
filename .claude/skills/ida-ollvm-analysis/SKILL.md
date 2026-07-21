@@ -25,7 +25,9 @@ Use `mcp__trace-ui__analyze_ollvm`, `mcp__trace-ui__compare_ollvm_traces`, `mcp_
    - Run `generate_angr_ollvm_script` for manual execution in a separate Python/angr environment
      against the exact ELF/shared object. Import `trace-ui/angr-ollvm-v1` JSON with
      `inspect_angr_ollvm_results`.
-6. For controlled runs, call `compare_ollvm_traces` with two to sixteen case-specific scopes. Prioritize
+6. For controlled runs, call `compare_ollvm_traces` with two to sixteen case-specific scopes and the
+   exact `static_binary_path` for every case. Enable `require_matching_binary:true`; differing SHA-256
+   values must stop the comparison. Prioritize
    `alternate-outcomes-observed` as evidence against a globally opaque classification; stable single
    outcomes remain candidates.
 7. Reconcile dynamic observed successors with angr static successors. Investigate unobserved-static
@@ -49,7 +51,9 @@ Use `mcp__trace-ui__analyze_ollvm`, `mcp__trace-ui__compare_ollvm_traces`, `mcp_
 - The generated angr bridge emits both blank-state probes and trace-register-seeded probes when branch
   snapshots exist. Neither proves real-entry reachability; trace-seeded probes may still lack memory,
   SIMD, flags, or other architectural state.
-- Require the exact ELF/shared object and record its SHA-256 before comparing module offsets.
+- Require the exact ELF/shared object for every case and enable `require_matching_binary`. A matching
+  supplied SHA-256 confirms the selected files are identical, not that the trace format cryptographically
+  attests which image was mapped at runtime.
 - Excluding child call ranges usually produces a cleaner function-local CFG. Include them only when the investigation explicitly needs interprocedural flow.
 - Do not mark OLLVM findings `Verified` solely from structural evidence.
 

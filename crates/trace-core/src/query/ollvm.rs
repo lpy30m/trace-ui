@@ -2,6 +2,7 @@ use std::collections::BTreeMap;
 
 use serde::{Deserialize, Serialize};
 
+use crate::query::elf_identity::ElfBinaryIdentity;
 use crate::query::evidence_score::EvidenceAssessment;
 use crate::utils::parse_hex_addr;
 
@@ -222,12 +223,16 @@ pub struct OllvmTraceCase {
     pub end_seq: Option<u32>,
     #[serde(default)]
     pub include_child_calls: bool,
+    #[serde(default)]
+    pub static_binary_path: Option<String>,
 }
 
 #[derive(Clone, Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct OllvmMultiTraceRequest {
     pub cases: Vec<OllvmTraceCase>,
+    #[serde(default)]
+    pub require_matching_binary: bool,
     #[serde(default = "default_max_blocks")]
     pub max_blocks: u32,
     #[serde(default = "default_max_edges")]
@@ -245,6 +250,7 @@ pub struct OllvmCaseSummary {
     pub dispatcher_candidate_count: u32,
     pub branch_profile_count: u32,
     pub opaque_branch_candidate_count: u32,
+    pub binary_identity: Option<ElfBinaryIdentity>,
 }
 
 #[derive(Clone, Debug, Serialize)]
@@ -303,6 +309,10 @@ pub struct OllvmBranchStability {
 pub struct OllvmMultiTraceReport {
     pub schema_version: String,
     pub cases: Vec<OllvmCaseSummary>,
+    pub binary_identity_status: String,
+    pub same_binary_confirmed: bool,
+    pub binary_sha256: Option<String>,
+    pub build_id: Option<String>,
     pub dispatcher_stability: Vec<OllvmDispatcherStability>,
     pub branch_stability: Vec<OllvmBranchStability>,
     pub verification_gate_met: bool,

@@ -35,11 +35,12 @@
 - [x] Frida Capture → angr State Seed：导入用户手动捕获的 registers/buffers/call metadata，生成 module-aware `configure_state(state)`，保持运行和 Hook 由用户控制。
 - [x] Frida Capture → Crypto Materials：按 callId/label/phase 索引密码材料，并确定性验证完整捕获的 MD5/SHA/HMAC/PBKDF2 公式。
 - [x] OLLVM State / Multi-run：重建 dispatcher register snapshots/transitions，保存 branch-time register snapshots，angr 同时生成 blank/trace-seeded probe，并比较 2–16 个受控运行的分支结果。
+- [x] OLLVM Exact ELF Identity：多运行 case 可绑定 ELF，校验 SHA-256/Build ID，拒绝不同二进制之间的 module-offset 对齐。
 
 ## 3. 当前限制
 
 - [x] 已支持从 Frida 捕获导出 X0-X7、可选 SP/LR 与 memory state seed；capture point 与 symbolic address 是否语义一致仍需人工核验。
-- [ ] 将 OLLVM 多运行矩阵进一步绑定 exact ELF Build ID/SHA-256，并增加跨版本 dispatcher state mapping。
+- [ ] 增加显式的跨版本 dispatcher state mapping；不同 ELF 版本必须作为独立版本变量，不能直接复用同一 offset 矩阵。
 
 - [x] 分析记录已随 Trace 内容校验持久化，应用重启后可以恢复。
 - [x] Crypto、正向污点和自动调查支持统一后台任务、进度与取消。

@@ -1,6 +1,7 @@
 use std::collections::{BTreeMap, HashMap, HashSet};
 
 use crate::error::{Result, TraceError};
+use crate::query::elf_identity::{inspect_elf_binary, ElfBinaryIdentity};
 use crate::query::evidence_score::{score_evidence, EvidenceScoreSignal};
 use crate::query::ollvm::{
     BranchStateObservation, DispatcherCandidate, DispatcherStateSnapshot,
@@ -432,9 +433,11 @@ impl TraceEngine {
                 "OLLVM comparison requires two to sixteen trace cases".to_string(),
             ));
         }
+        let require_matching_binary = request.require_matching_binary;
         let mut labels = HashSet::new();
-        let mut cases = Vec::with_capacity(request.cases.len());
-        for case in request.cases {
+        let mut prepared_cases = Vec::with_capacity(request.cases.len());
+        let mut binary_identity_cache: HashMap<String, ElfBinaryIdentity> = HashMap::new();
+        for mut case in request.cases {
             let label = case.label.trim();
             if label.is_empty() {
                 return Err(TraceError::InvalidArgument(
@@ -446,6 +449,60 @@ impl TraceEngine {
                     "Duplicate OLLVM comparison case label: {label}"
                 )));
             }
+            case.static_binary_path = case
+                .static_binary_path
+                .as_deref()
+                .map(str::trim)
+                .filter(|path| !path.is_empty())
+                .map(str::to_string);
+            let binary_identity = if let Some(path) = case.static_binary_path.as_deref() {
+                let identity = if let Some(identity) = binary_identity_cache.get(path) {
+                    identity.clone()
+                } else {
+                    let identity = inspect_elf_binary(path).map_err(|error| {
+                        TraceError::InvalidArgument(format!(
+                            "OLLVM comparison case '{}' ELF identity failed: {error}",
+                            case.label
+                        ))
+                    })?;
+                    binary_identity_cache.insert(path.to_string(), identity.clone());
+                    identity
+                };
+                if identity.elf_machine != 183 {
+                    return Err(TraceError::InvalidArgument(format!(
+                        "OLLVM comparison case '{}' selected ELF is {}, not AArch64",
+                        case.label, identity.architecture
+                    )));
+                }
+                Some(identity)
+            } else {
+                None
+            };
+            prepared_cases.push((case, binary_identity));
+        }
+        let provided_identity_count = prepared_cases
+            .iter()
+            .filter(|(_, identity)| identity.is_some())
+            .count();
+        if require_matching_binary && provided_identity_count != prepared_cases.len() {
+            return Err(TraceError::InvalidArgument(format!(
+                "requireMatchingBinary is enabled, but only {provided_identity_count}/{} cases provide staticBinaryPath",
+                prepared_cases.len()
+            )));
+        }
+        let supplied_hashes = prepared_cases
+            .iter()
+            .filter_map(|(_, identity)| identity.as_ref().map(|identity| &identity.binary_sha256))
+            .collect::<HashSet<_>>();
+        if supplied_hashes.len() > 1 {
+            return Err(TraceError::InvalidArgument(format!(
+                "OLLVM comparison refused: supplied ELF files have {} distinct SHA-256 values",
+                supplied_hashes.len()
+            )));
+        }
+
+        let mut cases = Vec::with_capacity(prepared_cases.len());
+        for (case, binary_identity) in prepared_cases {
             let report = self.analyze_ollvm(
                 &case.session_id,
                 OllvmAnalysisOptions {
@@ -458,9 +515,9 @@ impl TraceEngine {
                     max_edges: request.max_edges,
                 },
             )?;
-            cases.push((case, report));
+            cases.push((case, report, binary_identity));
         }
-        compare_ollvm_reports(cases).map_err(TraceError::InvalidArgument)
+        compare_ollvm_reports(cases, require_matching_binary).map_err(TraceError::InvalidArgument)
     }
 
     fn infer_ollvm_module(
@@ -1228,24 +1285,70 @@ fn build_opaque_candidates(profiles: &[DynamicBranchProfile]) -> Vec<OpaqueBranc
 }
 
 fn compare_ollvm_reports(
-    cases: Vec<(OllvmTraceCase, OllvmReport)>,
+    cases: Vec<(OllvmTraceCase, OllvmReport, Option<ElfBinaryIdentity>)>,
+    require_matching_binary: bool,
 ) -> std::result::Result<OllvmMultiTraceReport, String> {
     let Some(first_module) = cases
         .first()
-        .map(|(_, report)| report.scope.module_name.clone())
+        .map(|(_, report, _)| report.scope.module_name.clone())
     else {
         return Err("OLLVM comparison requires at least one case".to_string());
     };
     if cases
         .iter()
-        .any(|(_, report)| !report.scope.module_name.eq_ignore_ascii_case(&first_module))
+        .any(|(_, report, _)| !report.scope.module_name.eq_ignore_ascii_case(&first_module))
     {
         return Err("OLLVM comparison cases must analyze the same module basename".to_string());
     }
 
+    let provided_identity_count = cases
+        .iter()
+        .filter(|(_, _, identity)| identity.is_some())
+        .count();
+    if require_matching_binary && provided_identity_count != cases.len() {
+        return Err(format!(
+            "requireMatchingBinary is enabled, but only {provided_identity_count}/{} cases provide staticBinaryPath",
+            cases.len()
+        ));
+    }
+    let known_binary_hashes = cases
+        .iter()
+        .filter_map(|(_, _, identity)| {
+            identity
+                .as_ref()
+                .map(|identity| identity.binary_sha256.to_ascii_lowercase())
+        })
+        .collect::<HashSet<_>>();
+    if known_binary_hashes.len() > 1 {
+        return Err(format!(
+            "OLLVM comparison refused: supplied ELF files have {} distinct SHA-256 values",
+            known_binary_hashes.len()
+        ));
+    }
+    let same_binary_confirmed = provided_identity_count == cases.len();
+    let binary_identity_status = if same_binary_confirmed {
+        "confirmed-same-supplied-elf"
+    } else if provided_identity_count > 0 {
+        "incomplete-supplied-elf-identity"
+    } else {
+        "unconfirmed-no-static-elf"
+    }
+    .to_string();
+    let binary_sha256 = same_binary_confirmed
+        .then(|| known_binary_hashes.iter().next().cloned())
+        .flatten();
+    let build_id = same_binary_confirmed
+        .then(|| {
+            cases
+                .first()
+                .and_then(|(_, _, identity)| identity.as_ref())
+                .and_then(|identity| identity.build_id.clone())
+        })
+        .flatten();
+
     let summaries = cases
         .iter()
-        .map(|(case, report)| OllvmCaseSummary {
+        .map(|(case, report, binary_identity)| OllvmCaseSummary {
             session_id: case.session_id.clone(),
             label: case.label.clone(),
             module_name: report.scope.module_name.clone(),
@@ -1254,11 +1357,12 @@ fn compare_ollvm_reports(
             dispatcher_candidate_count: report.dispatcher_candidates.len() as u32,
             branch_profile_count: report.branch_profiles.len() as u32,
             opaque_branch_candidate_count: report.opaque_branch_candidates.len() as u32,
+            binary_identity: binary_identity.clone(),
         })
         .collect();
 
     let mut dispatcher_offsets = HashSet::new();
-    for (_, report) in &cases {
+    for (_, report, _) in &cases {
         dispatcher_offsets.extend(
             report
                 .dispatcher_candidates
@@ -1270,7 +1374,7 @@ fn compare_ollvm_reports(
     for offset in dispatcher_offsets {
         let mut evidence = Vec::new();
         let mut candidate_register_sets = Vec::new();
-        for (case, report) in &cases {
+        for (case, report, _) in &cases {
             let block = report
                 .blocks
                 .iter()
@@ -1425,7 +1529,7 @@ fn compare_ollvm_reports(
     });
 
     let mut branch_offsets = HashSet::new();
-    for (_, report) in &cases {
+    for (_, report, _) in &cases {
         branch_offsets.extend(
             report
                 .branch_profiles
@@ -1440,7 +1544,7 @@ fn compare_ollvm_reports(
         let mut all_single_outcome = true;
         let mut repeated_in_all_present = true;
         let mut condition_source_runs = 0u32;
-        for (case, report) in &cases {
+        for (case, report, _) in &cases {
             let profile = report
                 .branch_profiles
                 .iter()
@@ -1591,20 +1695,37 @@ fn compare_ollvm_reports(
     });
 
     Ok(OllvmMultiTraceReport {
-        schema_version: "trace-ui/ollvm-multitrace-v1".to_string(),
+        schema_version: "trace-ui/ollvm-multitrace-v2".to_string(),
         cases: summaries,
+        binary_identity_status: binary_identity_status.clone(),
+        same_binary_confirmed,
+        binary_sha256,
+        build_id,
         dispatcher_stability,
         branch_stability,
         verification_gate_met: false,
         limitations: vec![
-            "Module-relative offsets are comparable only when every trace came from the same binary build; this report does not prove Build ID or SHA-256 equality."
-                .to_string(),
+            if same_binary_confirmed {
+                "Every selected static ELF has the same exact SHA-256. This confirms the user-supplied files are identical, but the trace format does not cryptographically attest that the selected ELF was the image mapped at runtime."
+                    .to_string()
+            } else {
+                format!(
+                    "Static ELF identity is {binary_identity_status}; module-relative alignment remains unconfirmed until every case supplies the matching ELF."
+                )
+            },
             "Only executed blocks, edges, and branch outcomes are compared. Missing coverage is not evidence of infeasibility."
                 .to_string(),
             "Cross-run dispatcher and opaque-branch classifications remain Candidate/Related evidence."
                 .to_string(),
         ],
         next_steps: vec![
+            if same_binary_confirmed {
+                "Keep the confirmed ELF SHA-256 with exported IDA/angr evidence and reject results produced against another binary hash."
+                    .to_string()
+            } else {
+                "Select the matching ELF for every run and enable requireMatchingBinary before treating module-relative offsets as cross-run evidence."
+                    .to_string()
+            },
             "Repeat with controlled input groups that exercise different state values and inspect branches classified as alternate-outcomes-observed."
                 .to_string(),
             "Run the generated angr bridge manually with trace-seeded branch snapshots and compare the exact binary SHA-256."
@@ -1734,18 +1855,39 @@ mod tests {
             start_seq: None,
             end_seq: None,
             include_child_calls: false,
+            static_binary_path: None,
+        }
+    }
+
+    fn binary_identity(hash: char, build_id: Option<&str>) -> ElfBinaryIdentity {
+        ElfBinaryIdentity {
+            binary_path: "libtarget.so".to_string(),
+            binary_sha256: std::iter::repeat_n(hash, 64).collect(),
+            file_size: 4096,
+            format: "ELF64 little-endian".to_string(),
+            architecture: "AArch64".to_string(),
+            elf_machine: 183,
+            build_id: build_id.map(str::to_string),
         }
     }
 
     #[test]
     fn multirun_comparison_rejects_global_opaque_claim_after_alternate_outcomes() {
-        let compared = compare_ollvm_reports(vec![
-            (trace_case("a", "taken"), report_with_branch("a", 3, 0)),
-            (
-                trace_case("b", "fallthrough"),
-                report_with_branch("b", 0, 3),
-            ),
-        ])
+        let compared = compare_ollvm_reports(
+            vec![
+                (
+                    trace_case("a", "taken"),
+                    report_with_branch("a", 3, 0),
+                    None,
+                ),
+                (
+                    trace_case("b", "fallthrough"),
+                    report_with_branch("b", 0, 3),
+                    None,
+                ),
+            ],
+            false,
+        )
         .unwrap();
         let branch = &compared.branch_stability[0];
         assert!(branch.alternate_outcomes_observed);
@@ -1757,15 +1899,100 @@ mod tests {
 
     #[test]
     fn multirun_stable_single_outcome_remains_candidate_only() {
-        let compared = compare_ollvm_reports(vec![
-            (trace_case("a", "run-a"), report_with_branch("a", 3, 0)),
-            (trace_case("b", "run-b"), report_with_branch("b", 4, 0)),
-        ])
+        let compared = compare_ollvm_reports(
+            vec![
+                (
+                    trace_case("a", "run-a"),
+                    report_with_branch("a", 3, 0),
+                    None,
+                ),
+                (
+                    trace_case("b", "run-b"),
+                    report_with_branch("b", 4, 0),
+                    None,
+                ),
+            ],
+            false,
+        )
         .unwrap();
         let branch = &compared.branch_stability[0];
         assert!(branch.stable_single_outcome);
         assert!(!branch.alternate_outcomes_observed);
         assert_eq!(branch.classification, "stable-single-outcome-across-runs");
         assert_ne!(branch.assessment.grade, "verified");
+    }
+
+    #[test]
+    fn multirun_confirms_identical_supplied_elf_hashes_without_verifying_ollvm() {
+        let compared = compare_ollvm_reports(
+            vec![
+                (
+                    trace_case("a", "run-a"),
+                    report_with_branch("a", 3, 0),
+                    Some(binary_identity('a', Some("build-a"))),
+                ),
+                (
+                    trace_case("b", "run-b"),
+                    report_with_branch("b", 4, 0),
+                    Some(binary_identity('a', Some("build-a"))),
+                ),
+            ],
+            true,
+        )
+        .unwrap();
+        assert!(compared.same_binary_confirmed);
+        assert_eq!(
+            compared.binary_identity_status,
+            "confirmed-same-supplied-elf"
+        );
+        let expected_sha256 = "a".repeat(64);
+        assert_eq!(
+            compared.binary_sha256.as_deref(),
+            Some(expected_sha256.as_str())
+        );
+        assert_eq!(compared.build_id.as_deref(), Some("build-a"));
+        assert!(!compared.verification_gate_met);
+    }
+
+    #[test]
+    fn multirun_rejects_different_supplied_elf_hashes() {
+        let error = compare_ollvm_reports(
+            vec![
+                (
+                    trace_case("a", "run-a"),
+                    report_with_branch("a", 3, 0),
+                    Some(binary_identity('a', None)),
+                ),
+                (
+                    trace_case("b", "run-b"),
+                    report_with_branch("b", 4, 0),
+                    Some(binary_identity('b', None)),
+                ),
+            ],
+            false,
+        )
+        .unwrap_err();
+        assert!(error.contains("distinct SHA-256"));
+    }
+
+    #[test]
+    fn multirun_requires_every_elf_when_policy_is_enabled() {
+        let error = compare_ollvm_reports(
+            vec![
+                (
+                    trace_case("a", "run-a"),
+                    report_with_branch("a", 3, 0),
+                    Some(binary_identity('a', None)),
+                ),
+                (
+                    trace_case("b", "run-b"),
+                    report_with_branch("b", 4, 0),
+                    None,
+                ),
+            ],
+            true,
+        )
+        .unwrap_err();
+        assert!(error.contains("requireMatchingBinary"));
     }
 }

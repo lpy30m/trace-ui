@@ -96,8 +96,10 @@ Line numbers in taint `@LINE` specs are **1-based**; `start_seq`/`end_seq`/`seq`
   and bounded branch register observations reconstructed from trace checkpoints. Results cover executed
   instructions only and are not proof of obfuscation.
 - **compare_ollvm_traces** `{cases:[{session_id,label,node_id?,module_name?,start_seq?,end_seq?,
-  include_child_calls?}],max_blocks?=1000,max_edges?=3000}` compares two to sixteen controlled runs by
-  module-relative offset. It reports dispatcher/state-register stability and classifies branch outcomes.
+  include_child_calls?,static_binary_path?}],require_matching_binary?=false,max_blocks?=1000,max_edges?=3000}`
+  compares two to sixteen controlled runs by module-relative offset. Supplied ELF hashes must agree;
+  `require_matching_binary:true` also requires every case to supply an ELF. The report records identity
+  status, SHA-256, and GNU Build ID when available, then reports dispatcher/state-register stability and branch outcomes.
   `alternate-outcomes-observed` is evidence against a global opaque claim; stable single outcomes remain
   Candidate/Related. The result is saved to the first case session.
 - **generate_ida_ollvm_script** accepts the same scope plus `ida_image_base?` and
