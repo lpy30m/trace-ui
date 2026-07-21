@@ -95,7 +95,8 @@ diffs functions/branches/instructions/memory-access-sites by module-relative off
 clusters relocated functions by normalized executed shape. Compare left/right offsets and sample seqs.
 
 **"Generate a Frida hook for this function or crypto lead."**
-→ `generate_frida_hook` with a module export or module-relative offset and explicit X0-X7 capture specs.
+→ For a common OpenSSL/BoringSSL or Apple CommonCrypto call, inspect `list_frida_hook_recipes` first;
+otherwise use `generate_frida_hook` with a module export or module-relative offset and explicit X0-X7 capture specs.
 The output targets Frida 16.x and emits `trace-ui/frida-hook-v1`. Trace UI only generates/saves the
 script. The user manually attaches/spawns/loads/runs it. Never claim runtime evidence from generation.
 For detailed capture selection rules, use `$frida-hook-generation`.
@@ -180,7 +181,7 @@ recomputes to a known digest.
 | Taint | `taint_analysis` (backward), `forward_taint_analysis`, `get_tainted_lines`, `start_forward_taint_analysis` |
 | Functions | `analyze_function` (node_id / name / list) |
 | Diff | `compare_traces`, `start_trace_diff` |
-| Frida | `generate_frida_hook`, `inspect_frida_capture`, `analyze_frida_crypto_materials`, `generate_angr_state_seed` (user executes hooks manually) |
+| Frida | `list_frida_hook_recipes`, `generate_frida_hook`, `inspect_frida_capture`, `analyze_frida_crypto_materials`, `generate_angr_state_seed` (user executes hooks manually) |
 | IDA / angr / OLLVM | `analyze_ollvm`, `compare_ollvm_traces`, `generate_ida_ollvm_script`, `inspect_ida_annotations`, `generate_angr_ollvm_script`, `inspect_angr_ollvm_results` |
 | Orchestration | `auto_investigate`, `start_auto_investigation`, `start_crypto_investigation` |
 | Evidence store | `list_analyses`, `get_analysis`, `compare_analyses`, `export_analysis_report`, `delete_analysis` |

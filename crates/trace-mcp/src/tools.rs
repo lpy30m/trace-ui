@@ -14,16 +14,16 @@ use trace_core::{
     analyze_frida_crypto_materials as build_frida_crypto_materials, api_types::TraceLine,
     apply_resource_validation, classify_flow_endpoints, generate_angr_ollvm_script,
     generate_angr_state_seed as build_angr_state_seed, generate_frida_hook as build_frida_hook,
-    generate_ida_ollvm_script, parse_angr_ollvm_result_bundle, parse_frida_capture_bundle,
-    parse_hex_addr, parse_ida_annotation_bundle, score_evidence, summarize_dependency_graph,
-    AnalysisEvidence, BuildOptions, CryptoFunctionsOptions, CryptoMaterialKind,
-    CryptoMaterialMultiTraceRequest, CryptoMaterialOptions, CryptoMaterialTraceCase,
-    DepTreeOptions, EvidenceScoreSignal, ForwardSliceOptions, FridaArgumentKind, FridaArgumentSpec,
-    FridaCaptureDirection, FridaHookRequest, FridaStalkerMode, HashAlgorithm, HashMatchRequest,
-    HashTransformOptions, OllvmAnalysisOptions, OllvmMultiTraceRequest, OllvmTraceCase,
-    SearchOptions, SliceOptions, StringQueryOptions, TraceDiffOptions, TraceEngine, ValueEndian,
-    ValueSearchKind, ValueSearchRequest, WhiteBoxMultiTraceRequest, WhiteBoxOptions,
-    WhiteBoxTraceCaseRequest,
+    generate_ida_ollvm_script, list_frida_hook_recipes as build_frida_hook_recipes,
+    parse_angr_ollvm_result_bundle, parse_frida_capture_bundle, parse_hex_addr,
+    parse_ida_annotation_bundle, score_evidence, summarize_dependency_graph, AnalysisEvidence,
+    BuildOptions, CryptoFunctionsOptions, CryptoMaterialKind, CryptoMaterialMultiTraceRequest,
+    CryptoMaterialOptions, CryptoMaterialTraceCase, DepTreeOptions, EvidenceScoreSignal,
+    ForwardSliceOptions, FridaArgumentKind, FridaArgumentSpec, FridaCaptureDirection,
+    FridaHookRequest, FridaStalkerMode, HashAlgorithm, HashMatchRequest, HashTransformOptions,
+    OllvmAnalysisOptions, OllvmMultiTraceRequest, OllvmTraceCase, SearchOptions, SliceOptions,
+    StringQueryOptions, TraceDiffOptions, TraceEngine, ValueEndian, ValueSearchKind,
+    ValueSearchRequest, WhiteBoxMultiTraceRequest, WhiteBoxOptions, WhiteBoxTraceCaseRequest,
 };
 
 fn decode_hex_bytes(value: &str) -> Result<Vec<u8>, String> {
@@ -4049,8 +4049,16 @@ impl TraceToolHandler {
     }
 
     #[tool(
+        name = "list_frida_hook_recipes",
+        description = "List audited Frida 16.x capture recipes for common OpenSSL/BoringSSL and Apple CommonCrypto digest, HMAC, PBKDF2, EVP, and CCCrypt call shapes. Recipes only prefill bounded script-generation requests; the user still runs Frida manually, and ABI/algorithm warnings remain explicit."
+    )]
+    fn list_frida_hook_recipes(&self) -> String {
+        json(&build_frida_hook_recipes())
+    }
+
+    #[tool(
         name = "generate_frida_hook",
-        description = "Generate a bounded ARM64 Frida 16.x Interceptor hook for a module export or module-relative offset. Captures selected X0-X7 arguments, SP/LR/PC, return value, optional backtrace, and optional Stalker calls/blocks/instructions. The script emits structured trace-ui/frida-hook-v1 send() messages and is intended to be loaded manually by the user."
+        description = "Generate a bounded ARM64 Frida 16.x Interceptor hook for a module export or module-relative offset. Captures selected X0-X7 arguments, fixed/register/leave-time pointer-derived lengths, SP/LR/PC, return value, optional backtrace, and optional Stalker calls/blocks/instructions. The script emits structured trace-ui/frida-hook-v1 send() messages and is intended to be loaded manually by the user."
     )]
     fn generate_frida_hook(
         &self,
@@ -4081,6 +4089,7 @@ impl TraceToolHandler {
                     },
                     length: argument.length,
                     length_arg: argument.length_arg,
+                    length_pointer_arg: argument.length_pointer_arg,
                 })
                 .collect(),
             capture_registers: req.capture_registers,

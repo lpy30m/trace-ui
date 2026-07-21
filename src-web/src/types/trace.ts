@@ -442,6 +442,7 @@ export interface FridaArgumentSpec {
   direction: FridaCaptureDirection;
   length: number | null;
   lengthArg: number | null;
+  lengthPointerArg: number | null;
 }
 
 export interface FridaHookRequest {
@@ -456,6 +457,16 @@ export interface FridaHookRequest {
   stalker: FridaStalkerMode;
   stalkerDurationMs: number;
   maxBytes: number;
+}
+
+export interface FridaHookRecipe {
+  recipeId: string;
+  provider: string;
+  displayName: string;
+  description: string;
+  request: FridaHookRequest;
+  evidenceRoles: string[];
+  warnings: string[];
 }
 
 export interface FridaHookScript {

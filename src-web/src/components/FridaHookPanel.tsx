@@ -9,6 +9,7 @@ import type {
   FridaCaptureEvent,
   FridaCaptureDirection,
   FridaHookRequest,
+  FridaHookRecipe,
   FridaHookScript,
   FridaHookSeed,
   FridaStalkerMode,
@@ -50,6 +51,7 @@ function newArgument(index: number): FridaArgumentSpec {
     direction: "input",
     length: null,
     lengthArg: null,
+    lengthPointerArg: null,
   };
 }
 
@@ -75,6 +77,8 @@ function optionalNumber(value: string): number | null {
 
 export default function FridaHookPanel({ seed }: Props) {
   const [request, setRequest] = useState<FridaHookRequest>(initialRequest);
+  const [recipes, setRecipes] = useState<FridaHookRecipe[]>([]);
+  const [selectedRecipeId, setSelectedRecipeId] = useState("");
   const [targetMode, setTargetMode] = useState<"symbol" | "offset">("offset");
   const [generated, setGenerated] = useState<FridaHookScript | null>(null);
   const [generating, setGenerating] = useState(false);
@@ -91,6 +95,12 @@ export default function FridaHookPanel({ seed }: Props) {
   const [includeLr, setIncludeLr] = useState(true);
   const [seedSavedPath, setSeedSavedPath] = useState<string | null>(null);
   const [outputView, setOutputView] = useState<"script" | "capture" | "materials" | "seed">("script");
+
+  useEffect(() => {
+    invoke<FridaHookRecipe[]>("list_frida_hook_recipes")
+      .then(setRecipes)
+      .catch(reason => setError(String(reason)));
+  }, []);
 
   useEffect(() => {
     if (!seed) return;
@@ -122,10 +132,46 @@ export default function FridaHookPanel({ seed }: Props) {
     maxBytes: Math.max(1, Math.min(1_048_576, request.maxBytes || 256)),
   }), [request, targetMode]);
 
+  const selectedRecipe = useMemo(
+    () => recipes.find(recipe => recipe.recipeId === selectedRecipeId) || null,
+    [recipes, selectedRecipeId],
+  );
+
+  const applySelectedRecipe = useCallback(() => {
+    if (!selectedRecipe) return;
+    const currentModule = request.moduleName.trim();
+    setTargetMode("symbol");
+    setRequest({
+      ...selectedRecipe.request,
+      moduleName: currentModule || selectedRecipe.request.moduleName,
+      arguments: selectedRecipe.request.arguments.map(argument => ({ ...argument })),
+    });
+    setSeedLabel(`recipe:${selectedRecipe.recipeId}`);
+    setError(null);
+  }, [request.moduleName, selectedRecipe]);
+
   const updateArgument = useCallback((row: number, patch: Partial<FridaArgumentSpec>) => {
     setRequest(previous => ({
       ...previous,
-      arguments: previous.arguments.map((argument, index) => index === row ? { ...argument, ...patch } : argument),
+      arguments: previous.arguments.map((argument, index) => {
+        if (index !== row) return argument;
+        const updated = { ...argument, ...patch };
+        if (patch.length !== undefined && patch.length !== null) {
+          updated.lengthArg = null;
+          updated.lengthPointerArg = null;
+        } else if (patch.lengthArg !== undefined && patch.lengthArg !== null) {
+          updated.length = null;
+          updated.lengthPointerArg = null;
+        } else if (patch.lengthPointerArg !== undefined && patch.lengthPointerArg !== null) {
+          updated.length = null;
+          updated.lengthArg = null;
+          updated.direction = "output";
+        }
+        if (patch.direction !== undefined && patch.direction !== "output") {
+          updated.lengthPointerArg = null;
+        }
+        return updated;
+      }),
     }));
   }, []);
 
@@ -290,6 +336,22 @@ export default function FridaHookPanel({ seed }: Props) {
     <div style={{ flex: 1, minWidth: 0, minHeight: 0, display: "flex", overflow: "hidden" }}>
       <div style={{ width: "min(580px, 48%)", minWidth: 430, display: "flex", flexDirection: "column", borderRight: "1px solid var(--border-color)", overflow: "auto" }}>
         <div style={{ display: "grid", gridTemplateColumns: "105px minmax(0, 1fr)", gap: 7, alignItems: "center", padding: 10, borderBottom: "1px solid var(--border-color)", fontSize: 11 }}>
+          <label htmlFor="frida-recipe">API recipe</label>
+          <div style={{ display: "flex", gap: 5, minWidth: 0 }}>
+            <select id="frida-recipe" style={{ ...inputStyle, flex: 1 }} value={selectedRecipeId} onChange={event => setSelectedRecipeId(event.target.value)}>
+              <option value="">Manual configuration</option>
+              {recipes.map(recipe => <option key={recipe.recipeId} value={recipe.recipeId}>{recipe.provider} · {recipe.displayName}</option>)}
+            </select>
+            <button type="button" style={{ ...buttonStyle, opacity: selectedRecipe ? 1 : 0.5 }} disabled={!selectedRecipe} onClick={applySelectedRecipe}>Apply</button>
+          </div>
+          {selectedRecipe && <>
+            <span>Recipe scope</span>
+            <div style={{ color: "var(--text-secondary)" }}>
+              <div>{selectedRecipe.description}</div>
+              <div style={{ marginTop: 3 }}>Roles: {selectedRecipe.evidenceRoles.join(", ")}</div>
+              {selectedRecipe.warnings.map((warning, index) => <div key={index} style={{ marginTop: 3, color: "#d29922" }}>{warning}</div>)}
+            </div>
+          </>}
           <label htmlFor="frida-module">Module</label>
           <input
             id="frida-module"
@@ -362,11 +424,11 @@ export default function FridaHookPanel({ seed }: Props) {
           <button type="button" style={{ ...buttonStyle, opacity: request.arguments.length >= 8 ? 0.5 : 1 }} disabled={request.arguments.length >= 8} onClick={addArgument}>Add capture</button>
         </div>
         <div style={{ padding: "6px 10px 10px" }}>
-          <div style={{ display: "grid", gridTemplateColumns: "54px minmax(85px, 1fr) 104px 84px 72px 74px 26px", gap: 5, alignItems: "center", color: "var(--text-tertiary)", fontSize: 10, marginBottom: 4 }}>
-            <span>Register</span><span>Label</span><span>Decoder</span><span>Phase</span><span>Length</span><span>Length reg</span><span />
+          <div style={{ display: "grid", gridTemplateColumns: "54px minmax(85px, 1fr) 104px 84px 68px 70px 70px 26px", gap: 5, alignItems: "center", color: "var(--text-tertiary)", fontSize: 10, marginBottom: 4 }}>
+            <span>Register</span><span>Label</span><span>Decoder</span><span>Phase</span><span>Length</span><span>Length reg</span><span>Length *reg</span><span />
           </div>
           {request.arguments.map((argument, row) => (
-            <div key={`${row}-${argument.index}`} style={{ display: "grid", gridTemplateColumns: "54px minmax(85px, 1fr) 104px 84px 72px 74px 26px", gap: 5, alignItems: "center", marginBottom: 5 }}>
+            <div key={`${row}-${argument.index}`} style={{ display: "grid", gridTemplateColumns: "54px minmax(85px, 1fr) 104px 84px 68px 70px 70px 26px", gap: 5, alignItems: "center", marginBottom: 5 }}>
               <select style={inputStyle} value={argument.index} onChange={event => updateArgument(row, { index: Number(event.target.value) })}>
                 {Array.from({ length: 8 }, (_, index) => <option key={index} value={index}>X{index}</option>)}
               </select>
@@ -387,6 +449,10 @@ export default function FridaHookPanel({ seed }: Props) {
               <select style={inputStyle} value={argument.lengthArg ?? ""} onChange={event => updateArgument(row, { lengthArg: optionalNumber(event.target.value) })}>
                 <option value="">None</option>
                 {Array.from({ length: 8 }, (_, index) => <option key={index} value={index}>X{index}</option>)}
+              </select>
+              <select style={inputStyle} value={argument.lengthPointerArg ?? ""} onChange={event => updateArgument(row, { lengthPointerArg: optionalNumber(event.target.value) })}>
+                <option value="">None</option>
+                {Array.from({ length: 8 }, (_, index) => <option key={index} value={index}>*X{index}</option>)}
               </select>
               <button type="button" title="Remove capture" aria-label="Remove capture" onClick={() => removeArgument(row)} style={{ ...buttonStyle, width: 26, padding: 0 }}>x</button>
             </div>

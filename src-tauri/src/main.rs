@@ -76,6 +76,7 @@ fn main() {
             commands::analyze_crypto_functions,
             commands::analyze_crypto_materials,
             commands::compare_crypto_material_traces,
+            commands::list_frida_hook_recipes,
             commands::generate_frida_hook,
             commands::save_frida_hook,
             commands::load_frida_capture,

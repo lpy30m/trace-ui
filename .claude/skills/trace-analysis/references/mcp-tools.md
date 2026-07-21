@@ -69,11 +69,16 @@ Line numbers in taint `@LINE` specs are **1-based**; `start_seq`/`end_seq`/`seq`
 
 ## Frida 16 hook generation
 
+- **list_frida_hook_recipes** `{}` returns audited Frida 16.x request templates for common
+  OpenSSL/BoringSSL and Apple CommonCrypto MD5/SHA, EVP, HMAC, PBKDF2, and CCCrypt call shapes. Each
+  recipe includes evidence roles and ABI/algorithm warnings; applying one only prefills generation.
 - **generate_frida_hook** `{module_name, symbol?|offset?, function_name?, arguments?,
   capture_registers?=true, capture_return?=true, capture_backtrace?=false, stalker?=off,
   stalker_duration_ms?=10000, max_bytes?=256}` returns a bounded JavaScript hook using the Frida 16.x
   APIs. Each argument selects X0-X7 with `kind` (`integer`, `pointer`, `utf8String`, `utf16String`,
-  `byteArray`), `direction` (`input`, `output`, `inOut`), and optional fixed/dynamic length. The script
+  `byteArray`), `direction` (`input`, `output`, `inOut`), and one optional length source: fixed `length`,
+  X-register `length_arg`, or output-only leave-time u32 pointer `length_pointer_arg`. Failed output
+  length dereferences emit `readError` without reading the target buffer. The script
   emits `trace-ui/frida-hook-v1` messages and `TRACE_UI_JSON` strict-JSON log lines. It is generated
   only; the user manually attaches and loads it.
 - **inspect_frida_capture** `{file_path}` reads user-captured JSON objects/arrays, Frida send envelopes,

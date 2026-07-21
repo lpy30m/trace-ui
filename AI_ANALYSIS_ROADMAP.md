@@ -30,6 +30,7 @@
 - [x] Crypto Materials：统一索引 key/password/salt/IV/nonce/counter/input/output/digest/MAC/AAD/tag，并语义复算 AES、MD5/SHA、HMAC、PBKDF2。
 - [x] 跨 trace salt/nonce 候选隔离：对相同 caller input 的多次运行比较变化字节范围，保持候选级验证边界。
 - [x] Frida 16.x Hook Generator：生成 module symbol/offset、X0-X7、buffer/string、return/backtrace/Stalker 脚本；用户手动 attach/spawn/load。
+- [x] Frida 16.x Crypto API Recipes：列出并预填 OpenSSL/BoringSSL、Apple CommonCrypto 的常见 MD5/SHA、EVP、HMAC、PBKDF2、CCCrypt 调用形态，支持返回时 `*Xn` 输出长度且不猜 JNI handle 或 X7 之后的栈参数。
 - [x] IDA / OLLVM：ASLR 稳定动态 CFG、dispatcher/opaque branch 候选、IDAPython 注释桥和 IDA annotation JSON 回导。
 - [x] angr / OLLVM：生成用户手动执行的 Python bridge，以 exact ELF SHA-256 为锚点，对账静态/动态 CFG，并导回候选级 symbolic branch probe 结果。
 - [x] Frida Capture → angr State Seed：导入用户手动捕获的 registers/buffers/call metadata，生成 module-aware `configure_state(state)`，保持运行和 Hook 由用户控制。

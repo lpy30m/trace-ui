@@ -62,6 +62,7 @@ pub use query::frida_hook::{
     generate_frida_hook, FridaArgumentKind, FridaArgumentSpec, FridaCaptureDirection,
     FridaHookRequest, FridaHookScript, FridaStalkerMode,
 };
+pub use query::frida_recipe::{list_frida_hook_recipes, FridaHookRecipe};
 pub use query::function_inspect::{
     FunctionCallAnnotation, FunctionInspection, FunctionRef, MemTouch, RegValue,
 };

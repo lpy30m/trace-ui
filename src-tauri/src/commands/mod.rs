@@ -651,6 +651,11 @@ pub async fn compare_crypto_material_traces(
 }
 
 #[tauri::command]
+pub fn list_frida_hook_recipes() -> Vec<trace_core::FridaHookRecipe> {
+    trace_core::list_frida_hook_recipes()
+}
+
+#[tauri::command]
 pub fn generate_frida_hook(
     request: trace_core::FridaHookRequest,
 ) -> Result<trace_core::FridaHookScript, String> {

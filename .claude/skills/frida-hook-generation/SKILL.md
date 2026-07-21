@@ -5,7 +5,7 @@ description: Generate bounded ARM64 Frida 16.x JavaScript hook scripts, inspect 
 
 # Generate Frida 16 hooks with trace-ui
 
-Use `mcp__trace-ui__generate_frida_hook`, `mcp__trace-ui__inspect_frida_capture`,
+Use `mcp__trace-ui__list_frida_hook_recipes`, `mcp__trace-ui__generate_frida_hook`, `mcp__trace-ui__inspect_frida_capture`,
 `mcp__trace-ui__analyze_frida_crypto_materials`, and
 `mcp__trace-ui__generate_angr_state_seed`. Generated hooks target Frida 16.x JavaScript APIs and emit
 `trace-ui/frida-hook-v1` messages with `send()` plus `TRACE_UI_JSON` strict-JSON log lines.
@@ -14,15 +14,18 @@ Use `mcp__trace-ui__generate_frida_hook`, `mcp__trace-ui__inspect_frida_capture`
 
 1. Identify the exact module basename and either an exported symbol or an ASLR-stable module-relative offset. Provide exactly one of `symbol` or `offset`.
 2. Infer argument roles from `analyze_function`, crypto-material evidence, ABI knowledge, or user input. Do not guess pointer lengths silently.
-3. Call `generate_frida_hook` with only the captures needed for the question.
-4. Return or save the generated `.js` script. Explain the expected event fields and any unsafe memory-read assumptions.
-5. Stop. Do not attach, spawn, load, execute, or claim the hook ran. The user performs those steps manually.
-6. If the user supplies captured JSON/NDJSON, run `inspect_frida_capture`. Select an exact event index,
+3. If the target matches a common OpenSSL/BoringSSL or Apple CommonCrypto API, call
+   `list_frida_hook_recipes` and apply the closest audited recipe. Review every warning and adjust the
+   module basename for the actual process. Otherwise configure the request manually.
+4. Call `generate_frida_hook` with only the captures needed for the question.
+5. Return or save the generated `.js` script. Explain the expected event fields and any unsafe memory-read assumptions.
+6. Stop. Do not attach, spawn, load, execute, or claim the hook ran. The user performs those steps manually.
+7. If the user supplies captured JSON/NDJSON, run `inspect_frida_capture`. Select an exact event index,
    normally a `hook-enter` with registers or buffers.
-7. When crypto roles are requested, run `analyze_frida_crypto_materials`. Treat explicit labels as
+8. When crypto roles are requested, run `analyze_frida_crypto_materials`. Treat explicit labels as
    Related unless exact MD5/SHA/HMAC/PBKDF2 recomputation verifies the captured call. Prefer byteArray;
    text re-encoding is weaker evidence.
-8. When angr initialization is requested, run `generate_angr_state_seed` for that event. Keep SP
+9. When angr initialization is requested, run `generate_angr_state_seed` for that event. Keep SP
    opt-in and explain that heap/stack addresses are process-specific.
 
 ## Request fields
@@ -30,7 +33,7 @@ Use `mcp__trace-ui__generate_frida_hook`, `mcp__trace-ui__inspect_frida_capture`
 - `module_name`: loaded module basename, such as `libtarget.so`.
 - `symbol` or `offset`: exported name or module-relative hexadecimal offset.
 - `function_name`: optional stable label and output filename stem.
-- `arguments`: X0-X7 entries with `index`, optional `label`, `kind`, `direction`, `length`, and `length_arg`.
+- `arguments`: X0-X7 entries with `index`, optional `label`, `kind`, `direction`, `length`, `length_arg`, and `length_pointer_arg`.
 - `kind`: `integer`, `pointer`, `utf8String`, `utf16String`, or `byteArray`.
 - `direction`: `input`, `output`, or `inOut`.
 - `capture_registers`, `capture_return`, `capture_backtrace`.
@@ -43,6 +46,9 @@ Use `mcp__trace-ui__generate_frida_hook`, `mcp__trace-ui__inspect_frida_capture`
 - Label crypto roles explicitly: `key`, `input`, `output`, `iv`, `nonce`, `salt`, `aad`, `tag`, or `length`.
 - Use `output` or `inOut` for buffers populated or modified before function return.
 - Use `length_arg` when another X register carries the dynamic buffer size. Use a fixed `length` only when verified.
+- Use `length_pointer_arg` only for an output buffer whose u32 length is written through another X0-X7 pointer before return. It is dereferenced only on leave; a failed dereference emits `readError` and must not fall back to `max_bytes`.
+- Treat `length`, `length_arg`, and `length_pointer_arg` as mutually exclusive.
+- Do not treat JNI references such as `jbyteArray` as native byte pointers. Require a native buffer boundary or a separate Java-layer hook instead.
 - Default Stalker to `off`. Enable `calls` first; use `blocks` or `instructions` only for a narrow function and bounded duration.
 - Treat invalid pointers, unreadable memory, and truncated captures as expected runtime conditions.
 - Prefer `byteArray` captures for angr memory seeds. Re-encoded UTF-8/UTF-16 strings do not preserve

@@ -882,6 +882,10 @@ pub struct FridaArgumentSpecRequest {
     pub length: Option<u32>,
     #[schemars(description = "Optional X0-X7 register containing the dynamic length")]
     pub length_arg: Option<u8>,
+    #[schemars(
+        description = "Optional X0-X7 register pointing to a u32 output length, dereferenced on function leave"
+    )]
+    pub length_pointer_arg: Option<u8>,
 }
 
 #[derive(Debug, Deserialize, JsonSchema)]

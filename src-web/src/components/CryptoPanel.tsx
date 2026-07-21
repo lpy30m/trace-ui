@@ -349,6 +349,7 @@ export default function CryptoPanel(props: Props) {
         direction: "input" as const,
         length: null,
         lengthArg: null,
+        lengthPointerArg: null,
       }];
     });
   }, []);
@@ -386,6 +387,7 @@ export default function CryptoPanel(props: Props) {
       direction,
       length: material.byteLen,
       lengthArg: null,
+      lengthPointerArg: null,
     }] : [];
     const offset = line?.so_offset || "";
     setFridaSeed({

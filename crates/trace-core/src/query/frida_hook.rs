@@ -61,6 +61,8 @@ pub struct FridaArgumentSpec {
     pub length: Option<u32>,
     #[serde(default)]
     pub length_arg: Option<u8>,
+    #[serde(default)]
+    pub length_pointer_arg: Option<u8>,
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
@@ -162,11 +164,29 @@ fn validate_request(request: &FridaHookRequest) -> Result<(String, Option<u64>),
     if request.arguments.iter().any(|argument| {
         argument.index > 7
             || argument.length_arg.is_some_and(|index| index > 7)
+            || argument.length_pointer_arg.is_some_and(|index| index > 7)
             || argument.length.is_some_and(|length| length > 1_048_576)
     }) {
         return Err(
             "argument indexes must be X0-X7 and capture lengths must be <= 1 MiB".to_string(),
         );
+    }
+    if request.arguments.iter().any(|argument| {
+        usize::from(argument.length.is_some())
+            + usize::from(argument.length_arg.is_some())
+            + usize::from(argument.length_pointer_arg.is_some())
+            > 1
+    }) {
+        return Err(
+            "each capture may use only one length source: length, length_arg, or length_pointer_arg"
+                .to_string(),
+        );
+    }
+    if request.arguments.iter().any(|argument| {
+        argument.length_pointer_arg.is_some()
+            && !matches!(argument.direction, FridaCaptureDirection::Output)
+    }) {
+        return Err("length_pointer_arg is supported only for output captures".to_string());
     }
     let max_bytes = request.max_bytes.clamp(1, 1_048_576);
     if max_bytes == 0 {
@@ -213,6 +233,7 @@ fn argument_json(arguments: &[FridaArgumentSpec]) -> String {
                 "direction": direction(&argument.direction),
                 "length": argument.length,
                 "lengthArg": argument.length_arg,
+                "lengthPointerArg": argument.length_pointer_arg,
             })
         })
         .collect();
@@ -308,9 +329,10 @@ function safeRead(pointer, kind, length) {
   try {
     if (pointer === null || pointer.isNull()) return { pointer: pointer ? pointer.toString() : null, value: null };
     if (kind === 'integer' || kind === 'pointer') return { pointer: pointer.toString(), value: pointer.toString() };
-    if (kind === 'utf8String') return { pointer: pointer.toString(), value: pointer.readUtf8String(length || MAX_BYTES) };
-    if (kind === 'utf16String') return { pointer: pointer.toString(), value: pointer.readUtf16String(length || Math.floor(MAX_BYTES / 2)) };
-    const bounded = Math.max(0, Math.min(length || MAX_BYTES, MAX_BYTES));
+    const hasLength = length !== null && length !== undefined;
+    if (kind === 'utf8String') return { pointer: pointer.toString(), value: pointer.readUtf8String(hasLength ? length : MAX_BYTES) };
+    if (kind === 'utf16String') return { pointer: pointer.toString(), value: pointer.readUtf16String(hasLength ? length : Math.floor(MAX_BYTES / 2)) };
+    const bounded = Math.max(0, Math.min(hasLength ? length : MAX_BYTES, MAX_BYTES));
     return { pointer: pointer.toString(), value: bytesToHex(pointer.readByteArray(bounded)), byteLength: bounded };
   } catch (error) {
     return { pointer: pointer ? pointer.toString() : null, value: null, readError: String(error) };
@@ -323,20 +345,39 @@ function captureArguments(args, phase) {
     : spec.direction === 'output' || spec.direction === 'inOut')
     .map(spec => {
       let length = spec.length;
+      let lengthSource = length !== null && length !== undefined ? 'fixed' : null;
+      let lengthReadError = null;
       try {
-        if (spec.lengthArg !== null && spec.lengthArg !== undefined) {
+        if (phase === 'leave' && spec.lengthPointerArg !== null && spec.lengthPointerArg !== undefined) {
+          length = args[spec.lengthPointerArg].readU32();
+          lengthSource = '*X' + spec.lengthPointerArg;
+        } else if (spec.lengthArg !== null && spec.lengthArg !== undefined) {
           length = args[spec.lengthArg].toUInt32();
+          lengthSource = 'X' + spec.lengthArg;
         }
-      } catch (_) {}
+      } catch (error) {
+        if (phase === 'leave' && spec.lengthPointerArg !== null && spec.lengthPointerArg !== undefined) {
+          length = null;
+          lengthSource = '*X' + spec.lengthPointerArg;
+          lengthReadError = 'length pointer read failed from X' + spec.lengthPointerArg + ': ' + String(error);
+        }
+      }
       if (length !== null && length !== undefined) length = Math.min(length, MAX_BYTES);
-      const value = safeRead(args[spec.index], spec.kind, length);
+      const value = lengthReadError === null
+        ? safeRead(args[spec.index], spec.kind, length)
+        : {
+            pointer: args[spec.index] ? args[spec.index].toString() : null,
+            value: null,
+            readError: lengthReadError
+          };
       return Object.assign({
         index: spec.index,
         label: spec.label,
         kind: spec.kind,
         direction: spec.direction,
         phase: phase,
-        requestedLength: length
+        requestedLength: length,
+        lengthSource: lengthSource
       }, value);
     });
 }
@@ -509,6 +550,7 @@ setImmediate(install);
         "The generated agent emits trace-ui/frida-hook-v1 send() messages for the user's Frida host or CLI session.".to_string(),
         "Each event is also printed as a TRACE_UI_JSON-prefixed strict JSON line so redirected Frida CLI output can be imported manually; eventId prevents duplicate send/log records.".to_string(),
         "Pointer reads are best-effort and bounded by max_bytes; unreadable memory is reported as readError rather than guessed.".to_string(),
+        "Output length-pointer captures are dereferenced only on function leave and remain bounded by max_bytes.".to_string(),
         "An offset is relative to the loaded module base and must match the target SO/dylib build.".to_string(),
     ];
     match request.stalker {
@@ -550,6 +592,7 @@ mod tests {
                 direction: FridaCaptureDirection::Input,
                 length: None,
                 length_arg: Some(2),
+                length_pointer_arg: None,
             }],
             capture_registers: true,
             capture_return: true,
@@ -571,6 +614,7 @@ mod tests {
         assert!(script.script.contains("EVP_DigestUpdate"));
         assert!(script.script.contains("stalker-events"));
         assert!(script.script.contains("lengthArg"));
+        assert!(script.script.contains("lengthPointerArg"));
         assert!(script.script.contains("captureRegisters(this.context)"));
         assert!(script.script.contains("callId: callId"));
         assert!(script.script.contains("TRACE_UI_JSON"));
@@ -644,5 +688,39 @@ mod tests {
         assert!(generate_frida_hook(&request).is_err());
         request.module_name = "bad\nname".to_string();
         assert!(generate_frida_hook(&request).is_err());
+        request.module_name = "libcrypto.so".to_string();
+        request.arguments[0].length = Some(32);
+        assert!(generate_frida_hook(&request).is_err());
+        request.arguments[0].length = None;
+        request.arguments[0].length_arg = None;
+        request.arguments[0].length_pointer_arg = Some(2);
+        assert!(generate_frida_hook(&request).is_err());
+    }
+
+    #[test]
+    fn generates_leave_time_output_length_pointer_capture() {
+        let mut request = base_request();
+        request.symbol = Some("EVP_DigestFinal_ex".to_string());
+        request.arguments = vec![FridaArgumentSpec {
+            index: 1,
+            label: Some("digest".to_string()),
+            kind: FridaArgumentKind::ByteArray,
+            direction: FridaCaptureDirection::Output,
+            length: None,
+            length_arg: None,
+            length_pointer_arg: Some(2),
+        }];
+        let generated = generate_frida_hook(&request).unwrap();
+        assert!(generated
+            .script
+            .contains("args[spec.lengthPointerArg].readU32()"));
+        assert!(generated.script.contains("phase === 'leave'"));
+        assert!(generated.script.contains("lengthSource: lengthSource"));
+        assert!(generated
+            .script
+            .contains("length pointer read failed from X"));
+        assert!(generated.script.contains("lengthReadError === null"));
+        assert!(generated.script.contains("hasLength ? length : MAX_BYTES"));
+        assert!(!generated.script.contains("length || MAX_BYTES"));
     }
 }
