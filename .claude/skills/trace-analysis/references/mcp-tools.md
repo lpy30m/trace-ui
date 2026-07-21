@@ -59,6 +59,35 @@ Line numbers in taint `@LINE` specs are **1-based**; `start_seq`/`end_seq`/`seq`
   each of at least two keys with constant ELF Build ID/coverage. It returns input stability and cross-key
   shape/value comparisons, but always \`verificationGateMet:false\`: structural evidence is not proof.
 
+- **analyze_crypto_materials** `{session_id?, max_materials?=500, include_unknown?=false}` builds a
+  unified evidence-ranked index of keys, passwords, salt, IV, nonce, counter, plaintext/ciphertext,
+  digest/MAC, AAD, and authentication tags. It recomputes observable AES, MD5/SHA, HMAC, and PBKDF2
+  formulas. Deterministic recomputation may open the Verified gate; API role inference alone is Related.
+- **compare_crypto_material_traces** `{cases:[{session_id,label,input_group}, ...]}` compares two to
+  sixteen controlled traces. Pairs sharing `input_group` isolate changing byte ranges inside verified
+  digest inputs. Returned `saltOrNonceCandidate` ranges remain candidates until role provenance exists.
+
+## Frida 16 hook generation
+
+- **generate_frida_hook** `{module_name, symbol?|offset?, function_name?, arguments?,
+  capture_registers?=true, capture_return?=true, capture_backtrace?=false, stalker?=off,
+  stalker_duration_ms?=10000, max_bytes?=256}` returns a bounded JavaScript hook using the Frida 16.x
+  APIs. Each argument selects X0-X7 with `kind` (`integer`, `pointer`, `utf8String`, `utf16String`,
+  `byteArray`), `direction` (`input`, `output`, `inOut`), and optional fixed/dynamic length. The script
+  emits `trace-ui/frida-hook-v1` messages. It is generated only; the user manually attaches and loads it.
+
+## IDA / OLLVM
+
+- **analyze_ollvm** `{session_id?, node_id?, module_name?, start_seq?, end_seq?,
+  include_child_calls?=false, max_blocks?=1000, max_edges?=3000}` builds an ASLR-stable dynamic CFG and
+  ranks dispatcher and opaque-branch candidates. Results cover executed instructions only and are not
+  proof of obfuscation.
+- **generate_ida_ollvm_script** accepts the same scope plus `ida_image_base?` and
+  `add_user_xrefs?=false`. It returns IDAPython that applies dynamic comments/colors and can export
+  `trace-ui/ida-ollvm-v1` annotations. The user runs it manually in IDA.
+- **inspect_ida_annotations** `{file_path}` validates and returns module-relative names/comments from a
+  JSON file exported manually by the generated IDAPython bridge.
+
 ## Taint (data-flow slicing)
 
 Prefer explicit source syntax: \`reg:NAME@line:N\` for a 1-based display line, or

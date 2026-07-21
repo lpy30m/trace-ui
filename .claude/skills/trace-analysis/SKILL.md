@@ -2,11 +2,13 @@
 name: trace-analysis
 description: >
   Analyze ARM64 unidbg, GumTrace, or Frida Stalker execution traces through the trace-ui MCP server.
-  Use for native/.so reverse engineering, crypto or key identification, MD5/SHA/CRC input matching,
-  backward or forward taint, function I/O inspection, cross-run diffing, static ELF-to-trace table
-  reconciliation, and software/table-driven/obfuscated/white-box crypto classification. Trigger on
-  requests such as analyze this trace, reverse this native function, inspect this .so with its trace,
-  find the key or algorithm, where did this value come from, or 分析 trace / 逆向 so / 污点 / 加密分析.
+  Use for native/.so reverse engineering, crypto key/IV/nonce/salt/material identification,
+  MD5/SHA/HMAC/PBKDF2 input matching, backward or forward taint, function I/O inspection, cross-run
+  diffing, static ELF-to-trace table reconciliation, software/table-driven/obfuscated/white-box crypto
+  classification, Frida 16 hook-script generation, and dynamic IDA/OLLVM analysis. Trigger on requests
+  such as analyze this trace, reverse this native function, inspect this .so with its trace, find the key
+  or algorithm, isolate a salt, generate a Frida hook, inspect OLLVM, where did this value come from, or
+  分析 trace / 逆向 so / 污点 / 加密分析 / Frida hook / OLLVM.
 ---
 
 # Trace analysis with trace-ui (MCP)
@@ -63,6 +65,16 @@ memory buffers, then auto-traces the origin. Read `candidate_assessments` / `ass
 `get_memory` / `get_trace_lines` at the reported addr/seq. Enable `utf16le`/`utf8_nul` transforms if a
 plain match fails.
 
+**"Index keys, passwords, salt, nonce, IV, plaintext/ciphertext, digest/MAC, AAD, or tags."**
+→ `analyze_crypto_materials{max_materials?,include_unknown?}`. Prefer records backed by deterministic
+AES, MD5/SHA, HMAC, or PBKDF2 recomputation. API argument roles are Related evidence unless their
+semantics are independently verified. Use the returned `analysis_id` for audit and comparison.
+
+**"Which changing bytes are probably salt or nonce across controlled runs?"**
+→ open two to sixteen traces, then `compare_crypto_material_traces{cases:[{session_id,label,input_group}]}`.
+Use the same `input_group` only when the caller-controlled primary message/password is intentionally
+unchanged. A returned `saltOrNonceCandidate` is a precise changing range, not proof of its API role.
+
 **"Where did this value (register/memory) at line N come from?"** (backward)
 → `taint_analysis{from_specs:["reg:X0@line:N"], data_only:true}`. For memory use
 `["mem:0xADDR:SIZE@seq:N"]` (SIZE bytes, e.g. 16 for an MD5 buffer). Page results with
@@ -81,6 +93,18 @@ for entry X0-X7, return X0, and sub-calls. `get_memory` on pointer args for buff
 → `open_trace` both (two sessions), then `compare_traces{other_session_id}` (or `start_trace_diff`) —
 diffs functions/branches/instructions/memory-access-sites by module-relative offset (ASLR-robust) and
 clusters relocated functions by normalized executed shape. Compare left/right offsets and sample seqs.
+
+**"Generate a Frida hook for this function or crypto lead."**
+→ `generate_frida_hook` with a module export or module-relative offset and explicit X0-X7 capture specs.
+The output targets Frida 16.x and emits `trace-ui/frida-hook-v1`. Trace UI only generates/saves the
+script. The user manually attaches/spawns/loads/runs it. Never claim runtime evidence from generation.
+For detailed capture selection rules, use `$frida-hook-generation`.
+
+**"Show OLLVM execution structure in IDA."**
+→ `analyze_ollvm` on a call-tree node or narrow module/seq range, normally with child calls excluded.
+Then `generate_ida_ollvm_script` for manual execution in IDA. Inspect exported
+`trace-ui/ida-ollvm-v1` JSON with `inspect_ida_annotations`. Dispatcher and opaque-branch findings remain
+dynamic candidates; unexecuted paths are unknown. For the full workflow, use `$ida-ollvm-analysis`.
 
 **"Is this a real white-box/key-fused implementation?"**
 → Do not decide from one trace or one table. Run `analyze_crypto_implementations` with the exact ELF,
@@ -127,10 +151,12 @@ recomputes to a known digest.
 |---|---|
 | Session | `open_trace`, `close_trace` |
 | Browse / verify | `get_trace_lines`, `get_memory`, `get_strings`, `get_call_tree`, `search_instructions` |
-| Crypto | `analyze_crypto_implementations` (semantic implementation report), `analyze_crypto_functions` (function-level structural ranking), `analyze_crypto` (raw constants), `analyze_known_digest`, `investigate_crypto_flow` |
+| Crypto | `analyze_crypto_implementations`, `analyze_crypto_functions`, `analyze_crypto_materials`, `compare_crypto_material_traces`, `analyze_crypto`, `analyze_known_digest`, `investigate_crypto_flow` |
 | Taint | `taint_analysis` (backward), `forward_taint_analysis`, `get_tainted_lines`, `start_forward_taint_analysis` |
 | Functions | `analyze_function` (node_id / name / list) |
 | Diff | `compare_traces`, `start_trace_diff` |
+| Frida | `generate_frida_hook` (Frida 16 script generation only; user executes manually) |
+| IDA / OLLVM | `analyze_ollvm`, `generate_ida_ollvm_script`, `inspect_ida_annotations` |
 | Orchestration | `auto_investigate`, `start_auto_investigation`, `start_crypto_investigation` |
 | Evidence store | `list_analyses`, `get_analysis`, `compare_analyses`, `export_analysis_report`, `delete_analysis` |
 | Recipes | `list_analysis_recipes`, `run_analysis_recipe`, `save_analysis_recipe`, `delete_analysis_recipe` |

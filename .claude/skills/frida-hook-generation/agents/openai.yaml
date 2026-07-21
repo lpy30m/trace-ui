@@ -1,0 +1,15 @@
+interface:
+  display_name: "Frida Hook Generation"
+  short_description: "Generate bounded Frida 16 ARM64 hook scripts"
+  default_prompt: "Use $frida-hook-generation to generate a Frida 16.x hook script that I will load manually."
+
+dependencies:
+  tools:
+    - type: "mcp"
+      value: "trace-ui"
+      description: "Local Trace UI Frida 16 script generator"
+      transport: "streamable_http"
+      url: "http://127.0.0.1:19821/mcp"
+
+policy:
+  allow_implicit_invocation: true

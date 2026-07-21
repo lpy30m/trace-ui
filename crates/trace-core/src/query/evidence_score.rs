@@ -1,4 +1,4 @@
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 
 #[derive(Clone, Debug)]
 pub struct EvidenceScoreSignal {
@@ -27,7 +27,7 @@ impl EvidenceScoreSignal {
     }
 }
 
-#[derive(Clone, Debug, Serialize)]
+#[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct EvidenceScoreFactor {
     pub code: String,
@@ -38,7 +38,7 @@ pub struct EvidenceScoreFactor {
     pub evidence: Option<String>,
 }
 
-#[derive(Clone, Debug, Serialize)]
+#[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct EvidenceAssessment {
     pub scope: String,

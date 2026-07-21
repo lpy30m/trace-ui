@@ -5,6 +5,7 @@ import type { CryptoFunctionReport, CryptoFunctionCandidate } from "../types/tra
 interface Props {
   sessionId: string | null;
   onJumpToSeq: (seq: number) => void;
+  onCreateHook?: (candidate: CryptoFunctionCandidate) => void;
 }
 
 function confColor(confidence: string): string {
@@ -15,7 +16,11 @@ function confColor(confidence: string): string {
   }
 }
 
-function CandidateRow({ c, onJumpToSeq }: { c: CryptoFunctionCandidate; onJumpToSeq: (s: number) => void }) {
+function CandidateRow({ c, onJumpToSeq, onCreateHook }: {
+  c: CryptoFunctionCandidate;
+  onJumpToSeq: (s: number) => void;
+  onCreateHook?: (candidate: CryptoFunctionCandidate) => void;
+}) {
   const [open, setOpen] = useState(false);
   const insn = Object.entries(c.cryptoInsnCounts)
     .map(([k, v]) => `${k}×${v}`)
@@ -46,6 +51,13 @@ function CandidateRow({ c, onJumpToSeq }: { c: CryptoFunctionCandidate; onJumpTo
           title="Jump to function entry"
         >{c.funcName || c.funcAddr}</span>
         <span style={{ flex: 1 }} />
+        {onCreateHook && (
+          <button
+            type="button"
+            onClick={event => { event.stopPropagation(); onCreateHook(c); }}
+            style={{ height: 23, padding: "0 8px", border: "1px solid var(--border-color)", borderRadius: 3, background: "var(--bg-input)", color: "var(--text-primary)", cursor: "pointer", fontSize: 11 }}
+          >Hook</button>
+        )}
         <span style={{ color: "var(--text-tertiary)", fontSize: 11 }}>
           {c.magicHits > 0 && `${c.distinctMagics} const`}
           {c.cryptoInsnTotal > 0 && `  ${insn}`}
@@ -95,7 +107,7 @@ function CandidateRow({ c, onJumpToSeq }: { c: CryptoFunctionCandidate; onJumpTo
   );
 }
 
-export default function CryptoFunctionsPanel({ sessionId, onJumpToSeq }: Props) {
+export default function CryptoFunctionsPanel({ sessionId, onJumpToSeq, onCreateHook }: Props) {
   const [report, setReport] = useState<CryptoFunctionReport | null>(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -152,7 +164,7 @@ export default function CryptoFunctionsPanel({ sessionId, onJumpToSeq }: Props) 
           </div>
         )}
         {report && report.candidates.map(c => (
-          <CandidateRow key={c.funcId} c={c} onJumpToSeq={onJumpToSeq} />
+          <CandidateRow key={c.funcId} c={c} onJumpToSeq={onJumpToSeq} onCreateHook={onCreateHook} />
         ))}
       </div>
     </div>

@@ -21,13 +21,17 @@ Thumbs.db
 gen/schemas/
 src-tauri/gen/schemas/
 
-# Claude Code (keep the reusable trace-analysis skill in the repository)
+# Claude Code (keep reusable reverse-engineering skills in the repository)
 CLAUDE.md
 .claude/*
 !.claude/skills/
 .claude/skills/*
 !.claude/skills/trace-analysis/
 !.claude/skills/trace-analysis/**
+!.claude/skills/frida-hook-generation/
+!.claude/skills/frida-hook-generation/**
+!.claude/skills/ida-ollvm-analysis/
+!.claude/skills/ida-ollvm-analysis/**
 
 # Superpowers
 .superpowers/

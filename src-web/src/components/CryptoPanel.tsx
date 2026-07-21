@@ -1,4 +1,5 @@
 import React, { useState, useEffect, useRef, useCallback, useMemo } from "react";
+import { invoke } from "@tauri-apps/api/core";
 import { emit } from "@tauri-apps/api/event";
 import { useVirtualScroll } from "../hooks/useVirtualScroll";
 import { useResizableColumn } from "../hooks/useResizableColumn";
@@ -9,7 +10,20 @@ import KnownDigestPanel from "./KnownDigestPanel";
 import CryptoFunctionsPanel from "./CryptoFunctionsPanel";
 import WhiteBoxPanel from "./WhiteBoxPanel";
 import ValueSearchPanel from "./ValueSearchPanel";
-import type { CryptoMatch, CryptoScanResult, HashMatchResult, TraceLine } from "../types/trace";
+import CryptoMaterialsPanel from "./CryptoMaterialsPanel";
+import FridaHookPanel from "./FridaHookPanel";
+import OllvmPanel from "./OllvmPanel";
+import type {
+  CryptoFunctionCandidate,
+  CryptoMaterial,
+  CryptoMatch,
+  CryptoScanResult,
+  FridaArgumentSpec,
+  FridaCaptureDirection,
+  FridaHookSeed,
+  HashMatchResult,
+  TraceLine,
+} from "../types/trace";
 import type { ResolvedRow } from "../hooks/useFoldState";
 
 const ROW_HEIGHT = 22;
@@ -302,7 +316,88 @@ function DetectionPanel({ cryptoResults, cryptoScanning, onJumpToSeq }: Detectio
 }
 
 export default function CryptoPanel(props: Props) {
-  const [view, setView] = useState<"value-search" | "detection" | "known-digest" | "functions" | "whitebox">("value-search");
+  const [view, setView] = useState<"value-search" | "materials" | "frida" | "ollvm" | "detection" | "known-digest" | "functions" | "whitebox">("value-search");
+  const [fridaSeed, setFridaSeed] = useState<FridaHookSeed | null>(null);
+
+  const resolveTargetLine = useCallback(async (seq: number): Promise<TraceLine | null> => {
+    if (!props.sessionId) return null;
+    const first = Math.max(0, seq - 4);
+    const seqs = Array.from({ length: 21 }, (_, index) => first + index);
+    try {
+      const lines = await invoke<TraceLine[]>("get_lines", { sessionId: props.sessionId, seqs });
+      const candidates = lines.filter(line => line.so_name && line.so_offset);
+      return candidates.find(line => line.seq === seq)
+        || candidates.sort((left, right) => Math.abs(left.seq - seq) - Math.abs(right.seq - seq))[0]
+        || null;
+    } catch {
+      return null;
+    }
+  }, [props.sessionId]);
+
+  const functionArguments = useCallback((candidate: CryptoFunctionCandidate): FridaArgumentSpec[] => {
+    const seen = new Set<number>();
+    return candidate.io.entryArgs.flatMap(argument => {
+      const match = /^x([0-7])$/i.exec(argument.reg.trim());
+      if (!match) return [];
+      const index = Number(match[1]);
+      if (seen.has(index)) return [];
+      seen.add(index);
+      return [{
+        index,
+        label: argument.reg.toLowerCase(),
+        kind: "pointer" as const,
+        direction: "input" as const,
+        length: null,
+        lengthArg: null,
+      }];
+    });
+  }, []);
+
+  const createFunctionHook = useCallback(async (candidate: CryptoFunctionCandidate) => {
+    setView("frida");
+    const line = await resolveTargetLine(candidate.entrySeq);
+    const offset = line?.so_offset || "";
+    const symbol = candidate.funcName || "";
+    setFridaSeed({
+      sourceLabel: `Function ${candidate.funcName || candidate.funcAddr} at line ${candidate.entrySeq + 1}`,
+      moduleName: line?.so_name || "",
+      targetMode: offset ? "offset" : "symbol",
+      symbol,
+      offset: offset || candidate.funcAddr,
+      functionName: candidate.funcName || candidate.funcAddr,
+      arguments: functionArguments(candidate),
+    });
+  }, [functionArguments, resolveTargetLine]);
+
+  const createMaterialHook = useCallback(async (material: CryptoMaterial) => {
+    setView("frida");
+    const seq = material.observationSeq ?? material.completionSeq ?? 0;
+    const line = await resolveTargetLine(seq);
+    const registerMatch = material.register ? /^x([0-7])$/i.exec(material.register.trim()) : null;
+    const outputKinds = new Set(["output", "ciphertext", "digest", "mac", "authTag", "derivedKey"]);
+    const inOutKinds = new Set(["iv", "nonce", "counter"]);
+    const direction: FridaCaptureDirection = outputKinds.has(material.kind)
+      ? "output"
+      : inOutKinds.has(material.kind) ? "inOut" : "input";
+    const capture: FridaArgumentSpec[] = registerMatch ? [{
+      index: Number(registerMatch[1]),
+      label: material.role || material.kind,
+      kind: material.byteLen != null ? "byteArray" : "pointer",
+      direction,
+      length: material.byteLen,
+      lengthArg: null,
+    }] : [];
+    const offset = line?.so_offset || "";
+    setFridaSeed({
+      sourceLabel: `${material.kind} material at line ${seq + 1}`,
+      moduleName: line?.so_name || "",
+      targetMode: offset ? "offset" : "symbol",
+      symbol: material.functionName || "",
+      offset,
+      functionName: material.functionName || material.role || material.kind,
+      arguments: capture,
+    });
+  }, [resolveTargetLine]);
 
   const segmentStyle = (active: boolean): React.CSSProperties => ({
     height: 26,
@@ -321,10 +416,23 @@ export default function CryptoPanel(props: Props) {
       <div style={{
         height: 35, padding: "4px 8px", display: "flex", alignItems: "center",
         borderBottom: "1px solid var(--border-color)", flexShrink: 0,
+        overflowX: "auto", overflowY: "hidden",
       }}>
-        <div style={{ display: "flex", border: "1px solid var(--border-color)", borderRadius: 4, overflow: "hidden" }}>
+        <div style={{
+          display: "flex", border: "1px solid var(--border-color)", borderRadius: 4,
+          overflow: "hidden", flexShrink: 0,
+        }}>
           <button type="button" style={segmentStyle(view === "value-search")} onClick={() => setView("value-search")}>
             Value Search
+          </button>
+          <button type="button" style={segmentStyle(view === "materials")} onClick={() => setView("materials")}>
+            Materials
+          </button>
+          <button type="button" style={segmentStyle(view === "frida")} onClick={() => setView("frida")}>
+            Frida Hook
+          </button>
+          <button type="button" style={segmentStyle(view === "ollvm")} onClick={() => setView("ollvm")}>
+            IDA / OLLVM
           </button>
           <button type="button" style={segmentStyle(view === "detection")} onClick={() => setView("detection")}>
             Detection
@@ -360,6 +468,15 @@ export default function CryptoPanel(props: Props) {
             onTraceMemory={props.onTraceMemory}
           />
         </div>
+        <div style={{ flex: 1, minWidth: 0, minHeight: 0, display: view === "materials" ? "flex" : "none" }}>
+          <CryptoMaterialsPanel sessionId={props.sessionId} onJumpToSeq={props.onJumpToSeq} onCreateHook={createMaterialHook} />
+        </div>
+        <div style={{ flex: 1, minWidth: 0, minHeight: 0, display: view === "frida" ? "flex" : "none" }}>
+          <FridaHookPanel seed={fridaSeed} />
+        </div>
+        <div style={{ flex: 1, minWidth: 0, minHeight: 0, display: view === "ollvm" ? "flex" : "none" }}>
+          <OllvmPanel sessionId={props.sessionId} onJumpToSeq={props.onJumpToSeq} />
+        </div>
         <div style={{ flex: 1, minWidth: 0, minHeight: 0, display: view === "detection" ? "flex" : "none" }}>
           <DetectionPanel
             cryptoResults={props.cryptoResults}
@@ -380,6 +497,7 @@ export default function CryptoPanel(props: Props) {
           <CryptoFunctionsPanel
             sessionId={props.sessionId}
             onJumpToSeq={props.onJumpToSeq}
+            onCreateHook={createFunctionHook}
           />
         </div>
         <div style={{ flex: 1, minWidth: 0, minHeight: 0, display: view === "whitebox" ? "flex" : "none" }}>

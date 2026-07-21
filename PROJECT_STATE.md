@@ -1,5 +1,15 @@
 # 项目状态与交接（先读这个）
 
+## 2026-07-22 当前增量
+
+- 新增 **Crypto Material Explorer**：统一索引 raw/derived key、password、salt、IV、nonce、counter、plaintext/ciphertext、digest/MAC、AAD、tag；支持 AES、MD5/SHA、HMAC、PBKDF2 确定性复算和跨 trace salt/nonce 候选隔离。
+- 新增 **Frida 16 Hook Generator**：按 module export 或 module-relative offset 生成 X0-X7、SP/LR/PC、buffer/string、return、backtrace、Stalker 脚本，事件协议为 `trace-ui/frida-hook-v1`。产品边界固定为“只生成/保存脚本”，用户自行 attach、spawn、load 和执行 hook。
+- 新增 **IDA / OLLVM**：动态 CFG、dispatcher/opaque branch 候选评分、IDAPython 注释/颜色/可选 xrefs，以及 `trace-ui/ida-ollvm-v1` annotations 双向 JSON。所有 OLLVM 结论保持动态候选级，不能从单条执行路径推断完整静态 CFG。
+- GUI 入口位于 `Crypto > Materials`、`Crypto > Frida Hook`、`Crypto > IDA / OLLVM`；Tauri 和 MCP 已完整接线。
+- MCP 新增 `analyze_crypto_materials`、`compare_crypto_material_traces`、`generate_frida_hook`、`analyze_ollvm`、`generate_ida_ollvm_script`、`inspect_ida_annotations`。
+- Skills：更新 `trace-analysis`，新增 `frida-hook-generation` 和 `ida-ollvm-analysis`。Frida skill 明确禁止自动执行脚本。
+- `main` push 会触发 `.github/workflows/macos.yml`，构建 macOS arm64 与 x64 DMG artifacts。
+
 > 用途：让 AI（Claude / Codex）快速理解当前项目状态再继续干活，也给作者自己当记忆锚点。
 > 最近更新：2026-07-18。历史设计见 `AI_ANALYSIS_ROADMAP.md` / `OPTIMIZATION_ROADMAP.md`，实施细节见 `CRYPTO_FUNCTIONS_IMPL.md`，macOS 构建见 `MACOS_SOURCE_BUILD.md`。
 

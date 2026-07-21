@@ -795,6 +795,211 @@ fn default_crypto_fn_candidates() -> u32 {
 }
 
 #[derive(Debug, Deserialize, JsonSchema)]
+pub struct AnalyzeCryptoMaterialsRequest {
+    #[schemars(description = "Session ID (optional if only one session is open)")]
+    pub session_id: Option<String>,
+    #[schemars(description = "Maximum material records to return (default: 500, max: 5000)")]
+    #[serde(default = "default_crypto_materials")]
+    pub max_materials: u32,
+    #[schemars(
+        description = "Include hexdump buffers from calls whose cryptographic role is unknown (default: false)"
+    )]
+    #[serde(default)]
+    pub include_unknown: bool,
+}
+
+fn default_crypto_materials() -> u32 {
+    500
+}
+
+#[derive(Debug, Deserialize, JsonSchema)]
+pub struct CompareCryptoMaterialTraceCaseRequest {
+    #[schemars(description = "Open trace session ID")]
+    pub session_id: String,
+    #[schemars(description = "Human-readable case label")]
+    pub label: String,
+    #[schemars(
+        description = "Caller-controlled primary input identity. Use the same value only when the password/message/input is intentionally unchanged."
+    )]
+    pub input_group: String,
+}
+
+#[derive(Debug, Deserialize, JsonSchema)]
+pub struct CompareCryptoMaterialTracesRequest {
+    #[schemars(
+        description = "Two to sixteen controlled trace cases. Pairs with the same input_group are compared to isolate changing digest-input fields."
+    )]
+    pub cases: Vec<CompareCryptoMaterialTraceCaseRequest>,
+}
+
+#[derive(Clone, Copy, Debug, Default, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase")]
+pub enum FridaArgumentKindRequest {
+    Integer,
+    #[default]
+    Pointer,
+    Utf8String,
+    Utf16String,
+    ByteArray,
+}
+
+#[derive(Clone, Copy, Debug, Default, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase")]
+pub enum FridaCaptureDirectionRequest {
+    #[default]
+    Input,
+    Output,
+    InOut,
+}
+
+#[derive(Clone, Copy, Debug, Default, Deserialize, JsonSchema)]
+#[serde(rename_all = "lowercase")]
+pub enum FridaStalkerModeRequest {
+    #[default]
+    Off,
+    Calls,
+    Blocks,
+    Instructions,
+}
+
+#[derive(Debug, Deserialize, JsonSchema)]
+pub struct FridaArgumentSpecRequest {
+    #[schemars(description = "ARM64 argument register index, from 0 (X0) through 7 (X7)")]
+    pub index: u8,
+    #[schemars(
+        description = "Human-readable capture role, such as key, input, output, salt, or length"
+    )]
+    pub label: Option<String>,
+    #[schemars(
+        description = "Capture decoder: integer, pointer, utf8String, utf16String, or byteArray"
+    )]
+    #[serde(default)]
+    pub kind: FridaArgumentKindRequest,
+    #[schemars(description = "Capture phase: input, output, or inOut")]
+    #[serde(default)]
+    pub direction: FridaCaptureDirectionRequest,
+    #[schemars(description = "Fixed byte/character length, bounded by max_bytes")]
+    pub length: Option<u32>,
+    #[schemars(description = "Optional X0-X7 register containing the dynamic length")]
+    pub length_arg: Option<u8>,
+}
+
+#[derive(Debug, Deserialize, JsonSchema)]
+pub struct GenerateFridaHookRequest {
+    #[schemars(description = "Loaded module basename, for example libcrypto.so")]
+    pub module_name: String,
+    #[schemars(description = "Exported symbol name. Provide exactly one of symbol or offset.")]
+    pub symbol: Option<String>,
+    #[schemars(
+        description = "Module-relative hexadecimal offset. Provide exactly one of symbol or offset."
+    )]
+    pub offset: Option<String>,
+    #[schemars(
+        description = "Optional stable hook label used in emitted events and the output filename"
+    )]
+    pub function_name: Option<String>,
+    #[schemars(description = "X0-X7 values to capture on entry and/or return")]
+    #[serde(default)]
+    pub arguments: Vec<FridaArgumentSpecRequest>,
+    #[schemars(description = "Capture X0-X7, SP, LR, and PC (default: true)")]
+    #[serde(default = "default_true")]
+    pub capture_registers: bool,
+    #[schemars(description = "Capture the return value in X0 (default: true)")]
+    #[serde(default = "default_true")]
+    pub capture_return: bool,
+    #[schemars(description = "Capture an accurate native backtrace on entry")]
+    #[serde(default)]
+    pub capture_backtrace: bool,
+    #[schemars(
+        description = "Optional Frida Stalker event level: off, calls, blocks, or instructions"
+    )]
+    #[serde(default)]
+    pub stalker: FridaStalkerModeRequest,
+    #[schemars(description = "Maximum Stalker capture duration in milliseconds (default: 10000)")]
+    #[serde(default = "default_frida_stalker_duration")]
+    pub stalker_duration_ms: u32,
+    #[schemars(
+        description = "Maximum bytes read from any pointer capture (default: 256, max: 1048576)"
+    )]
+    #[serde(default = "default_frida_max_bytes")]
+    pub max_bytes: u32,
+}
+
+fn default_frida_stalker_duration() -> u32 {
+    10_000
+}
+
+fn default_frida_max_bytes() -> u32 {
+    256
+}
+
+#[derive(Debug, Deserialize, JsonSchema)]
+pub struct AnalyzeOllvmRequest {
+    #[schemars(description = "Session ID (optional if only one session is open)")]
+    pub session_id: Option<String>,
+    #[schemars(
+        description = "Optional call-tree node ID. When present, analysis is scoped to that invocation."
+    )]
+    pub node_id: Option<u32>,
+    #[schemars(
+        description = "Optional module basename. When omitted, it is inferred from the selected function/range."
+    )]
+    pub module_name: Option<String>,
+    #[schemars(description = "Optional 0-based first trace sequence")]
+    pub start_seq: Option<u32>,
+    #[schemars(description = "Optional 0-based last trace sequence")]
+    pub end_seq: Option<u32>,
+    #[schemars(
+        description = "Retain nested child-call ranges in the dynamic CFG (default: false)"
+    )]
+    #[serde(default)]
+    pub include_child_calls: bool,
+    #[schemars(description = "Maximum returned blocks (default: 1000, max: 10000)")]
+    #[serde(default = "default_ollvm_blocks")]
+    pub max_blocks: u32,
+    #[schemars(description = "Maximum returned edges (default: 3000, max: 50000)")]
+    #[serde(default = "default_ollvm_edges")]
+    pub max_edges: u32,
+}
+
+#[derive(Debug, Deserialize, JsonSchema)]
+pub struct GenerateIdaOllvmScriptRequest {
+    #[schemars(description = "Session ID (optional if only one session is open)")]
+    pub session_id: Option<String>,
+    pub node_id: Option<u32>,
+    pub module_name: Option<String>,
+    pub start_seq: Option<u32>,
+    pub end_seq: Option<u32>,
+    #[serde(default)]
+    pub include_child_calls: bool,
+    #[serde(default = "default_ollvm_blocks")]
+    pub max_blocks: u32,
+    #[serde(default = "default_ollvm_edges")]
+    pub max_edges: u32,
+    #[schemars(description = "Optional IDA image base override, for example 0x7100000000")]
+    pub ida_image_base: Option<String>,
+    #[schemars(description = "Emit observed CFG edges as IDA user xrefs (default: false)")]
+    #[serde(default)]
+    pub add_user_xrefs: bool,
+}
+
+#[derive(Debug, Deserialize, JsonSchema)]
+pub struct InspectIdaAnnotationsRequest {
+    #[schemars(
+        description = "Absolute path to trace-ui/ida-ollvm-v1 JSON exported manually from IDA"
+    )]
+    pub file_path: String,
+}
+
+fn default_ollvm_blocks() -> u32 {
+    1_000
+}
+
+fn default_ollvm_edges() -> u32 {
+    3_000
+}
+
+#[derive(Debug, Deserialize, JsonSchema)]
 pub struct AnalyzeWhiteboxRequest {
     #[schemars(description = "Session ID (optional if only one session is open)")]
     pub session_id: Option<String>,
@@ -987,5 +1192,28 @@ mod tests {
         .unwrap();
         assert_eq!(request.cases[0].key_group, "key-a");
         assert_eq!(request.cases[0].input_group, "input-1");
+    }
+
+    #[test]
+    fn frida_hook_request_uses_bounded_capture_defaults() {
+        let request: GenerateFridaHookRequest = serde_json::from_value(serde_json::json!({
+            "module_name": "libtarget.so",
+            "offset": "0x1234"
+        }))
+        .unwrap();
+        assert!(request.capture_registers);
+        assert!(request.capture_return);
+        assert!(!request.capture_backtrace);
+        assert!(matches!(request.stalker, FridaStalkerModeRequest::Off));
+        assert_eq!(request.stalker_duration_ms, 10_000);
+        assert_eq!(request.max_bytes, 256);
+    }
+
+    #[test]
+    fn ollvm_request_defaults_to_bounded_dynamic_cfg() {
+        let request: AnalyzeOllvmRequest = serde_json::from_value(serde_json::json!({})).unwrap();
+        assert!(!request.include_child_calls);
+        assert_eq!(request.max_blocks, 1_000);
+        assert_eq!(request.max_edges, 3_000);
     }
 }

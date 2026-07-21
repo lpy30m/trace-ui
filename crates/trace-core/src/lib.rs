@@ -37,6 +37,11 @@ pub use query::crypto_functions::{
     CryptoFamily, CryptoFunctionCandidate, CryptoFunctionIo, CryptoFunctionReport,
     CryptoFunctionsOptions,
 };
+pub use query::crypto_material::{
+    CryptoFormula, CryptoMaterial, CryptoMaterialCaseSummary, CryptoMaterialKind,
+    CryptoMaterialMultiTraceReport, CryptoMaterialMultiTraceRequest, CryptoMaterialOptions,
+    CryptoMaterialReport, CryptoMaterialTraceCase, DynamicParameterCandidate,
+};
 pub use query::crypto_semantic_verify::{
     validate_pkcs7, verify_aes_cbc, verify_aes_ctr, verify_aes_ecb, verify_aes_gcm, AesDirection,
     AesGcmSemanticVerification, AesSemanticVerification, SemanticVerificationStatus,
@@ -44,12 +49,21 @@ pub use query::crypto_semantic_verify::{
 pub use query::evidence_score::{
     score_evidence, EvidenceAssessment, EvidenceScoreFactor, EvidenceScoreSignal,
 };
+pub use query::frida_hook::{
+    generate_frida_hook, FridaArgumentKind, FridaArgumentSpec, FridaCaptureDirection,
+    FridaHookRequest, FridaHookScript, FridaStalkerMode,
+};
 pub use query::function_inspect::{
     FunctionCallAnnotation, FunctionInspection, FunctionRef, MemTouch, RegValue,
 };
 pub use query::hash_match::{
     HashAlgorithm, HashDigestQueryResult, HashMatchRequest, HashMatchResponse, HashMatchResult,
     HashMemoryMatchResponse, HashMemoryMatchResult, HashTransform, HashTransformOptions,
+};
+pub use query::ollvm::{
+    generate_ida_ollvm_script, parse_ida_annotation_bundle, DispatcherCandidate, DynamicBasicBlock,
+    DynamicBlockInstruction, DynamicCfgEdge, IdaAnnotation, IdaAnnotationBundle, IdaOllvmScript,
+    OllvmAnalysisOptions, OllvmReport, OllvmScope, OpaqueBranchCandidate,
 };
 pub use query::source_sink::{
     apply_resource_validation, classify_flow_endpoints, CallResourceContext,

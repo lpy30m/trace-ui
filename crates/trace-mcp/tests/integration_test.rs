@@ -879,6 +879,40 @@ fn test_unidbg_format_basic() {
     engine.close_session(&sid).unwrap();
 }
 
+#[test]
+fn test_ollvm_dynamic_cfg_and_ida_bridge_on_real_trace() {
+    let (engine, sid) = setup_session(&get_trace_path());
+    let report = engine
+        .analyze_ollvm(
+            &sid,
+            trace_core::OllvmAnalysisOptions {
+                module_name: Some("libmetasec_ov.so".to_string()),
+                start_seq: Some(0),
+                end_seq: Some(200),
+                include_child_calls: true,
+                max_blocks: 500,
+                max_edges: 1_000,
+                ..Default::default()
+            },
+        )
+        .expect("dynamic CFG analysis");
+    assert_eq!(report.scope.module_name, "libmetasec_ov.so");
+    assert!(report.executed_instruction_count > 0);
+    assert!(report.block_count > 0);
+    assert!(report.edge_count > 0);
+    assert!(report
+        .blocks
+        .iter()
+        .all(|block| block.start_offset.starts_with("0x")));
+
+    let script = trace_core::generate_ida_ollvm_script(&report, None, false)
+        .expect("generate IDAPython bridge");
+    assert!(script.script.contains("idaapi.get_imagebase()"));
+    assert!(script.script.contains("def export_ida_annotations"));
+    assert!(script.script.contains("ADD_USER_XREFS = False"));
+    engine.close_session(&sid).unwrap();
+}
+
 // ━━━━━━━━━━━━━━━━━━━━━━ spawn_blocking 验证 ━━━━━━━━━━━━━━━━━━━━━━
 
 #[tokio::test]

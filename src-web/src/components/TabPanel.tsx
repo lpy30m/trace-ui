@@ -294,9 +294,12 @@ export default function TabPanel({
 
   return (
     <div style={{ height: "100%", display: "flex", flexDirection: "column", background: "var(--bg-primary)", overflow: "hidden" }}>
-      <div style={{ display: "flex", alignItems: "center", borderBottom: "1px solid var(--border-color)", flexShrink: 0 }}>
+      <div style={{
+        display: "flex", alignItems: "center", borderBottom: "1px solid var(--border-color)",
+        flexShrink: 0, overflowX: "auto", overflowY: "hidden",
+      }}>
         {visibleTabs.map(tab => (
-          <div key={tab} style={{ display: "flex", alignItems: "center" }}>
+          <div key={tab} style={{ display: "flex", alignItems: "center", flexShrink: 0 }}>
             <button
               onMouseDown={(e) => startDrag(TAB_TO_PANEL[tab], tab === "Search" ? `Search${searchBadge}` : tab, e)}
               onDoubleClick={() => { if (tab === "Memory") setMemResetKey(k => k + 1); }}
@@ -311,7 +314,7 @@ export default function TabPanel({
             >{tab === "Search" ? `Search${searchBadge}` : tab}</button>
           </div>
         ))}
-        <div style={{ marginLeft: "auto", paddingRight: 8 }} />
+        <div style={{ marginLeft: "auto", paddingRight: 8, flexShrink: 0 }} />
       </div>
 
       {/* 内容区域：relative 容器，所有 tab 用 absolute 堆叠 */}

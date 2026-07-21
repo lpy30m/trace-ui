@@ -331,6 +331,274 @@ export interface CryptoFunctionReport {
   zeroResultExplanation: string | null;
 }
 
+export type CryptoMaterialKind =
+  | "key"
+  | "expandedKey"
+  | "password"
+  | "salt"
+  | "iv"
+  | "nonce"
+  | "counter"
+  | "aad"
+  | "authTag"
+  | "input"
+  | "output"
+  | "plaintext"
+  | "ciphertext"
+  | "digest"
+  | "mac"
+  | "derivedKey"
+  | "unknown";
+
+export interface CryptoMaterial {
+  materialId: string;
+  kind: CryptoMaterialKind;
+  role: string;
+  algorithm: string | null;
+  bytesHex: string | null;
+  asciiPreview: string | null;
+  byteLen: number | null;
+  address: string | null;
+  observationSeq: number | null;
+  completionSeq: number | null;
+  functionName: string | null;
+  register: string | null;
+  source: string;
+  evidence: string[];
+  assessment: EvidenceAssessment;
+}
+
+export interface CryptoFormula {
+  formulaId: string;
+  operation: string;
+  algorithm: string;
+  expression: string;
+  inputMaterialIds: string[];
+  outputMaterialId: string | null;
+  callSeq: number | null;
+  functionName: string | null;
+  evidence: string[];
+  assessment: EvidenceAssessment;
+}
+
+export interface CryptoMaterialReport {
+  materials: CryptoMaterial[];
+  formulas: CryptoFormula[];
+  materialCounts: Record<string, number>;
+  verifiedMaterials: number;
+  verifiedFormulas: number;
+  annotationsScanned: number;
+  materialsTruncated: boolean;
+  coverage: string[];
+  limitations: string[];
+}
+
+export interface CryptoMaterialTraceCase {
+  sessionId: string;
+  label: string;
+  inputGroup: string;
+}
+
+export interface DynamicParameterCandidate {
+  algorithm: string;
+  functionName: string | null;
+  leftLabel: string;
+  rightLabel: string;
+  inputGroup: string;
+  byteOffset: number;
+  commonPrefixHex: string;
+  commonSuffixHex: string;
+  leftVariableHex: string;
+  rightVariableHex: string;
+  roleHint: string;
+  rationale: string;
+  assessment: EvidenceAssessment;
+}
+
+export interface CryptoMaterialMultiTraceReport {
+  cases: Array<{
+    sessionId: string;
+    label: string;
+    inputGroup: string;
+    materialCount: number;
+    formulaCount: number;
+    verifiedFormulaCount: number;
+    explicitSaltCount: number;
+  }>;
+  dynamicParameterCandidates: DynamicParameterCandidate[];
+  verificationGateMet: boolean;
+  limitations: string[];
+  nextSteps: string[];
+}
+
+export type FridaArgumentKind = "integer" | "pointer" | "utf8String" | "utf16String" | "byteArray";
+export type FridaCaptureDirection = "input" | "output" | "inOut";
+export type FridaStalkerMode = "off" | "calls" | "blocks" | "instructions";
+
+export interface FridaArgumentSpec {
+  index: number;
+  label: string | null;
+  kind: FridaArgumentKind;
+  direction: FridaCaptureDirection;
+  length: number | null;
+  lengthArg: number | null;
+}
+
+export interface FridaHookRequest {
+  moduleName: string;
+  symbol: string | null;
+  offset: string | null;
+  functionName: string | null;
+  arguments: FridaArgumentSpec[];
+  captureRegisters: boolean;
+  captureReturn: boolean;
+  captureBacktrace: boolean;
+  stalker: FridaStalkerMode;
+  stalkerDurationMs: number;
+  maxBytes: number;
+}
+
+export interface FridaHookScript {
+  hookId: string;
+  fileName: string;
+  targetExpression: string;
+  script: string;
+  warnings: string[];
+  protocolVersion: string;
+  fridaApiVersion: string;
+}
+
+export interface FridaHookSeed {
+  sourceLabel: string;
+  moduleName: string;
+  targetMode: "symbol" | "offset";
+  symbol: string;
+  offset: string;
+  functionName: string;
+  arguments: FridaArgumentSpec[];
+}
+
+export interface OllvmAnalysisOptions {
+  nodeId: number | null;
+  moduleName: string | null;
+  startSeq: number | null;
+  endSeq: number | null;
+  includeChildCalls: boolean;
+  maxBlocks: number;
+  maxEdges: number;
+}
+
+export interface OllvmScope {
+  sessionId: string;
+  nodeId: number | null;
+  functionName: string | null;
+  moduleName: string;
+  moduleBase: string;
+  startSeq: number;
+  endSeq: number;
+  childCallsExcluded: number;
+}
+
+export interface DynamicBlockInstruction {
+  offset: string;
+  address: string;
+  disasm: string;
+  executionCount: number;
+  sampleSeq: number;
+}
+
+export interface DynamicBasicBlock {
+  blockId: string;
+  moduleName: string;
+  startOffset: string;
+  endOffset: string;
+  startAddress: string;
+  endAddress: string;
+  visitCount: number;
+  predecessorCount: number;
+  successorCount: number;
+  terminalOperation: string;
+  sampleSeqs: number[];
+  instructions: DynamicBlockInstruction[];
+}
+
+export interface DynamicCfgEdge {
+  sourceBlockId: string;
+  targetBlockId: string;
+  sourceOffset: string;
+  targetOffset: string;
+  kind: string;
+  executionCount: number;
+  sampleSeq: number;
+  backward: boolean;
+}
+
+export interface DispatcherCandidate {
+  blockId: string;
+  startOffset: string;
+  endOffset: string;
+  visitCount: number;
+  predecessorCount: number;
+  successorCount: number;
+  indirectBranchCount: number;
+  backwardEdgeCount: number;
+  stateRegisters: string[];
+  rationale: string;
+  assessment: EvidenceAssessment;
+}
+
+export interface OpaqueBranchCandidate {
+  branchOffset: string;
+  disasm: string;
+  executionCount: number;
+  observedTakenCount: number;
+  observedFallthroughCount: number;
+  observedOtherCount: number;
+  observedSuccessors: string[];
+  conditionSourceOffsets: string[];
+  rationale: string;
+  assessment: EvidenceAssessment;
+}
+
+export interface OllvmReport {
+  schemaVersion: string;
+  scope: OllvmScope;
+  executedInstructionCount: number;
+  uniqueInstructionCount: number;
+  blockCount: number;
+  edgeCount: number;
+  blocks: DynamicBasicBlock[];
+  edges: DynamicCfgEdge[];
+  dispatcherCandidates: DispatcherCandidate[];
+  opaqueBranchCandidates: OpaqueBranchCandidate[];
+  instructionsTruncated: boolean;
+  blocksTruncated: boolean;
+  edgesTruncated: boolean;
+  limitations: string[];
+  nextSteps: string[];
+}
+
+export interface IdaOllvmScript {
+  fileName: string;
+  script: string;
+  schemaVersion: string;
+  warnings: string[];
+}
+
+export interface IdaAnnotation {
+  offset: string;
+  name: string | null;
+  comment: string | null;
+  repeatableComment: string | null;
+}
+
+export interface IdaAnnotationBundle {
+  schema: string;
+  moduleName: string;
+  imageBase: string;
+  annotations: IdaAnnotation[];
+}
+
 export interface WhiteBoxIoBlock {
   baseAddr: string;
   byteLen: number;
@@ -592,6 +860,8 @@ export interface SoftwareCryptoReport {
   keyAscii: string;
   keyObservationSeq: number;
   inputObservationSeq: number;
+  inputHex: string;
+  outputHex: string;
   ivHex: string | null;
   ivObservationSeq: number | null;
   authTagHex: string | null;

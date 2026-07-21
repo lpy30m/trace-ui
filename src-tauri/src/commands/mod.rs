@@ -613,6 +613,167 @@ pub async fn analyze_crypto_functions(
 }
 
 #[tauri::command]
+pub async fn analyze_crypto_materials(
+    session_id: String,
+    max_materials: Option<u32>,
+    include_unknown: Option<bool>,
+    engine: State<'_, Arc<TraceEngine>>,
+) -> Result<trace_core::CryptoMaterialReport, String> {
+    let engine = engine.inner().clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        engine
+            .analyze_crypto_materials(
+                &session_id,
+                trace_core::CryptoMaterialOptions {
+                    max_materials: max_materials.unwrap_or(500),
+                    include_unknown: include_unknown.unwrap_or(false),
+                },
+            )
+            .map_err(|error| error.to_string())
+    })
+    .await
+    .map_err(|error| format!("Task execution failed: {error}"))?
+}
+
+#[tauri::command]
+pub async fn compare_crypto_material_traces(
+    request: trace_core::CryptoMaterialMultiTraceRequest,
+    engine: State<'_, Arc<TraceEngine>>,
+) -> Result<trace_core::CryptoMaterialMultiTraceReport, String> {
+    let engine = engine.inner().clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        engine
+            .compare_crypto_material_traces(request)
+            .map_err(|error| error.to_string())
+    })
+    .await
+    .map_err(|error| format!("Task execution failed: {error}"))?
+}
+
+#[tauri::command]
+pub fn generate_frida_hook(
+    request: trace_core::FridaHookRequest,
+) -> Result<trace_core::FridaHookScript, String> {
+    trace_core::generate_frida_hook(&request)
+}
+
+#[tauri::command]
+pub async fn save_frida_hook(
+    path: String,
+    request: trace_core::FridaHookRequest,
+) -> Result<String, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        let generated = trace_core::generate_frida_hook(&request)?;
+        let trimmed = path.trim();
+        if trimmed.is_empty() {
+            return Err("output path must not be empty".to_string());
+        }
+        let mut output_path = std::path::PathBuf::from(trimmed);
+        if output_path.extension().and_then(|value| value.to_str()) != Some("js") {
+            output_path.set_extension("js");
+        }
+        let parent = output_path
+            .parent()
+            .filter(|value| !value.as_os_str().is_empty())
+            .ok_or_else(|| "output path must include a parent directory".to_string())?;
+        if !parent.is_dir() {
+            return Err(format!(
+                "output directory does not exist: {}",
+                parent.display()
+            ));
+        }
+        std::fs::write(&output_path, generated.script.as_bytes())
+            .map_err(|error| format!("failed to save hook script: {error}"))?;
+        Ok(output_path.to_string_lossy().into_owned())
+    })
+    .await
+    .map_err(|error| format!("Task execution failed: {error}"))?
+}
+
+#[tauri::command]
+pub async fn analyze_ollvm(
+    session_id: String,
+    options: trace_core::OllvmAnalysisOptions,
+    engine: State<'_, Arc<TraceEngine>>,
+) -> Result<trace_core::OllvmReport, String> {
+    let engine = engine.inner().clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        engine
+            .analyze_ollvm(&session_id, options)
+            .map_err(|error| error.to_string())
+    })
+    .await
+    .map_err(|error| format!("Task execution failed: {error}"))?
+}
+
+#[tauri::command]
+pub fn generate_ida_ollvm_script(
+    report: trace_core::OllvmReport,
+    ida_image_base: Option<String>,
+    add_user_xrefs: Option<bool>,
+) -> Result<trace_core::IdaOllvmScript, String> {
+    trace_core::generate_ida_ollvm_script(
+        &report,
+        ida_image_base.as_deref(),
+        add_user_xrefs.unwrap_or(false),
+    )
+}
+
+#[tauri::command]
+pub async fn save_ida_ollvm_script(
+    path: String,
+    report: trace_core::OllvmReport,
+    ida_image_base: Option<String>,
+    add_user_xrefs: Option<bool>,
+) -> Result<String, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        let generated = trace_core::generate_ida_ollvm_script(
+            &report,
+            ida_image_base.as_deref(),
+            add_user_xrefs.unwrap_or(false),
+        )?;
+        let trimmed = path.trim();
+        if trimmed.is_empty() {
+            return Err("output path must not be empty".to_string());
+        }
+        let mut output_path = std::path::PathBuf::from(trimmed);
+        if output_path.extension().and_then(|value| value.to_str()) != Some("py") {
+            output_path.set_extension("py");
+        }
+        let parent = output_path
+            .parent()
+            .filter(|value| !value.as_os_str().is_empty())
+            .ok_or_else(|| "output path must include a parent directory".to_string())?;
+        if !parent.is_dir() {
+            return Err(format!(
+                "output directory does not exist: {}",
+                parent.display()
+            ));
+        }
+        std::fs::write(&output_path, generated.script.as_bytes())
+            .map_err(|error| format!("failed to save IDAPython script: {error}"))?;
+        Ok(output_path.to_string_lossy().into_owned())
+    })
+    .await
+    .map_err(|error| format!("Task execution failed: {error}"))?
+}
+
+#[tauri::command]
+pub async fn load_ida_annotations(path: String) -> Result<trace_core::IdaAnnotationBundle, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        let trimmed = path.trim();
+        if trimmed.is_empty() {
+            return Err("annotation path must not be empty".to_string());
+        }
+        let bytes = std::fs::read(trimmed)
+            .map_err(|error| format!("failed to read IDA annotations: {error}"))?;
+        trace_core::parse_ida_annotation_bundle(&bytes)
+    })
+    .await
+    .map_err(|error| format!("Task execution failed: {error}"))?
+}
+
+#[tauri::command]
 pub async fn analyze_whitebox_crypto(
     session_id: String,
     algorithm: Option<String>,

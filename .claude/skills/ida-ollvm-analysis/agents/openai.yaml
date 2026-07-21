@@ -1,0 +1,15 @@
+interface:
+  display_name: "IDA OLLVM Analysis"
+  short_description: "Bridge dynamic traces with IDA OLLVM analysis"
+  default_prompt: "Use $ida-ollvm-analysis to analyze this trace for OLLVM candidates and generate a manual IDAPython bridge."
+
+dependencies:
+  tools:
+    - type: "mcp"
+      value: "trace-ui"
+      description: "Local Trace UI dynamic OLLVM and IDA bridge server"
+      transport: "streamable_http"
+      url: "http://127.0.0.1:19821/mcp"
+
+policy:
+  allow_implicit_invocation: true

@@ -11,12 +11,16 @@ use rmcp::{
 
 use crate::types::*;
 use trace_core::{
-    api_types::TraceLine, apply_resource_validation, classify_flow_endpoints, parse_hex_addr,
-    score_evidence, summarize_dependency_graph, AnalysisEvidence, BuildOptions,
-    CryptoFunctionsOptions, DepTreeOptions, EvidenceScoreSignal, ForwardSliceOptions,
-    HashAlgorithm, HashMatchRequest, HashTransformOptions, SearchOptions, SliceOptions,
-    StringQueryOptions, TraceDiffOptions, TraceEngine, ValueEndian, ValueSearchKind,
-    ValueSearchRequest, WhiteBoxMultiTraceRequest, WhiteBoxOptions, WhiteBoxTraceCaseRequest,
+    api_types::TraceLine, apply_resource_validation, classify_flow_endpoints,
+    generate_frida_hook as build_frida_hook, generate_ida_ollvm_script, parse_hex_addr,
+    parse_ida_annotation_bundle, score_evidence, summarize_dependency_graph, AnalysisEvidence,
+    BuildOptions, CryptoFunctionsOptions, CryptoMaterialKind, CryptoMaterialMultiTraceRequest,
+    CryptoMaterialOptions, CryptoMaterialTraceCase, DepTreeOptions, EvidenceScoreSignal,
+    ForwardSliceOptions, FridaArgumentKind, FridaArgumentSpec, FridaCaptureDirection,
+    FridaHookRequest, FridaStalkerMode, HashAlgorithm, HashMatchRequest, HashTransformOptions,
+    OllvmAnalysisOptions, SearchOptions, SliceOptions, StringQueryOptions, TraceDiffOptions,
+    TraceEngine, ValueEndian, ValueSearchKind, ValueSearchRequest, WhiteBoxMultiTraceRequest,
+    WhiteBoxOptions, WhiteBoxTraceCaseRequest,
 };
 
 fn decode_hex_bytes(value: &str) -> Result<Vec<u8>, String> {
@@ -2087,6 +2091,10 @@ impl TraceToolHandler {
                 "analysis_scoped_pagination".to_string(),
                 "structured_tool_output".to_string(),
                 "unified_value_search".to_string(),
+                "crypto_material_index".to_string(),
+                "frida_hook_generation".to_string(),
+                "dynamic_cfg_ollvm_analysis".to_string(),
+                "idapython_bridge_generation".to_string(),
             ],
         }))
     }
@@ -3887,6 +3895,314 @@ impl TraceToolHandler {
                 }
             }
             Ok(json(&result))
+        })
+        .await
+    }
+
+    #[tool(
+        name = "analyze_crypto_materials",
+        description = "Build a unified evidence-ranked index of runtime cryptographic material: raw/derived keys, password, salt, IV, nonce, counter, plaintext/ciphertext, digest/MAC, AAD and authentication tags. Reconstructs MD5/SHA/HMAC/PBKDF2 formulas from call ABI plus hexdumps and imports semantically verified AES material. Only deterministic recomputation opens the Verified gate; API roles remain Related. Saves an analysis_id."
+    )]
+    async fn analyze_crypto_materials(
+        &self,
+        Parameters(req): Parameters<AnalyzeCryptoMaterialsRequest>,
+    ) -> Result<String, String> {
+        let sid = self.resolve_session(req.session_id)?;
+        let engine = self.engine.clone();
+        blocking(move || {
+            let report = engine
+                .analyze_crypto_materials(
+                    &sid,
+                    CryptoMaterialOptions {
+                        max_materials: req.max_materials.clamp(1, 5_000),
+                        include_unknown: req.include_unknown,
+                    },
+                )
+                .map_err(|error| error.to_string())?;
+            let mut evidence = AnalysisEvidence::default();
+            for material in &report.materials {
+                if let Some(algorithm) = &material.algorithm {
+                    push_unique(&mut evidence.algorithms, algorithm.clone());
+                }
+                if let Some(function) = &material.function_name {
+                    push_unique(&mut evidence.functions, function.clone());
+                }
+                if let Some(address) = &material.address {
+                    push_unique(&mut evidence.addresses, address.clone());
+                }
+                if let Some(bytes) = &material.bytes_hex {
+                    match material.kind {
+                        CryptoMaterialKind::Key
+                        | CryptoMaterialKind::ExpandedKey
+                        | CryptoMaterialKind::DerivedKey
+                        | CryptoMaterialKind::Password
+                        | CryptoMaterialKind::Salt => {
+                            push_unique(&mut evidence.key_strings, bytes.clone())
+                        }
+                        CryptoMaterialKind::Digest
+                        | CryptoMaterialKind::Mac
+                        | CryptoMaterialKind::AuthTag => {
+                            push_unique(&mut evidence.digests, bytes.clone())
+                        }
+                        _ => {}
+                    }
+                }
+                push_unique(&mut evidence.operations, material.role.clone());
+            }
+            for formula in &report.formulas {
+                push_unique(&mut evidence.operations, formula.expression.clone());
+            }
+            evidence.algorithms.truncate(100);
+            evidence.functions.truncate(100);
+            evidence.addresses.truncate(200);
+            evidence.key_strings.truncate(100);
+            evidence.digests.truncate(100);
+            evidence.operations.truncate(200);
+
+            let mut result = serde_json::to_value(&report)
+                .map_err(|error| format!("serialize failed: {error}"))?;
+            let record = engine
+                .save_analysis(
+                    &sid,
+                    "crypto_materials",
+                    "Cryptographic material and formula index",
+                    serde_json::json!({
+                        "maxMaterials": req.max_materials,
+                        "includeUnknown": req.include_unknown,
+                    }),
+                    result.clone(),
+                    evidence,
+                )
+                .map_err(|error| error.to_string())?;
+            result["analysisId"] = serde_json::json!(record.analysis_id);
+            result["saved"] = serde_json::json!(true);
+            Ok(json(&result))
+        })
+        .await
+    }
+
+    #[tool(
+        name = "compare_crypto_material_traces",
+        description = "Compare two to sixteen controlled traces after indexing crypto material. Pairs sharing input_group are checked for changing ranges inside semantically verified digest inputs. Returns saltOrNonceCandidate ranges with exact offsets and bytes, but deliberately keeps the verification gate closed until API provenance or additional controlled runs identify the role."
+    )]
+    async fn compare_crypto_material_traces(
+        &self,
+        Parameters(req): Parameters<CompareCryptoMaterialTracesRequest>,
+    ) -> Result<String, String> {
+        if !(2..=16).contains(&req.cases.len()) {
+            return Err("Two to sixteen trace cases are required".to_string());
+        }
+        let first_session = req.cases[0].session_id.clone();
+        let request = CryptoMaterialMultiTraceRequest {
+            cases: req
+                .cases
+                .into_iter()
+                .map(|case| CryptoMaterialTraceCase {
+                    session_id: case.session_id,
+                    label: case.label,
+                    input_group: case.input_group,
+                })
+                .collect(),
+        };
+        let engine = self.engine.clone();
+        blocking(move || {
+            let report = engine
+                .compare_crypto_material_traces(request)
+                .map_err(|error| error.to_string())?;
+            let mut evidence = AnalysisEvidence::default();
+            for candidate in &report.dynamic_parameter_candidates {
+                push_unique(&mut evidence.algorithms, candidate.algorithm.clone());
+                if let Some(function) = &candidate.function_name {
+                    push_unique(&mut evidence.functions, function.clone());
+                }
+                push_unique(
+                    &mut evidence.operations,
+                    format!(
+                        "{}@+{}:{}->{}",
+                        candidate.role_hint,
+                        candidate.byte_offset,
+                        candidate.left_variable_hex,
+                        candidate.right_variable_hex
+                    ),
+                );
+            }
+            let mut result = serde_json::to_value(&report)
+                .map_err(|error| format!("serialize failed: {error}"))?;
+            let record = engine
+                .save_analysis(
+                    &first_session,
+                    "crypto_material_diff",
+                    "Controlled multi-trace crypto material comparison",
+                    serde_json::json!({ "caseCount": report.cases.len() }),
+                    result.clone(),
+                    evidence,
+                )
+                .map_err(|error| error.to_string())?;
+            result["analysisId"] = serde_json::json!(record.analysis_id);
+            result["saved"] = serde_json::json!(true);
+            Ok(json(&result))
+        })
+        .await
+    }
+
+    #[tool(
+        name = "generate_frida_hook",
+        description = "Generate a bounded ARM64 Frida 16.x Interceptor hook for a module export or module-relative offset. Captures selected X0-X7 arguments, SP/LR/PC, return value, optional backtrace, and optional Stalker calls/blocks/instructions. The script emits structured trace-ui/frida-hook-v1 send() messages and is intended to be loaded manually by the user."
+    )]
+    fn generate_frida_hook(
+        &self,
+        Parameters(req): Parameters<GenerateFridaHookRequest>,
+    ) -> Result<String, String> {
+        let request = FridaHookRequest {
+            module_name: req.module_name,
+            symbol: req.symbol,
+            offset: req.offset,
+            function_name: req.function_name,
+            arguments: req
+                .arguments
+                .into_iter()
+                .map(|argument| FridaArgumentSpec {
+                    index: argument.index,
+                    label: argument.label,
+                    kind: match argument.kind {
+                        FridaArgumentKindRequest::Integer => FridaArgumentKind::Integer,
+                        FridaArgumentKindRequest::Pointer => FridaArgumentKind::Pointer,
+                        FridaArgumentKindRequest::Utf8String => FridaArgumentKind::Utf8String,
+                        FridaArgumentKindRequest::Utf16String => FridaArgumentKind::Utf16String,
+                        FridaArgumentKindRequest::ByteArray => FridaArgumentKind::ByteArray,
+                    },
+                    direction: match argument.direction {
+                        FridaCaptureDirectionRequest::Input => FridaCaptureDirection::Input,
+                        FridaCaptureDirectionRequest::Output => FridaCaptureDirection::Output,
+                        FridaCaptureDirectionRequest::InOut => FridaCaptureDirection::InOut,
+                    },
+                    length: argument.length,
+                    length_arg: argument.length_arg,
+                })
+                .collect(),
+            capture_registers: req.capture_registers,
+            capture_return: req.capture_return,
+            capture_backtrace: req.capture_backtrace,
+            stalker: match req.stalker {
+                FridaStalkerModeRequest::Off => FridaStalkerMode::Off,
+                FridaStalkerModeRequest::Calls => FridaStalkerMode::Calls,
+                FridaStalkerModeRequest::Blocks => FridaStalkerMode::Blocks,
+                FridaStalkerModeRequest::Instructions => FridaStalkerMode::Instructions,
+            },
+            stalker_duration_ms: req.stalker_duration_ms,
+            max_bytes: req.max_bytes,
+        };
+        Ok(json(&build_frida_hook(&request)?))
+    }
+
+    #[tool(
+        name = "analyze_ollvm",
+        description = "Build an ASLR-robust dynamic CFG from executed module-relative offsets and rank OLLVM control-flow-flattening dispatcher and opaque-branch candidates. Call-tree node scoping excludes child calls by default. Results are dynamic evidence only: unexecuted blocks and alternate paths are not inferred. Saves an analysis_id."
+    )]
+    async fn analyze_ollvm(
+        &self,
+        Parameters(req): Parameters<AnalyzeOllvmRequest>,
+    ) -> Result<String, String> {
+        let sid = self.resolve_session(req.session_id)?;
+        let engine = self.engine.clone();
+        blocking(move || {
+            let options = OllvmAnalysisOptions {
+                node_id: req.node_id,
+                module_name: req.module_name,
+                start_seq: req.start_seq,
+                end_seq: req.end_seq,
+                include_child_calls: req.include_child_calls,
+                max_blocks: req.max_blocks,
+                max_edges: req.max_edges,
+            };
+            let request_record = serde_json::to_value(&options)
+                .map_err(|error| format!("serialize request failed: {error}"))?;
+            let report = engine
+                .analyze_ollvm(&sid, options)
+                .map_err(|error| error.to_string())?;
+            let mut evidence = AnalysisEvidence::default();
+            push_unique(&mut evidence.modules, report.scope.module_name.clone());
+            for candidate in &report.dispatcher_candidates {
+                push_unique(&mut evidence.addresses, candidate.start_offset.clone());
+                push_unique(
+                    &mut evidence.operations,
+                    format!("dispatcher_candidate:{}", candidate.start_offset),
+                );
+            }
+            for candidate in &report.opaque_branch_candidates {
+                push_unique(&mut evidence.addresses, candidate.branch_offset.clone());
+                push_unique(
+                    &mut evidence.operations,
+                    format!("opaque_branch_candidate:{}", candidate.branch_offset),
+                );
+            }
+            evidence.warnings.extend(report.limitations.clone());
+            let mut result = serde_json::to_value(&report)
+                .map_err(|error| format!("serialize report failed: {error}"))?;
+            let record = engine
+                .save_analysis(
+                    &sid,
+                    "ollvm_dynamic_cfg",
+                    "Dynamic CFG and OLLVM candidate analysis",
+                    request_record,
+                    result.clone(),
+                    evidence,
+                )
+                .map_err(|error| error.to_string())?;
+            result["analysisId"] = serde_json::json!(record.analysis_id);
+            result["saved"] = serde_json::json!(true);
+            Ok(json(&result))
+        })
+        .await
+    }
+
+    #[tool(
+        name = "generate_ida_ollvm_script",
+        description = "Analyze a trace-scoped function/range and generate a manual IDAPython bridge. The script aligns module offsets to IDA imagebase, adds dynamic CFG and OLLVM candidate comments/colors, keeps user xrefs opt-in, and can export IDA names/comments back as trace-ui/ida-ollvm-v1 JSON."
+    )]
+    async fn generate_ida_ollvm_script(
+        &self,
+        Parameters(req): Parameters<GenerateIdaOllvmScriptRequest>,
+    ) -> Result<String, String> {
+        let sid = self.resolve_session(req.session_id)?;
+        let engine = self.engine.clone();
+        blocking(move || {
+            let report = engine
+                .analyze_ollvm(
+                    &sid,
+                    OllvmAnalysisOptions {
+                        node_id: req.node_id,
+                        module_name: req.module_name,
+                        start_seq: req.start_seq,
+                        end_seq: req.end_seq,
+                        include_child_calls: req.include_child_calls,
+                        max_blocks: req.max_blocks,
+                        max_edges: req.max_edges,
+                    },
+                )
+                .map_err(|error| error.to_string())?;
+            let generated = generate_ida_ollvm_script(
+                &report,
+                req.ida_image_base.as_deref(),
+                req.add_user_xrefs,
+            )?;
+            Ok(json(&generated))
+        })
+        .await
+    }
+
+    #[tool(
+        name = "inspect_ida_annotations",
+        description = "Read and validate a trace-ui/ida-ollvm-v1 JSON file exported manually from IDA. Returns module-relative names and comments without modifying the trace or IDA database."
+    )]
+    async fn inspect_ida_annotations(
+        &self,
+        Parameters(req): Parameters<InspectIdaAnnotationsRequest>,
+    ) -> Result<String, String> {
+        blocking(move || {
+            let bytes = std::fs::read(&req.file_path)
+                .map_err(|error| format!("failed to read IDA annotations: {error}"))?;
+            Ok(json(&parse_ida_annotation_bundle(&bytes)?))
         })
         .await
     }

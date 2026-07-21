@@ -91,3 +91,12 @@ cargo tauri dev
 
 The frontend uses `http://localhost:5173`. The embedded MCP server listens on
 `http://127.0.0.1:19821/mcp` while the desktop application is running.
+
+## GitHub Actions artifacts
+
+Every push to `main` triggers `.github/workflows/macos.yml`. The matrix builds both:
+
+- `aarch64-apple-darwin` for Apple Silicon
+- `x86_64-apple-darwin` for Intel Macs
+
+Each job ad-hoc signs the `.app`, rebuilds the DMG, and uploads a `TraceUI-macOS-*` artifact for 14 days. Script generation features do not require Frida to be installed on the GitHub runner because Trace UI does not attach to or execute Frida.

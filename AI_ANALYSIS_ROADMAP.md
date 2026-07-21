@@ -27,6 +27,10 @@
 - [x] 分析证据结构化为算法、摘要、函数、模块、字符串、地址、操作和警告。
 - [x] 候选证据 `verified/related/uncertain` 分级、可解释评分因子和验证范围。
 - [x] 跨 Session Trace Diff：比较函数、分支、指令和内存访问站点的动态执行差异。
+- [x] Crypto Materials：统一索引 key/password/salt/IV/nonce/counter/input/output/digest/MAC/AAD/tag，并语义复算 AES、MD5/SHA、HMAC、PBKDF2。
+- [x] 跨 trace salt/nonce 候选隔离：对相同 caller input 的多次运行比较变化字节范围，保持候选级验证边界。
+- [x] Frida 16.x Hook Generator：生成 module symbol/offset、X0-X7、buffer/string、return/backtrace/Stalker 脚本；用户手动 attach/spawn/load。
+- [x] IDA / OLLVM：ASLR 稳定动态 CFG、dispatcher/opaque branch 候选、IDAPython 注释桥和 IDA annotation JSON 回导。
 
 ## 3. 当前限制
 
