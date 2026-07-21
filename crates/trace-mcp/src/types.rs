@@ -925,6 +925,32 @@ pub struct GenerateFridaHookRequest {
     pub max_bytes: u32,
 }
 
+#[derive(Debug, Deserialize, JsonSchema)]
+pub struct InspectFridaCaptureRequest {
+    #[schemars(
+        description = "Absolute path to JSON, JSON-array, or NDJSON containing trace-ui/frida-hook-v1 send() messages captured by the user"
+    )]
+    pub file_path: String,
+}
+
+#[derive(Debug, Deserialize, JsonSchema)]
+pub struct GenerateAngrStateSeedRequest {
+    #[schemars(
+        description = "Absolute path to a user-captured trace-ui/frida-hook-v1 JSON/NDJSON file"
+    )]
+    pub file_path: String,
+    #[schemars(description = "Normalized capture event index, normally a hook-enter event")]
+    pub event_index: u64,
+    #[schemars(
+        description = "Seed SP from the capture (default: false; uncaptured stack bytes remain unconstrained)"
+    )]
+    #[serde(default)]
+    pub include_sp: bool,
+    #[schemars(description = "Seed LR/X30 from the capture (default: true)")]
+    #[serde(default = "default_true")]
+    pub include_lr: bool,
+}
+
 fn default_frida_stalker_duration() -> u32 {
     10_000
 }
@@ -1241,6 +1267,17 @@ mod tests {
         assert!(matches!(request.stalker, FridaStalkerModeRequest::Off));
         assert_eq!(request.stalker_duration_ms, 10_000);
         assert_eq!(request.max_bytes, 256);
+    }
+
+    #[test]
+    fn angr_state_seed_defaults_keep_stack_opt_in() {
+        let request: GenerateAngrStateSeedRequest = serde_json::from_value(serde_json::json!({
+            "file_path": "capture.ndjson",
+            "event_index": 3
+        }))
+        .unwrap();
+        assert!(!request.include_sp);
+        assert!(request.include_lr);
     }
 
     #[test]

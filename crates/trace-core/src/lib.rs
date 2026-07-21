@@ -53,6 +53,10 @@ pub use query::crypto_semantic_verify::{
 pub use query::evidence_score::{
     score_evidence, EvidenceAssessment, EvidenceScoreFactor, EvidenceScoreSignal,
 };
+pub use query::frida_capture::{
+    generate_angr_state_seed, parse_frida_capture_bundle, AngrSeedMemoryRegion, AngrStateSeed,
+    FridaCaptureBundle, FridaCaptureEvent, FridaCapturedValue,
+};
 pub use query::frida_hook::{
     generate_frida_hook, FridaArgumentKind, FridaArgumentSpec, FridaCaptureDirection,
     FridaHookRequest, FridaHookScript, FridaStalkerMode,

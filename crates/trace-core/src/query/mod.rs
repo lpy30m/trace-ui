@@ -9,6 +9,7 @@ pub mod crypto_semantic_verify;
 pub mod dep_tree;
 pub mod evidence_score;
 pub mod forward_slice;
+pub mod frida_capture;
 pub mod frida_hook;
 pub mod function_inspect;
 pub mod hash_match;

@@ -6,8 +6,9 @@ description: Analyze ARM64 dynamic traces for OLLVM control-flow-flattening and 
 # Analyze OLLVM traces and bridge them to IDA or angr
 
 Use `mcp__trace-ui__analyze_ollvm`, `mcp__trace-ui__generate_ida_ollvm_script`,
-`mcp__trace-ui__inspect_ida_annotations`, `mcp__trace-ui__generate_angr_ollvm_script`, and
-`mcp__trace-ui__inspect_angr_ollvm_results`.
+`mcp__trace-ui__inspect_ida_annotations`, `mcp__trace-ui__generate_angr_ollvm_script`,
+`mcp__trace-ui__inspect_angr_ollvm_results`, `mcp__trace-ui__inspect_frida_capture`, and
+`mcp__trace-ui__generate_angr_state_seed`.
 
 ## Workflow
 
@@ -24,8 +25,9 @@ Use `mcp__trace-ui__analyze_ollvm`, `mcp__trace-ui__generate_ida_ollvm_script`,
      `inspect_angr_ollvm_results`.
 6. Reconcile dynamic observed successors with angr static successors. Investigate unobserved-static
    and dynamic-only edges, but do not assume either side is complete.
-7. Seed the generated angr `configure_state(state)` from trace or manually captured Frida evidence
-   before treating a branch probe as stronger than a hypothesis.
+7. Inspect manually captured Frida JSON with `inspect_frida_capture`, select an exact event, and use
+   `generate_angr_state_seed` to produce a candidate `configure_state(state)` function. Match the
+   capture point to the symbolic state address before increasing confidence.
 
 ## Interpretation rules
 

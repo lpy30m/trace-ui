@@ -4,10 +4,11 @@
 
 - 新增 **Crypto Material Explorer**：统一索引 raw/derived key、password、salt、IV、nonce、counter、plaintext/ciphertext、digest/MAC、AAD、tag；支持 AES、MD5/SHA、HMAC、PBKDF2 确定性复算和跨 trace salt/nonce 候选隔离。
 - 新增 **Frida 16 Hook Generator**：按 module export 或 module-relative offset 生成 X0-X7、SP/LR/PC、buffer/string、return、backtrace、Stalker 脚本，事件协议为 `trace-ui/frida-hook-v1`。产品边界固定为“只生成/保存脚本”，用户自行 attach、spawn、load 和执行 hook。
+- 新增 **Frida Capture Import / angr State Seed**：导入用户手动捕获的 JSON/NDJSON/`TRACE_UI_JSON` CLI 日志，规范化 callId/module mapping，查看 registers/buffers/return/backtrace/Stalker batches，并生成 `trace-ui/angr-state-seed-v1` 的 `configure_state(state)`。
 - 新增 **IDA / OLLVM**：动态 CFG、dispatcher/opaque branch 候选评分、IDAPython 注释/颜色/可选 xrefs，以及 `trace-ui/ida-ollvm-v1` annotations 双向 JSON。所有 OLLVM 结论保持动态候选级，不能从单条执行路径推断完整静态 CFG。
 - 新增 **angr / OLLVM bridge**：从动态 OLLVM 报告生成用户手动执行的 Python/angr 脚本，对账 CFGFast/CFGEmulated 静态后继与 trace observed edges，并导回 `trace-ui/angr-ollvm-v1` JSON。记录 exact ELF SHA-256；blank-state symbolic probe 不代表真实入口可达性。
 - GUI 入口位于 `Crypto > Materials`、`Crypto > Frida Hook`、`Crypto > IDA / OLLVM`，其中 OLLVM 面板包含 IDA 与 angr bridge；Tauri 和 MCP 已完整接线。
-- MCP 新增 `analyze_crypto_materials`、`compare_crypto_material_traces`、`generate_frida_hook`、`analyze_ollvm`、`generate_ida_ollvm_script`、`inspect_ida_annotations`、`generate_angr_ollvm_script`、`inspect_angr_ollvm_results`。
+- MCP 新增 `analyze_crypto_materials`、`compare_crypto_material_traces`、`generate_frida_hook`、`inspect_frida_capture`、`generate_angr_state_seed`、`analyze_ollvm`、`generate_ida_ollvm_script`、`inspect_ida_annotations`、`generate_angr_ollvm_script`、`inspect_angr_ollvm_results`。
 - Skills：更新 `trace-analysis`、`ida-ollvm-analysis`，保留 `frida-hook-generation`。Frida skill 明确禁止自动执行脚本；angr bridge 同样只生成脚本，由用户手动运行。
 - `main` push 会触发 `.github/workflows/macos.yml`，构建 macOS arm64 与 x64 DMG artifacts。
 

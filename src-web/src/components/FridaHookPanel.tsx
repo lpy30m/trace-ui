@@ -1,8 +1,11 @@
 import React, { useCallback, useEffect, useMemo, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import type {
+  AngrStateSeed,
   FridaArgumentKind,
   FridaArgumentSpec,
+  FridaCaptureBundle,
+  FridaCaptureEvent,
   FridaCaptureDirection,
   FridaHookRequest,
   FridaHookScript,
@@ -77,6 +80,14 @@ export default function FridaHookPanel({ seed }: Props) {
   const [error, setError] = useState<string | null>(null);
   const [savedPath, setSavedPath] = useState<string | null>(null);
   const [seedLabel, setSeedLabel] = useState<string | null>(null);
+  const [captureBundle, setCaptureBundle] = useState<FridaCaptureBundle | null>(null);
+  const [capturePath, setCapturePath] = useState<string | null>(null);
+  const [selectedEventIndex, setSelectedEventIndex] = useState<number | null>(null);
+  const [angrSeed, setAngrSeed] = useState<AngrStateSeed | null>(null);
+  const [includeSp, setIncludeSp] = useState(false);
+  const [includeLr, setIncludeLr] = useState(true);
+  const [seedSavedPath, setSeedSavedPath] = useState<string | null>(null);
+  const [outputView, setOutputView] = useState<"script" | "capture" | "seed">("script");
 
   useEffect(() => {
     if (!seed) return;
@@ -137,6 +148,7 @@ export default function FridaHookPanel({ seed }: Props) {
     try {
       const result = await invoke<FridaHookScript>("generate_frida_hook", { request: effectiveRequest });
       setGenerated(result);
+      setOutputView("script");
       return result;
     } catch (reason) {
       setError(String(reason));
@@ -171,6 +183,78 @@ export default function FridaHookPanel({ seed }: Props) {
     if (!generated) return;
     await navigator.clipboard.writeText(generated.script);
   }, [generated]);
+
+  const selectedCaptureEvent = useMemo<FridaCaptureEvent | null>(() => (
+    captureBundle?.events.find(event => event.index === selectedEventIndex) || null
+  ), [captureBundle, selectedEventIndex]);
+
+  const importCapture = useCallback(async () => {
+    const { open } = await import("@tauri-apps/plugin-dialog");
+    const selected = await open({
+      multiple: false,
+      directory: false,
+      filters: [{ name: "Frida capture", extensions: ["json", "jsonl", "ndjson", "log", "txt"] }],
+    });
+    if (typeof selected !== "string") return;
+    setError(null);
+    try {
+      const bundle = await invoke<FridaCaptureBundle>("load_frida_capture", { path: selected });
+      const preferred = bundle.events.find(event => event.event === "hook-enter" && (Object.keys(event.registers).length > 0 || event.captures.length > 0))
+        || bundle.events.find(event => Object.keys(event.registers).length > 0 || event.captures.length > 0)
+        || bundle.events[0];
+      setCaptureBundle(bundle);
+      setCapturePath(selected);
+      setSelectedEventIndex(preferred?.index ?? null);
+      setAngrSeed(null);
+      setSeedSavedPath(null);
+      setOutputView("capture");
+    } catch (reason) {
+      setError(String(reason));
+    }
+  }, []);
+
+  const generateStateSeed = useCallback(async (): Promise<AngrStateSeed | null> => {
+    if (!captureBundle || selectedEventIndex == null) return null;
+    setError(null);
+    try {
+      const result = await invoke<AngrStateSeed>("generate_angr_state_seed", {
+        bundle: captureBundle,
+        eventIndex: selectedEventIndex,
+        includeSp,
+        includeLr,
+      });
+      setAngrSeed(result);
+      setOutputView("seed");
+      return result;
+    } catch (reason) {
+      setError(String(reason));
+      return null;
+    }
+  }, [captureBundle, includeLr, includeSp, selectedEventIndex]);
+
+  const saveStateSeed = useCallback(async () => {
+    if (!captureBundle || selectedEventIndex == null) return;
+    const current = angrSeed || await generateStateSeed();
+    if (!current) return;
+    const { save: chooseSavePath } = await import("@tauri-apps/plugin-dialog");
+    const selected = await chooseSavePath({
+      defaultPath: `${current.functionName || current.hookId}-angr-state-seed.py`,
+      filters: [{ name: "Python", extensions: ["py"] }],
+    });
+    if (typeof selected !== "string") return;
+    try {
+      const path = await invoke<string>("save_angr_state_seed", {
+        path: selected,
+        bundle: captureBundle,
+        eventIndex: selectedEventIndex,
+        includeSp,
+        includeLr,
+      });
+      setSeedSavedPath(path);
+    } catch (reason) {
+      setError(String(reason));
+    }
+  }, [angrSeed, captureBundle, generateStateSeed, includeLr, includeSp, selectedEventIndex]);
 
   const segmentStyle = (active: boolean): React.CSSProperties => ({
     ...buttonStyle,
@@ -292,28 +376,115 @@ export default function FridaHookPanel({ seed }: Props) {
       </div>
 
       <div style={{ flex: 1, minWidth: 0, display: "flex", flexDirection: "column", overflow: "hidden" }}>
-        <div style={{ height: 38, display: "flex", alignItems: "center", gap: 6, padding: "6px 8px", borderBottom: "1px solid var(--border-color)", flexShrink: 0 }}>
+        <div style={{ minHeight: 38, display: "flex", alignItems: "center", gap: 6, padding: "6px 8px", borderBottom: "1px solid var(--border-color)", flexShrink: 0, overflowX: "auto" }}>
           <button type="button" disabled={generating} onClick={generate} style={{ ...buttonStyle, background: "var(--btn-primary)", color: "#fff", border: "none", opacity: generating ? 0.6 : 1 }}>{generating ? "Generating..." : "Generate"}</button>
           <button type="button" onClick={save} style={buttonStyle}>Save .js</button>
           <button type="button" disabled={!generated} onClick={copyScript} style={{ ...buttonStyle, opacity: generated ? 1 : 0.5 }}>Copy script</button>
+          <button type="button" onClick={importCapture} style={buttonStyle}>Import capture</button>
+          <button type="button" onClick={() => setOutputView("script")} style={{ ...buttonStyle, background: outputView === "script" ? "var(--bg-selected)" : "var(--bg-input)" }}>Script</button>
+          <button type="button" disabled={!captureBundle} onClick={() => setOutputView("capture")} style={{ ...buttonStyle, background: outputView === "capture" ? "var(--bg-selected)" : "var(--bg-input)", opacity: captureBundle ? 1 : 0.5 }}>Capture</button>
+          <button type="button" disabled={!angrSeed} onClick={() => setOutputView("seed")} style={{ ...buttonStyle, background: outputView === "seed" ? "var(--bg-selected)" : "var(--bg-input)", opacity: angrSeed ? 1 : 0.5 }}>angr seed</button>
           <span style={{ flex: 1 }} />
           {seedLabel && <span title={seedLabel} style={{ maxWidth: 240, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", color: "var(--text-tertiary)", fontSize: 10 }}>{seedLabel}</span>}
         </div>
         {error && <div style={{ padding: "7px 10px", color: "#e5484d", borderBottom: "1px solid var(--border-color)", fontSize: 11 }}>{error}</div>}
-        {savedPath && <div title={savedPath} style={{ padding: "6px 10px", color: "#3fb950", borderBottom: "1px solid var(--border-color)", fontSize: 11, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>Saved: {savedPath}</div>}
-        {generated && (
-          <div style={{ padding: "7px 10px", borderBottom: "1px solid var(--border-color)", fontSize: 11 }}>
-            <div style={{ display: "flex", gap: 10, marginBottom: generated.warnings.length ? 5 : 0 }}>
-              <strong>{generated.targetExpression}</strong>
-              <span style={{ color: "var(--text-tertiary)" }}>Frida {generated.fridaApiVersion}</span>
-              <span style={{ color: "var(--text-tertiary)" }}>{generated.protocolVersion}</span>
+        {outputView === "script" && (
+          <>
+            {savedPath && <div title={savedPath} style={{ padding: "6px 10px", color: "#3fb950", borderBottom: "1px solid var(--border-color)", fontSize: 11, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>Saved: {savedPath}</div>}
+            {generated && (
+              <div style={{ padding: "7px 10px", borderBottom: "1px solid var(--border-color)", fontSize: 11 }}>
+                <div style={{ display: "flex", gap: 10, marginBottom: generated.warnings.length ? 5 : 0 }}>
+                  <strong>{generated.targetExpression}</strong>
+                  <span style={{ color: "var(--text-tertiary)" }}>Frida {generated.fridaApiVersion}</span>
+                  <span style={{ color: "var(--text-tertiary)" }}>{generated.protocolVersion}</span>
+                </div>
+                {generated.warnings.map((warning, index) => <div key={index} style={{ color: "#d29922" }}>{warning}</div>)}
+              </div>
+            )}
+            <pre style={{ flex: 1, minHeight: 0, margin: 0, padding: 10, overflow: "auto", background: "var(--bg-primary)", color: "var(--text-primary)", fontSize: 11, lineHeight: 1.45, whiteSpace: "pre" }}>
+              {generated?.script || ""}
+            </pre>
+          </>
+        )}
+
+        {outputView === "capture" && captureBundle && (
+          <div style={{ flex: 1, minHeight: 0, display: "flex", flexDirection: "column", overflow: "hidden", fontSize: 11 }}>
+            <div style={{ padding: "7px 9px", borderBottom: "1px solid var(--border-color)", flexShrink: 0 }}>
+              <div style={{ display: "flex", gap: 10, alignItems: "center" }}>
+                <strong>{captureBundle.events.length.toLocaleString()} events</strong>
+                <span>{captureBundle.enterEventCount} enter / {captureBundle.leaveEventCount} leave / {captureBundle.stalkerEventCount} Stalker batches</span>
+                <span>{captureBundle.hookIds.length} hooks</span>
+                <span style={{ color: "var(--text-tertiary)" }}>{captureBundle.sourceFormat}</span>
+              </div>
+              {capturePath && <div title={capturePath} style={{ marginTop: 3, color: "var(--text-tertiary)", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{capturePath}</div>}
+              {captureBundle.warnings.map((warning, index) => <div key={index} style={{ color: "#d29922", marginTop: 3 }}>{warning}</div>)}
             </div>
-            {generated.warnings.map((warning, index) => <div key={index} style={{ color: "#d29922" }}>{warning}</div>)}
+            <div style={{ flex: 1, minHeight: 0, display: "flex", overflow: "hidden" }}>
+              <div style={{ width: 330, minWidth: 260, overflow: "auto", borderRight: "1px solid var(--border-color)" }}>
+                {captureBundle.events.slice(0, 5000).map(event => (
+                  <button
+                    type="button"
+                    key={event.index}
+                    onClick={() => { setSelectedEventIndex(event.index); setAngrSeed(null); setSeedSavedPath(null); }}
+                    style={{ width: "100%", border: "none", borderBottom: "1px solid var(--border-color)", padding: "6px 8px", textAlign: "left", background: selectedEventIndex === event.index ? "var(--bg-selected)" : "transparent", color: "var(--text-primary)", cursor: "pointer", fontFamily: "inherit", fontSize: 10 }}
+                  >
+                    <div style={{ display: "flex", gap: 6 }}><strong>#{event.index} {event.event}</strong><span style={{ color: "var(--text-tertiary)" }}>T{event.threadId}</span></div>
+                    <div style={{ marginTop: 2, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", color: "var(--text-secondary)" }}>{event.functionName} · {event.callId || "no call id"}</div>
+                    <div style={{ marginTop: 2, color: "var(--text-tertiary)" }}>{Object.keys(event.registers).length} regs · {event.captures.length} captures{event.stalkerEventCount != null ? ` · ${event.stalkerEventCount} Stalker events` : ""}</div>
+                  </button>
+                ))}
+                {captureBundle.events.length > 5000 && <div style={{ padding: 8, color: "#d29922" }}>UI list limited to the first 5000 events.</div>}
+              </div>
+              <div style={{ flex: 1, minWidth: 0, overflow: "auto", padding: 10 }}>
+                {selectedCaptureEvent ? (
+                  <>
+                    <div style={{ display: "flex", gap: 9, alignItems: "center", flexWrap: "wrap" }}>
+                      <strong>#{selectedCaptureEvent.index} {selectedCaptureEvent.event}</strong>
+                      <span>{selectedCaptureEvent.moduleName || "unknown module"}</span>
+                      <code>{selectedCaptureEvent.target || "unknown target"}</code>
+                      <span>{selectedCaptureEvent.callId || "no call id"}</span>
+                    </div>
+                    <div style={{ display: "grid", gridTemplateColumns: "70px minmax(0, 1fr)", gap: 5, marginTop: 9 }}>
+                      {Object.entries(selectedCaptureEvent.registers).map(([name, value]) => <React.Fragment key={name}><strong>{name.toUpperCase()}</strong><code>{value}</code></React.Fragment>)}
+                    </div>
+                    {selectedCaptureEvent.captures.map((capture, index) => (
+                      <div key={`${capture.index}-${capture.label}-${index}`} style={{ marginTop: 8, padding: 7, border: "1px solid var(--border-color)", borderRadius: 3 }}>
+                        <div><strong>X{capture.index} {capture.label}</strong> · {capture.kind} · {capture.direction}/{capture.phase}</div>
+                        <div style={{ marginTop: 3 }}><code>{capture.pointer || "null"}</code> · {capture.byteLength ?? capture.requestedLength ?? "?"} bytes</div>
+                        <div style={{ marginTop: 3, overflowWrap: "anywhere", color: capture.readError ? "#e5484d" : "var(--text-secondary)" }}>{capture.readError || capture.value || "no value"}</div>
+                      </div>
+                    ))}
+                    {selectedCaptureEvent.returnValue && <div style={{ marginTop: 8 }}><strong>Return:</strong> <code>{selectedCaptureEvent.returnValue}</code></div>}
+                    {selectedCaptureEvent.error && <div style={{ marginTop: 8, color: "#e5484d" }}>{selectedCaptureEvent.error}</div>}
+                    {selectedCaptureEvent.backtrace.length > 0 && <pre style={{ marginTop: 8, padding: 7, overflow: "auto", background: "var(--bg-secondary)", fontSize: 10 }}>{selectedCaptureEvent.backtrace.join("\n")}</pre>}
+                    <div style={{ display: "flex", gap: 8, alignItems: "center", marginTop: 12, paddingTop: 9, borderTop: "1px solid var(--border-color)" }}>
+                      <label style={{ display: "flex", alignItems: "center", gap: 4 }}><input type="checkbox" checked={includeSp} onChange={event => { setIncludeSp(event.target.checked); setAngrSeed(null); }} />Seed SP</label>
+                      <label style={{ display: "flex", alignItems: "center", gap: 4 }}><input type="checkbox" checked={includeLr} onChange={event => { setIncludeLr(event.target.checked); setAngrSeed(null); }} />Seed LR/X30</label>
+                      <button type="button" style={{ ...buttonStyle, background: "var(--btn-primary)", color: "#fff", border: "none" }} onClick={generateStateSeed}>Generate angr seed</button>
+                    </div>
+                  </>
+                ) : <div style={{ color: "var(--text-secondary)" }}>Select a capture event.</div>}
+              </div>
+            </div>
           </div>
         )}
-        <pre style={{ flex: 1, minHeight: 0, margin: 0, padding: 10, overflow: "auto", background: "var(--bg-primary)", color: "var(--text-primary)", fontSize: 11, lineHeight: 1.45, whiteSpace: "pre" }}>
-          {generated?.script || ""}
-        </pre>
+
+        {outputView === "seed" && angrSeed && (
+          <div style={{ flex: 1, minHeight: 0, display: "flex", flexDirection: "column", overflow: "hidden" }}>
+            <div style={{ padding: "7px 9px", borderBottom: "1px solid var(--border-color)", fontSize: 11 }}>
+              <div style={{ display: "flex", gap: 8, alignItems: "center", flexWrap: "wrap" }}>
+                <strong>{angrSeed.schemaVersion}</strong>
+                <span>{angrSeed.registersSeeded.length} registers</span>
+                <span>{angrSeed.memoryRegions.length} memory regions</span>
+                <button type="button" style={buttonStyle} onClick={() => navigator.clipboard.writeText(angrSeed.script)}>Copy seed</button>
+                <button type="button" style={buttonStyle} onClick={saveStateSeed}>Save .py</button>
+              </div>
+              {seedSavedPath && <div title={seedSavedPath} style={{ marginTop: 4, color: "#3fb950", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>Saved: {seedSavedPath}</div>}
+              {angrSeed.warnings.map((warning, index) => <div key={index} style={{ marginTop: 3, color: "#d29922" }}>{warning}</div>)}
+            </div>
+            <pre style={{ flex: 1, minHeight: 0, margin: 0, padding: 10, overflow: "auto", background: "var(--bg-primary)", color: "var(--text-primary)", fontSize: 11, lineHeight: 1.45, whiteSpace: "pre" }}>{angrSeed.script}</pre>
+          </div>
+        )}
       </div>
     </div>
   );

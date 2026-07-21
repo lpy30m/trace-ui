@@ -12,16 +12,17 @@ use rmcp::{
 use crate::types::*;
 use trace_core::{
     api_types::TraceLine, apply_resource_validation, classify_flow_endpoints,
-    generate_angr_ollvm_script, generate_frida_hook as build_frida_hook, generate_ida_ollvm_script,
-    parse_angr_ollvm_result_bundle, parse_hex_addr, parse_ida_annotation_bundle, score_evidence,
-    summarize_dependency_graph, AnalysisEvidence, BuildOptions, CryptoFunctionsOptions,
-    CryptoMaterialKind, CryptoMaterialMultiTraceRequest, CryptoMaterialOptions,
-    CryptoMaterialTraceCase, DepTreeOptions, EvidenceScoreSignal, ForwardSliceOptions,
-    FridaArgumentKind, FridaArgumentSpec, FridaCaptureDirection, FridaHookRequest,
-    FridaStalkerMode, HashAlgorithm, HashMatchRequest, HashTransformOptions, OllvmAnalysisOptions,
-    SearchOptions, SliceOptions, StringQueryOptions, TraceDiffOptions, TraceEngine, ValueEndian,
-    ValueSearchKind, ValueSearchRequest, WhiteBoxMultiTraceRequest, WhiteBoxOptions,
-    WhiteBoxTraceCaseRequest,
+    generate_angr_ollvm_script, generate_angr_state_seed as build_angr_state_seed,
+    generate_frida_hook as build_frida_hook, generate_ida_ollvm_script,
+    parse_angr_ollvm_result_bundle, parse_frida_capture_bundle, parse_hex_addr,
+    parse_ida_annotation_bundle, score_evidence, summarize_dependency_graph, AnalysisEvidence,
+    BuildOptions, CryptoFunctionsOptions, CryptoMaterialKind, CryptoMaterialMultiTraceRequest,
+    CryptoMaterialOptions, CryptoMaterialTraceCase, DepTreeOptions, EvidenceScoreSignal,
+    ForwardSliceOptions, FridaArgumentKind, FridaArgumentSpec, FridaCaptureDirection,
+    FridaHookRequest, FridaStalkerMode, HashAlgorithm, HashMatchRequest, HashTransformOptions,
+    OllvmAnalysisOptions, SearchOptions, SliceOptions, StringQueryOptions, TraceDiffOptions,
+    TraceEngine, ValueEndian, ValueSearchKind, ValueSearchRequest, WhiteBoxMultiTraceRequest,
+    WhiteBoxOptions, WhiteBoxTraceCaseRequest,
 };
 
 fn decode_hex_bytes(value: &str) -> Result<Vec<u8>, String> {
@@ -4094,6 +4095,44 @@ impl TraceToolHandler {
             max_bytes: req.max_bytes,
         };
         Ok(json(&build_frida_hook(&request)?))
+    }
+
+    #[tool(
+        name = "inspect_frida_capture",
+        description = "Read user-captured JSON/NDJSON trace-ui/frida-hook-v1 send() messages, normalize hook calls, propagate module metadata, and summarize registers, buffers, returns, backtraces, and Stalker event counts. Trace UI does not attach, spawn, load, or execute Frida."
+    )]
+    async fn inspect_frida_capture(
+        &self,
+        Parameters(req): Parameters<InspectFridaCaptureRequest>,
+    ) -> Result<String, String> {
+        blocking(move || {
+            let bytes = std::fs::read(&req.file_path)
+                .map_err(|error| format!("failed to read Frida capture: {error}"))?;
+            Ok(json(&parse_frida_capture_bundle(&bytes)?))
+        })
+        .await
+    }
+
+    #[tool(
+        name = "generate_angr_state_seed",
+        description = "Read a user-captured trace-ui/frida-hook-v1 JSON/NDJSON file and generate a manual Python configure_state(state) seed for angr from one selected event. Module pointers are rebased when metadata is available; heap/stack addresses remain process-specific. The output is candidate evidence and is never executed by Trace UI."
+    )]
+    async fn generate_angr_state_seed(
+        &self,
+        Parameters(req): Parameters<GenerateAngrStateSeedRequest>,
+    ) -> Result<String, String> {
+        blocking(move || {
+            let bytes = std::fs::read(&req.file_path)
+                .map_err(|error| format!("failed to read Frida capture: {error}"))?;
+            let bundle = parse_frida_capture_bundle(&bytes)?;
+            Ok(json(&build_angr_state_seed(
+                &bundle,
+                req.event_index,
+                req.include_sp,
+                req.include_lr,
+            )?))
+        })
+        .await
     }
 
     #[tool(

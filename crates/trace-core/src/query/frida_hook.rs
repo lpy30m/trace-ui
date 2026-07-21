@@ -274,16 +274,26 @@ const FUNCTION_NAME = __FUNCTION_NAME__;
 const MAX_BYTES = __MAX_BYTES__;
 const STALKER_DURATION_MS = __STALKER_DURATION__;
 const ARG_SPECS = __ARG_SPECS__;
+let nextCallId = 1;
+let nextEventId = 1;
+let resolvedModuleBase = null;
+let resolvedModuleSize = 0;
 
 function sendEvent(event, payload) {
-  send(Object.assign({
+  const record = Object.assign({
     protocol: TRACE_UI_PROTOCOL,
+    eventId: HOOK_ID + ':event:' + (nextEventId++),
     hookId: HOOK_ID,
     event: event,
     functionName: FUNCTION_NAME,
+    moduleName: MODULE_NAME,
+    moduleBase: resolvedModuleBase !== null ? resolvedModuleBase.toString() : null,
+    moduleSize: resolvedModuleSize,
     timestampMs: Date.now(),
     threadId: Process.getCurrentThreadId()
-  }, payload || {}));
+  }, payload || {});
+  send(record);
+  console.log('TRACE_UI_JSON ' + JSON.stringify(record));
 }
 
 function bytesToHex(arrayBuffer) {
@@ -364,7 +374,7 @@ function stopStalker(state) {
     Stalker.flush();
     Stalker.garbageCollect();
   } catch (error) {
-    sendEvent('stalker-error', { error: String(error) });
+    sendEvent('stalker-error', { callId: state.callId, error: String(error) });
   }
   state.stalkerTid = null;
 }
@@ -378,15 +388,15 @@ function startStalker(state) {
       onReceive: function (rawEvents) {
         try {
           const events = Stalker.parse(rawEvents, { annotate: false, stringify: true });
-          sendEvent('stalker-events', { mode: __STALKER_MODE__, events: events });
+          sendEvent('stalker-events', { callId: state.callId, mode: __STALKER_MODE__, events: events });
         } catch (error) {
-          sendEvent('stalker-error', { error: String(error) });
+          sendEvent('stalker-error', { callId: state.callId, error: String(error) });
         }
       }
     });
     state.stalkerTimer = setTimeout(function () { stopStalker(state); }, STALKER_DURATION_MS);
   } catch (error) {
-    sendEvent('stalker-error', { error: String(error) });
+    sendEvent('stalker-error', { callId: state.callId, error: String(error) });
     state.stalkerTid = null;
   }
 }
@@ -395,7 +405,7 @@ function resolveTarget() {
   if (TARGET_SYMBOL !== null) {
     return Module.getExportByName(MODULE_NAME, TARGET_SYMBOL);
   }
-  const moduleBase = Module.getBaseAddress(MODULE_NAME);
+  const moduleBase = resolvedModuleBase !== null ? resolvedModuleBase : Module.getBaseAddress(MODULE_NAME);
   if (moduleBase === null) throw new Error('module not loaded: ' + MODULE_NAME);
   return moduleBase.add(ptr(TARGET_OFFSET));
 }
@@ -403,6 +413,9 @@ function resolveTarget() {
 function install() {
   let target;
   try {
+    resolvedModuleBase = Module.getBaseAddress(MODULE_NAME);
+    if (resolvedModuleBase === null) throw new Error('module not loaded: ' + MODULE_NAME);
+    try { resolvedModuleSize = Process.getModuleByName(MODULE_NAME).size; } catch (_) { resolvedModuleSize = 0; }
     target = resolveTarget();
   } catch (error) {
     sendEvent('hook-error', { error: 'target resolution failed: ' + String(error) });
@@ -411,8 +424,10 @@ function install() {
   sendEvent('hook-ready', { target: target.toString(), module: MODULE_NAME });
   Interceptor.attach(target, {
     onEnter: function (args) {
-      this.__traceUiState = { args: copyArguments(args), stalkerTid: null, stalkerTimer: null };
+      const callId = HOOK_ID + ':' + Process.getCurrentThreadId() + ':' + (nextCallId++);
+      this.__traceUiState = { args: copyArguments(args), callId: callId, stalkerTid: null, stalkerTimer: null };
       sendEvent('hook-enter', {
+        callId: callId,
         target: target.toString(),
         registers: __CAPTURE_REGISTERS__ ? captureRegisters(this.context) : null,
         backtrace: __CAPTURE_BACKTRACE__ ? captureBacktrace(this.context) : null,
@@ -425,6 +440,7 @@ function install() {
       stopStalker(state);
       if (state && state.stalkerTimer !== null) clearTimeout(state.stalkerTimer);
       sendEvent('hook-leave', {
+        callId: state ? state.callId : null,
         returnValue: __CAPTURE_RETURN__ ? retval.toString() : null,
         captures: state ? captureArguments(state.args, 'leave') : [],
         registers: __CAPTURE_REGISTERS__ ? captureRegisters(this.context) : null
@@ -491,6 +507,7 @@ setImmediate(install);
     let mut warnings = vec![
         "This script targets the Frida 16.x JavaScript API. Trace UI only generates and saves it; attaching, spawning, and loading remain under user control.".to_string(),
         "The generated agent emits trace-ui/frida-hook-v1 send() messages for the user's Frida host or CLI session.".to_string(),
+        "Each event is also printed as a TRACE_UI_JSON-prefixed strict JSON line so redirected Frida CLI output can be imported manually; eventId prevents duplicate send/log records.".to_string(),
         "Pointer reads are best-effort and bounded by max_bytes; unreadable memory is reported as readError rather than guessed.".to_string(),
         "An offset is relative to the loaded module base and must match the target SO/dylib build.".to_string(),
     ];
@@ -555,11 +572,49 @@ mod tests {
         assert!(script.script.contains("stalker-events"));
         assert!(script.script.contains("lengthArg"));
         assert!(script.script.contains("captureRegisters(this.context)"));
+        assert!(script.script.contains("callId: callId"));
+        assert!(script.script.contains("TRACE_UI_JSON"));
+        assert!(script.script.contains("eventId:"));
+        assert!(script.script.contains("moduleBase: resolvedModuleBase"));
+        assert!(script
+            .script
+            .contains("Process.getModuleByName(MODULE_NAME).size"));
         assert!(script.script.contains("Backtracer.ACCURATE"));
         assert!(script
             .warnings
             .iter()
             .any(|warning| warning.contains("Stalker")));
+    }
+
+    #[test]
+    fn generated_hook_has_valid_javascript_syntax_when_node_is_available() {
+        let node = ["node", "nodejs"].into_iter().find(|candidate| {
+            std::process::Command::new(candidate)
+                .arg("--version")
+                .output()
+                .is_ok_and(|output| output.status.success())
+        });
+        let Some(node) = node else {
+            eprintln!("skipping generated JavaScript syntax check: Node.js is unavailable");
+            return;
+        };
+        let generated = generate_frida_hook(&base_request()).unwrap();
+        let directory =
+            std::env::temp_dir().join(format!("trace-ui-frida-syntax-{}", std::process::id()));
+        std::fs::create_dir_all(&directory).unwrap();
+        let script_path = directory.join("generated.js");
+        std::fs::write(&script_path, generated.script).unwrap();
+        let output = std::process::Command::new(node)
+            .arg("--check")
+            .arg(&script_path)
+            .output()
+            .unwrap();
+        let _ = std::fs::remove_dir_all(&directory);
+        assert!(
+            output.status.success(),
+            "generated JavaScript failed syntax check: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
     }
 
     #[test]

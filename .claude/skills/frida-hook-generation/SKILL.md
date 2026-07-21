@@ -1,11 +1,13 @@
 ---
 name: frida-hook-generation
-description: Generate bounded ARM64 Frida 16.x JavaScript hook scripts through the trace-ui MCP server. Use when the user wants a hook for a native export or module-relative offset, wants to capture X0-X7 arguments, buffers, strings, return values, backtraces, or Stalker execution events, or wants to turn a trace crypto/OLLVM lead into a reusable Frida script. This skill only generates scripts; the user remains responsible for attach, spawn, script loading, target selection, and execution.
+description: Generate bounded ARM64 Frida 16.x JavaScript hook scripts, inspect user-captured trace-ui/frida-hook-v1 JSON or NDJSON, and turn selected register/buffer captures into manual angr state seeds through the trace-ui MCP server. Use for native exports or module-relative offsets, X0-X7 arguments, buffers, strings, returns, backtraces, Stalker events, capture review, or Frida-to-angr handoff. Trace UI never attaches, spawns, loads, or executes Frida; the user controls runtime execution.
 ---
 
 # Generate Frida 16 hooks with trace-ui
 
-Use `mcp__trace-ui__generate_frida_hook`. The result targets Frida 16.x JavaScript APIs and emits `trace-ui/frida-hook-v1` messages with `send()`.
+Use `mcp__trace-ui__generate_frida_hook`, `mcp__trace-ui__inspect_frida_capture`, and
+`mcp__trace-ui__generate_angr_state_seed`. Generated hooks target Frida 16.x JavaScript APIs and emit
+`trace-ui/frida-hook-v1` messages with `send()` plus `TRACE_UI_JSON` strict-JSON log lines.
 
 ## Workflow
 
@@ -14,6 +16,10 @@ Use `mcp__trace-ui__generate_frida_hook`. The result targets Frida 16.x JavaScri
 3. Call `generate_frida_hook` with only the captures needed for the question.
 4. Return or save the generated `.js` script. Explain the expected event fields and any unsafe memory-read assumptions.
 5. Stop. Do not attach, spawn, load, execute, or claim the hook ran. The user performs those steps manually.
+6. If the user supplies captured JSON/NDJSON, run `inspect_frida_capture`. Select an exact event index,
+   normally a `hook-enter` with registers or buffers.
+7. When angr initialization is requested, run `generate_angr_state_seed` for that event. Keep SP
+   opt-in and explain that heap/stack addresses are process-specific.
 
 ## Request fields
 
@@ -35,6 +41,11 @@ Use `mcp__trace-ui__generate_frida_hook`. The result targets Frida 16.x JavaScri
 - Use `length_arg` when another X register carries the dynamic buffer size. Use a fixed `length` only when verified.
 - Default Stalker to `off`. Enable `calls` first; use `blocks` or `instructions` only for a narrow function and bounded duration.
 - Treat invalid pointers, unreadable memory, and truncated captures as expected runtime conditions.
+- Prefer `byteArray` captures for angr memory seeds. Re-encoded UTF-8/UTF-16 strings do not preserve
+  invalid bytes or original terminators.
+- Match `moduleBase/moduleSize` and the exact binary build before trusting pointer rebasing.
+- A function-entry capture is not automatically valid state for a later opaque branch. Match capture
+  point semantics before using a seed in a blank-state branch probe.
 
 ## Frida 16 boundary
 
@@ -46,7 +57,7 @@ Module.getBaseAddress(MODULE_NAME)
 Interceptor.attach(target, callbacks)
 ```
 
-Do not rewrite the output to Frida 17-only APIs. Do not add `frida.attach`, device discovery, spawn control, CLI commands, `--no-pause`, or an automatic live bridge unless the user explicitly starts a separate implementation task that changes this boundary.
+Do not rewrite the output to Frida 17-only APIs. Do not add `frida.attach`, device discovery, spawn control, CLI commands, `--no-pause`, or an automatic live bridge. Importing files the user captured manually does not change this boundary.
 
 ## Reporting
 

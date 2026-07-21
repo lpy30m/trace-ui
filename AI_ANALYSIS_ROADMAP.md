@@ -32,10 +32,12 @@
 - [x] Frida 16.x Hook Generator：生成 module symbol/offset、X0-X7、buffer/string、return/backtrace/Stalker 脚本；用户手动 attach/spawn/load。
 - [x] IDA / OLLVM：ASLR 稳定动态 CFG、dispatcher/opaque branch 候选、IDAPython 注释桥和 IDA annotation JSON 回导。
 - [x] angr / OLLVM：生成用户手动执行的 Python bridge，以 exact ELF SHA-256 为锚点，对账静态/动态 CFG，并导回候选级 symbolic branch probe 结果。
+- [x] Frida Capture → angr State Seed：导入用户手动捕获的 registers/buffers/call metadata，生成 module-aware `configure_state(state)`，保持运行和 Hook 由用户控制。
 
 ## 3. 当前限制
 
-- angr CFG 恢复与 blank-state probe 都不是完整可达性证明；后续应增加从 trace/Frida 导出的 X0-X7 + memory state seed，帮助用户填写 `configure_state(state)`。
+- [x] 已支持从 Frida 捕获导出 X0-X7、可选 SP/LR 与 memory state seed；capture point 与 symbolic address 是否语义一致仍需人工核验。
+- [ ] 多运行 opaque branch 稳定性矩阵和 dispatcher state-register 状态机尚未实现。
 
 - [x] 分析记录已随 Trace 内容校验持久化，应用重启后可以恢复。
 - [x] Crypto、正向污点和自动调查支持统一后台任务、进度与取消。

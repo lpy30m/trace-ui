@@ -691,6 +691,77 @@ pub async fn save_frida_hook(
 }
 
 #[tauri::command]
+pub async fn load_frida_capture(path: String) -> Result<trace_core::FridaCaptureBundle, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        let trimmed = path.trim();
+        if trimmed.is_empty() {
+            return Err("Frida capture path must not be empty".to_string());
+        }
+        let bytes = std::fs::read(trimmed)
+            .map_err(|error| format!("failed to read Frida capture: {error}"))?;
+        trace_core::parse_frida_capture_bundle(&bytes)
+    })
+    .await
+    .map_err(|error| format!("Task execution failed: {error}"))?
+}
+
+#[tauri::command]
+pub fn generate_angr_state_seed(
+    bundle: trace_core::FridaCaptureBundle,
+    event_index: u64,
+    include_sp: Option<bool>,
+    include_lr: Option<bool>,
+) -> Result<trace_core::AngrStateSeed, String> {
+    trace_core::generate_angr_state_seed(
+        &bundle,
+        event_index,
+        include_sp.unwrap_or(false),
+        include_lr.unwrap_or(true),
+    )
+}
+
+#[tauri::command]
+pub async fn save_angr_state_seed(
+    path: String,
+    bundle: trace_core::FridaCaptureBundle,
+    event_index: u64,
+    include_sp: Option<bool>,
+    include_lr: Option<bool>,
+) -> Result<String, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        let seed = trace_core::generate_angr_state_seed(
+            &bundle,
+            event_index,
+            include_sp.unwrap_or(false),
+            include_lr.unwrap_or(true),
+        )?;
+        let trimmed = path.trim();
+        if trimmed.is_empty() {
+            return Err("output path must not be empty".to_string());
+        }
+        let mut output_path = std::path::PathBuf::from(trimmed);
+        if output_path.extension().and_then(|value| value.to_str()) != Some("py") {
+            output_path.set_extension("py");
+        }
+        let parent = output_path
+            .parent()
+            .filter(|value| !value.as_os_str().is_empty())
+            .ok_or_else(|| "output path must include a parent directory".to_string())?;
+        if !parent.is_dir() {
+            return Err(format!(
+                "output directory does not exist: {}",
+                parent.display()
+            ));
+        }
+        std::fs::write(&output_path, seed.script.as_bytes())
+            .map_err(|error| format!("failed to save angr state seed: {error}"))?;
+        Ok(output_path.to_string_lossy().into_owned())
+    })
+    .await
+    .map_err(|error| format!("Task execution failed: {error}"))?
+}
+
+#[tauri::command]
 pub async fn analyze_ollvm(
     session_id: String,
     options: trace_core::OllvmAnalysisOptions,

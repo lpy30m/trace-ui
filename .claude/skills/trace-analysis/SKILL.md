@@ -5,7 +5,7 @@ description: >
   Use for native/.so reverse engineering, crypto key/IV/nonce/salt/material identification,
   MD5/SHA/HMAC/PBKDF2 input matching, backward or forward taint, function I/O inspection, cross-run
   diffing, static ELF-to-trace table reconciliation, software/table-driven/obfuscated/white-box crypto
-  classification, Frida 16 hook-script generation, and dynamic IDA/angr/OLLVM analysis. Trigger on requests
+  classification, Frida 16 hook generation/capture import, angr state seeding, and dynamic IDA/angr/OLLVM analysis. Trigger on requests
   such as analyze this trace, reverse this native function, inspect this .so with its trace, find the key
   or algorithm, isolate a salt, generate a Frida hook, inspect OLLVM, where did this value come from, or
   分析 trace / 逆向 so / 污点 / 加密分析 / Frida hook / OLLVM.
@@ -100,6 +100,13 @@ The output targets Frida 16.x and emits `trace-ui/frida-hook-v1`. Trace UI only 
 script. The user manually attaches/spawns/loads/runs it. Never claim runtime evidence from generation.
 For detailed capture selection rules, use `$frida-hook-generation`.
 
+**"Inspect the Frida output I captured manually or turn it into angr state."**
+→ `inspect_frida_capture{file_path}` for JSON arrays, send envelopes, NDJSON, or
+`TRACE_UI_JSON`-prefixed CLI logs. Select an exact event index, then call
+`generate_angr_state_seed{file_path,event_index,include_sp?,include_lr?}`. Treat module rebasing as
+build-specific and heap/stack addresses as process-specific. Never claim the seed proves real-entry or
+branch reachability.
+
 **"Show OLLVM execution structure in IDA."**
 → `analyze_ollvm` on a call-tree node or narrow module/seq range, normally with child calls excluded.
 Then `generate_ida_ollvm_script` for manual execution in IDA. Inspect exported
@@ -163,7 +170,7 @@ recomputes to a known digest.
 | Taint | `taint_analysis` (backward), `forward_taint_analysis`, `get_tainted_lines`, `start_forward_taint_analysis` |
 | Functions | `analyze_function` (node_id / name / list) |
 | Diff | `compare_traces`, `start_trace_diff` |
-| Frida | `generate_frida_hook` (Frida 16 script generation only; user executes manually) |
+| Frida | `generate_frida_hook`, `inspect_frida_capture`, `generate_angr_state_seed` (user executes hooks manually) |
 | IDA / angr / OLLVM | `analyze_ollvm`, `generate_ida_ollvm_script`, `inspect_ida_annotations`, `generate_angr_ollvm_script`, `inspect_angr_ollvm_results` |
 | Orchestration | `auto_investigate`, `start_auto_investigation`, `start_crypto_investigation` |
 | Evidence store | `list_analyses`, `get_analysis`, `compare_analyses`, `export_analysis_report`, `delete_analysis` |

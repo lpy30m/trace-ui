@@ -478,6 +478,76 @@ export interface FridaHookSeed {
   arguments: FridaArgumentSpec[];
 }
 
+export interface FridaCapturedValue {
+  index: number;
+  label: string;
+  kind: string;
+  direction: string;
+  phase: string;
+  pointer: string | null;
+  value: string | null;
+  byteLength: number | null;
+  requestedLength: number | null;
+  readError: string | null;
+}
+
+export interface FridaCaptureEvent {
+  index: number;
+  protocol: string;
+  eventId: string | null;
+  hookId: string;
+  event: string;
+  functionName: string;
+  timestampMs: number;
+  threadId: number;
+  callId: string | null;
+  moduleName: string | null;
+  moduleBase: string | null;
+  moduleSize: number | null;
+  target: string | null;
+  registers: Record<string, string>;
+  captures: FridaCapturedValue[];
+  returnValue: string | null;
+  backtrace: string[];
+  stalkerMode: string | null;
+  stalkerEventCount: number | null;
+  error: string | null;
+}
+
+export interface FridaCaptureBundle {
+  schema: string;
+  sourceFormat: string;
+  events: FridaCaptureEvent[];
+  hookIds: string[];
+  enterEventCount: number;
+  leaveEventCount: number;
+  stalkerEventCount: number;
+  warnings: string[];
+}
+
+export interface AngrSeedMemoryRegion {
+  address: string;
+  byteLength: number;
+  bytesHex: string;
+  label: string;
+  sourceKind: string;
+  phase: string;
+}
+
+export interface AngrStateSeed {
+  schemaVersion: string;
+  sourceEventIndex: number;
+  hookId: string;
+  callId: string | null;
+  moduleName: string | null;
+  functionName: string;
+  captureTarget: string | null;
+  script: string;
+  registersSeeded: string[];
+  memoryRegions: AngrSeedMemoryRegion[];
+  warnings: string[];
+}
+
 export interface OllvmAnalysisOptions {
   nodeId: number | null;
   moduleName: string | null;
