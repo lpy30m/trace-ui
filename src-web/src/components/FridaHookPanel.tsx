@@ -76,6 +76,32 @@ function optionalNumber(value: string): number | null {
   return Number.isFinite(parsed) && parsed >= 0 ? Math.floor(parsed) : null;
 }
 
+function FridaMaterialRow({ material }: { material: CryptoMaterialReport["materials"][number] }) {
+  const [showFullMaterial, setShowFullMaterial] = useState(false);
+  return (
+    <div style={{ padding: "7px 9px", borderBottom: "1px solid var(--border-color)" }}>
+      <div style={{ display: "flex", gap: 8, alignItems: "center", flexWrap: "wrap" }}>
+        <span style={{ minWidth: 76, padding: "1px 6px", textAlign: "center", borderRadius: 3, background: material.assessment.verificationGateMet ? "#238636" : "#9e6a03", color: "#fff", textTransform: "uppercase", fontSize: 10 }}>{material.assessment.grade} {material.assessment.score}</span>
+        <strong>{material.kind}</strong>
+        <span>{material.role}</span>
+        {material.algorithm && <code>{material.algorithm}</code>}
+        <span>{material.byteLen ?? "?"} bytes</span>
+        <span>{material.functionName || "unknown function"}</span>
+        <code>{material.register || ""}</code>
+        {material.bytesHex && (
+          <button type="button" style={buttonStyle} onClick={() => setShowFullMaterial(value => !value)}>
+            {showFullMaterial ? "隐藏完整材料" : "显示完整材料"}
+          </button>
+        )}
+      </div>
+      <div title={material.bytesHex ? (showFullMaterial ? "完整材料已显示" : "敏感材料已遮罩") : undefined} style={{ marginTop: 4, overflowWrap: "anywhere", color: "var(--text-secondary)", fontFamily: "monospace" }}>
+        {showFullMaterial ? (material.bytesHex || "未捕获字节") : maskSensitiveHex(material.bytesHex)}
+      </div>
+      <div style={{ marginTop: 3, color: "var(--text-tertiary)" }}>{material.evidence.join(" · ")}</div>
+    </div>
+  );
+}
+
 export default function FridaHookPanel({ seed }: Props) {
   const [request, setRequest] = useState<FridaHookRequest>(initialRequest);
   const [recipes, setRecipes] = useState<FridaHookRecipe[]>([]);
@@ -92,11 +118,13 @@ export default function FridaHookPanel({ seed }: Props) {
   const [angrSeed, setAngrSeed] = useState<AngrStateSeed | null>(null);
   const [fridaMaterials, setFridaMaterials] = useState<CryptoMaterialReport | null>(null);
   const [includeUnknownMaterials, setIncludeUnknownMaterials] = useState(false);
-  const [showFullMaterials, setShowFullMaterials] = useState(false);
   const [includeSp, setIncludeSp] = useState(false);
   const [includeLr, setIncludeLr] = useState(true);
   const [seedSavedPath, setSeedSavedPath] = useState<string | null>(null);
   const [outputView, setOutputView] = useState<"script" | "capture" | "materials" | "seed">("script");
+  const [captureFilter, setCaptureFilter] = useState("");
+  const [captureEventType, setCaptureEventType] = useState<"all" | "hook-enter" | "hook-leave" | "ollvm-dispatcher-hit" | "stalker">("all");
+  const [captureOnlyPayload, setCaptureOnlyPayload] = useState(false);
 
   useEffect(() => {
     invoke<FridaHookRecipe[]>("list_frida_hook_recipes")
@@ -239,6 +267,35 @@ export default function FridaHookPanel({ seed }: Props) {
   const selectedCaptureEvent = useMemo<FridaCaptureEvent | null>(() => (
     captureBundle?.events.find(event => event.index === selectedEventIndex) || null
   ), [captureBundle, selectedEventIndex]);
+
+  const filteredCaptureEvents = useMemo(() => {
+    if (!captureBundle) return [];
+    const query = captureFilter.trim().toLowerCase();
+    return captureBundle.events.filter(event => {
+      if (captureEventType !== "all") {
+        const matchesType = captureEventType === "stalker"
+          ? event.event.toLowerCase().includes("stalker")
+          : event.event === captureEventType;
+        if (!matchesType) return false;
+      }
+      if (captureOnlyPayload && Object.keys(event.registers).length === 0 && event.captures.length === 0 && !event.returnValue) {
+        return false;
+      }
+      if (!query) return true;
+      const searchable = [
+        event.event,
+        event.functionName,
+        event.moduleName,
+        event.target,
+        event.callId,
+        event.hookId,
+        event.dispatcherOffset,
+        event.captureSessionId,
+        event.flowId,
+      ].filter(Boolean).join(" ").toLowerCase();
+      return searchable.includes(query);
+    });
+  }, [captureBundle, captureEventType, captureFilter, captureOnlyPayload]);
 
   const importCapture = useCallback(async () => {
     const { open } = await import("@tauri-apps/plugin-dialog");
@@ -507,17 +564,39 @@ export default function FridaHookPanel({ seed }: Props) {
           <div style={{ flex: 1, minHeight: 0, display: "flex", flexDirection: "column", overflow: "hidden", fontSize: 11 }}>
             <div style={{ padding: "7px 9px", borderBottom: "1px solid var(--border-color)", flexShrink: 0 }}>
               <div style={{ display: "flex", gap: 10, alignItems: "center" }}>
-                <strong>{captureBundle.events.length.toLocaleString()} events</strong>
-                <span>{captureBundle.enterEventCount} enter / {captureBundle.leaveEventCount} leave / {captureBundle.stalkerEventCount} Stalker batches</span>
-                <span>{captureBundle.hookIds.length} hooks</span>
+                <strong>{captureBundle.events.length.toLocaleString()} 个事件</strong>
+                <span>{captureBundle.enterEventCount} 次进入 / {captureBundle.leaveEventCount} 次离开 / {captureBundle.stalkerEventCount} 个 Stalker 批次</span>
+                <span>{captureBundle.hookIds.length} 个 Hook</span>
                 <span style={{ color: "var(--text-tertiary)" }}>{captureBundle.sourceFormat}</span>
               </div>
               {capturePath && <div title={capturePath} style={{ marginTop: 3, color: "var(--text-tertiary)", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{capturePath}</div>}
               {captureBundle.warnings.map((warning, index) => <div key={index} style={{ color: "#d29922", marginTop: 3 }}>{warning}</div>)}
+              <div style={{ display: "flex", gap: 6, alignItems: "center", flexWrap: "wrap", marginTop: 7 }}>
+                <input
+                  style={{ ...inputStyle, width: 220 }}
+                  value={captureFilter}
+                  onChange={event => setCaptureFilter(event.target.value)}
+                  placeholder="按事件、函数、模块或 callId 搜索"
+                />
+                <select style={inputStyle} value={captureEventType} onChange={event => setCaptureEventType(event.target.value as typeof captureEventType)}>
+                  <option value="all">全部事件</option>
+                  <option value="hook-enter">hook-enter</option>
+                  <option value="hook-leave">hook-leave</option>
+                  <option value="ollvm-dispatcher-hit">ollvm-dispatcher-hit</option>
+                  <option value="stalker">Stalker 事件</option>
+                </select>
+                <label style={{ display: "flex", alignItems: "center", gap: 4 }}>
+                  <input type="checkbox" checked={captureOnlyPayload} onChange={event => setCaptureOnlyPayload(event.target.checked)} />
+                  只看含寄存器/捕获数据
+                </label>
+                <span style={{ color: "var(--text-tertiary)" }}>
+                  显示 {Math.min(filteredCaptureEvents.length, 5000).toLocaleString()} / {filteredCaptureEvents.length.toLocaleString()}（总计 {captureBundle.events.length.toLocaleString()}）
+                </span>
+              </div>
             </div>
             <div style={{ flex: 1, minHeight: 0, display: "flex", overflow: "hidden" }}>
               <div style={{ width: 330, minWidth: 260, overflow: "auto", borderRight: "1px solid var(--border-color)" }}>
-                {captureBundle.events.slice(0, 5000).map(event => (
+                {filteredCaptureEvents.slice(0, 5000).map(event => (
                   <button
                     type="button"
                     key={event.index}
@@ -525,11 +604,12 @@ export default function FridaHookPanel({ seed }: Props) {
                     style={{ width: "100%", border: "none", borderBottom: "1px solid var(--border-color)", padding: "6px 8px", textAlign: "left", background: selectedEventIndex === event.index ? "var(--bg-selected)" : "transparent", color: "var(--text-primary)", cursor: "pointer", fontFamily: "inherit", fontSize: 10 }}
                   >
                     <div style={{ display: "flex", gap: 6 }}><strong>#{event.index} {event.event}</strong><span style={{ color: "var(--text-tertiary)" }}>T{event.threadId}</span></div>
-                    <div style={{ marginTop: 2, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", color: "var(--text-secondary)" }}>{event.functionName} · {event.callId || "no call id"}</div>
-                    <div style={{ marginTop: 2, color: "var(--text-tertiary)" }}>{Object.keys(event.registers).length} regs · {event.captures.length} captures{event.stalkerEventCount != null ? ` · ${event.stalkerEventCount} Stalker events` : ""}</div>
+                    <div style={{ marginTop: 2, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", color: "var(--text-secondary)" }}>{event.functionName} · {event.callId || "无 callId"}</div>
+                    <div style={{ marginTop: 2, color: "var(--text-tertiary)" }}>{Object.keys(event.registers).length} 个寄存器 · {event.captures.length} 个捕获{event.stalkerEventCount != null ? ` · ${event.stalkerEventCount} 个 Stalker 事件` : ""}</div>
                   </button>
                 ))}
-                {captureBundle.events.length > 5000 && <div style={{ padding: 8, color: "#d29922" }}>界面列表仅显示前 5000 个事件。</div>}
+                {filteredCaptureEvents.length === 0 && <div style={{ padding: 12, color: "var(--text-secondary)" }}>没有符合筛选条件的事件。</div>}
+                {filteredCaptureEvents.length > 5000 && <div style={{ padding: 8, color: "#d29922" }}>界面列表仅显示前 5000 个匹配事件。</div>}
               </div>
               <div style={{ flex: 1, minWidth: 0, overflow: "auto", padding: 10 }}>
                 {selectedCaptureEvent ? (
@@ -576,31 +656,11 @@ export default function FridaHookPanel({ seed }: Props) {
                 <span>{fridaMaterials.formulas.length} formulas / {fridaMaterials.verifiedFormulas} verified</span>
                 {fridaMaterials.materialsTruncated && <span style={{ color: "#d29922" }}>已截断</span>}
                 <button type="button" style={buttonStyle} onClick={analyzeCaptureMaterials}>重新索引</button>
-                <label style={{ display: "flex", alignItems: "center", gap: 4 }}>
-                  <input type="checkbox" checked={showFullMaterials} onChange={event => setShowFullMaterials(event.target.checked)} />
-                  显示完整材料
-                </label>
               </div>
               <div style={{ marginTop: 4, color: "var(--text-secondary)" }}>除非通过精确的 MD5/SHA/HMAC/PBKDF2 复算验证，标签/阶段分类仍只表示“相关”。</div>
             </div>
             <div style={{ flex: 1, minHeight: 0, overflow: "auto" }}>
-              {fridaMaterials.materials.map(material => (
-                <div key={material.materialId} style={{ padding: "7px 9px", borderBottom: "1px solid var(--border-color)" }}>
-                  <div style={{ display: "flex", gap: 8, alignItems: "center", flexWrap: "wrap" }}>
-                    <span style={{ minWidth: 76, padding: "1px 6px", textAlign: "center", borderRadius: 3, background: material.assessment.verificationGateMet ? "#238636" : "#9e6a03", color: "#fff", textTransform: "uppercase", fontSize: 10 }}>{material.assessment.grade} {material.assessment.score}</span>
-                    <strong>{material.kind}</strong>
-                    <span>{material.role}</span>
-                    {material.algorithm && <code>{material.algorithm}</code>}
-                    <span>{material.byteLen ?? "?"} bytes</span>
-                    <span>{material.functionName || "unknown function"}</span>
-                    <code>{material.register || ""}</code>
-                  </div>
-                  <div title={material.bytesHex ? (showFullMaterials ? "完整材料已显示" : "敏感材料已遮罩") : undefined} style={{ marginTop: 4, overflowWrap: "anywhere", color: "var(--text-secondary)", fontFamily: "monospace" }}>
-                    {showFullMaterials ? (material.bytesHex || "未捕获字节") : maskSensitiveHex(material.bytesHex)}
-                  </div>
-                  <div style={{ marginTop: 3, color: "var(--text-tertiary)" }}>{material.evidence.join(" · ")}</div>
-                </div>
-              ))}
+              {fridaMaterials.materials.map(material => <FridaMaterialRow key={material.materialId} material={material} />)}
               {fridaMaterials.formulas.length > 0 && <div style={{ padding: "9px", fontWeight: 600, borderBottom: "1px solid var(--border-color)" }}>已验证/重建公式</div>}
               {fridaMaterials.formulas.map(formula => (
                 <div key={formula.formulaId} style={{ padding: "7px 9px", borderBottom: "1px solid var(--border-color)", background: "var(--bg-secondary)" }}>

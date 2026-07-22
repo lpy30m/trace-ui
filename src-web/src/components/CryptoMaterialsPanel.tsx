@@ -84,13 +84,13 @@ function GradeBadge({ grade, score }: { grade: string; score: number }) {
   );
 }
 
-function MaterialRow({ material, onJumpToSeq, onCreateHook, showFullMaterial }: {
+function MaterialRow({ material, onJumpToSeq, onCreateHook }: {
   material: CryptoMaterial;
   onJumpToSeq: (seq: number) => void;
   onCreateHook?: (material: CryptoMaterial) => void;
-  showFullMaterial: boolean;
 }) {
   const [open, setOpen] = useState(false);
+  const [showFullMaterial, setShowFullMaterial] = useState(false);
   const hexPreview = showFullMaterial
     ? (material.bytesHex || "未捕获字节")
     : maskSensitiveHex(material.bytesHex);
@@ -126,6 +126,11 @@ function MaterialRow({ material, onJumpToSeq, onCreateHook, showFullMaterial }: 
             {material.bytesHex && (
               <button type="button" style={buttonStyle} onClick={() => navigator.clipboard.writeText(material.bytesHex!)}>复制完整十六进制</button>
             )}
+            {material.bytesHex && (
+              <button type="button" style={buttonStyle} onClick={() => setShowFullMaterial(value => !value)}>
+                {showFullMaterial ? "隐藏完整材料" : "显示完整材料"}
+              </button>
+            )}
             {material.address && material.observationSeq != null && (
               <button
                 type="button"
@@ -142,6 +147,11 @@ function MaterialRow({ material, onJumpToSeq, onCreateHook, showFullMaterial }: 
             <span>{material.functionName || material.source}</span>
             {material.register && <span>{material.register}</span>}
           </div>
+          {material.bytesHex && (
+            <div style={{ marginBottom: 6, overflowWrap: "anywhere", fontFamily: "monospace", color: "var(--text-primary)" }}>
+              {showFullMaterial ? material.bytesHex : maskSensitiveHex(material.bytesHex)}
+            </div>
+          )}
           {material.asciiPreview && <div style={{ marginBottom: 5 }}>ASCII：<code>{material.asciiPreview}</code></div>}
           {material.evidence.map((item, index) => <div key={index}>• {item}</div>)}
           {material.assessment.limitations.map((item, index) => (
@@ -171,7 +181,6 @@ export default function CryptoMaterialsPanel({ sessionId, onJumpToSeq, onCreateH
   const [comparison, setComparison] = useState<CryptoMaterialMultiTraceReport | null>(null);
   const [cases, setCases] = useState<EditableCase[]>([]);
   const [includeUnknown, setIncludeUnknown] = useState(false);
-  const [showFullMaterials, setShowFullMaterials] = useState(false);
   const [loading, setLoading] = useState(false);
   const [comparing, setComparing] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -271,10 +280,6 @@ export default function CryptoMaterialsPanel({ sessionId, onJumpToSeq, onCreateH
           <input type="checkbox" checked={includeUnknown} onChange={event => setIncludeUnknown(event.target.checked)} />
           包含未分类调用缓冲区
         </label>
-        <label style={{ display: "flex", alignItems: "center", gap: 4, fontSize: 11, color: "var(--text-secondary)", flexShrink: 0, whiteSpace: "nowrap" }}>
-          <input type="checkbox" checked={showFullMaterials} onChange={event => setShowFullMaterials(event.target.checked)} />
-          显示完整材料
-        </label>
         <span style={{ flex: 1 }} />
         {report && (
           <span style={{ color: "var(--text-tertiary)", fontSize: 11, flexShrink: 0, whiteSpace: "nowrap" }}>
@@ -312,7 +317,7 @@ export default function CryptoMaterialsPanel({ sessionId, onJumpToSeq, onCreateH
           </div>
         )}
         {section === "materials" && report?.materials.map(material => (
-          <MaterialRow key={material.materialId} material={material} onJumpToSeq={onJumpToSeq} onCreateHook={onCreateHook} showFullMaterial={showFullMaterials} />
+          <MaterialRow key={material.materialId} material={material} onJumpToSeq={onJumpToSeq} onCreateHook={onCreateHook} />
         ))}
         {section === "materials" && report && report.materials.length === 0 && (
           <div style={{ padding: 16, color: "var(--text-secondary)", fontSize: 12 }}>

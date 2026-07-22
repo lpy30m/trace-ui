@@ -7,7 +7,9 @@ const requiredChecks = [
   ["components/TabPanel.tsx", "const FLOATABLE_PANELS"],
   ["utils/sensitiveMaterial.ts", "maskSensitiveHex"],
   ["components/FridaHookPanel.tsx", "手动工作流"],
+  ["components/FridaHookPanel.tsx", "filteredCaptureEvents"],
   ["components/OllvmPanel.tsx", "手动工作流"],
+  ["components/CryptoPanel.tsx", "mountedViews"],
 ];
 const forbiddenPatterns = [
   [/(?:^|[^A-Za-z])frida\.attach\s*\(/, "禁止由前端自动 attach Frida"],

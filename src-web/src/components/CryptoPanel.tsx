@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useRef, useCallback, useMemo } from "react";
+import React, { lazy, Suspense, useState, useEffect, useRef, useCallback, useMemo } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { emit } from "@tauri-apps/api/event";
 import { useVirtualScroll } from "../hooks/useVirtualScroll";
@@ -6,13 +6,13 @@ import { useResizableColumn } from "../hooks/useResizableColumn";
 import VirtualScrollArea from "./VirtualScrollArea";
 import ContextMenu, { ContextMenuItem } from "./ContextMenu";
 import Minimap, { MINIMAP_WIDTH } from "./Minimap";
-import KnownDigestPanel from "./KnownDigestPanel";
-import CryptoFunctionsPanel from "./CryptoFunctionsPanel";
-import WhiteBoxPanel from "./WhiteBoxPanel";
-import ValueSearchPanel from "./ValueSearchPanel";
-import CryptoMaterialsPanel from "./CryptoMaterialsPanel";
-import FridaHookPanel from "./FridaHookPanel";
-import OllvmPanel from "./OllvmPanel";
+const KnownDigestPanel = lazy(() => import("./KnownDigestPanel"));
+const CryptoFunctionsPanel = lazy(() => import("./CryptoFunctionsPanel"));
+const WhiteBoxPanel = lazy(() => import("./WhiteBoxPanel"));
+const ValueSearchPanel = lazy(() => import("./ValueSearchPanel"));
+const CryptoMaterialsPanel = lazy(() => import("./CryptoMaterialsPanel"));
+const FridaHookPanel = lazy(() => import("./FridaHookPanel"));
+const OllvmPanel = lazy(() => import("./OllvmPanel"));
 import type {
   CryptoFunctionCandidate,
   CryptoMaterial,
@@ -315,9 +315,17 @@ function DetectionPanel({ cryptoResults, cryptoScanning, onJumpToSeq }: Detectio
   );
 }
 
+type CryptoView = "value-search" | "materials" | "frida" | "ollvm" | "detection" | "known-digest" | "functions" | "whitebox";
+
 export default function CryptoPanel(props: Props) {
-  const [view, setView] = useState<"value-search" | "materials" | "frida" | "ollvm" | "detection" | "known-digest" | "functions" | "whitebox">("value-search");
+  const [view, setView] = useState<CryptoView>("value-search");
+  const [mountedViews, setMountedViews] = useState<Set<CryptoView>>(() => new Set(["value-search"]));
   const [fridaSeed, setFridaSeed] = useState<FridaHookSeed | null>(null);
+
+  const activateView = useCallback((next: CryptoView) => {
+    setView(next);
+    setMountedViews(previous => previous.has(next) ? previous : new Set(previous).add(next));
+  }, []);
 
   const resolveTargetLine = useCallback(async (seq: number): Promise<TraceLine | null> => {
     if (!props.sessionId) return null;
@@ -355,7 +363,7 @@ export default function CryptoPanel(props: Props) {
   }, []);
 
   const createFunctionHook = useCallback(async (candidate: CryptoFunctionCandidate) => {
-    setView("frida");
+    activateView("frida");
     const line = await resolveTargetLine(candidate.entrySeq);
     const offset = line?.so_offset || "";
     const symbol = candidate.funcName || "";
@@ -368,10 +376,10 @@ export default function CryptoPanel(props: Props) {
       functionName: candidate.funcName || candidate.funcAddr,
       arguments: functionArguments(candidate),
     });
-  }, [functionArguments, resolveTargetLine]);
+  }, [activateView, functionArguments, resolveTargetLine]);
 
   const createMaterialHook = useCallback(async (material: CryptoMaterial) => {
-    setView("frida");
+    activateView("frida");
     const seq = material.observationSeq ?? material.completionSeq ?? 0;
     const line = await resolveTargetLine(seq);
     const registerMatch = material.register ? /^x([0-7])$/i.exec(material.register.trim()) : null;
@@ -399,12 +407,12 @@ export default function CryptoPanel(props: Props) {
       functionName: material.functionName || material.role || material.kind,
       arguments: capture,
     });
-  }, [resolveTargetLine]);
+  }, [activateView, resolveTargetLine]);
 
   const createOllvmHook = useCallback((seed: FridaHookSeed) => {
     setFridaSeed(seed);
-    setView("frida");
-  }, []);
+    activateView("frida");
+  }, [activateView]);
 
   const segmentStyle = (active: boolean): React.CSSProperties => ({
     height: 26,
@@ -429,69 +437,70 @@ export default function CryptoPanel(props: Props) {
           display: "flex", border: "1px solid var(--border-color)", borderRadius: 4,
           overflow: "hidden", flexShrink: 0,
         }}>
-          <button type="button" style={segmentStyle(view === "value-search")} onClick={() => setView("value-search")}>
+          <button type="button" style={segmentStyle(view === "value-search")} onClick={() => activateView("value-search")}>
             值搜索
           </button>
-          <button type="button" style={segmentStyle(view === "materials")} onClick={() => setView("materials")}>
+          <button type="button" style={segmentStyle(view === "materials")} onClick={() => activateView("materials")}>
             材料
           </button>
-          <button type="button" style={segmentStyle(view === "frida")} onClick={() => setView("frida")}>
+          <button type="button" style={segmentStyle(view === "frida")} onClick={() => activateView("frida")}>
             Frida Hook
           </button>
-          <button type="button" style={segmentStyle(view === "ollvm")} onClick={() => setView("ollvm")}>
+          <button type="button" style={segmentStyle(view === "ollvm")} onClick={() => activateView("ollvm")}>
             IDA / OLLVM
           </button>
-          <button type="button" style={segmentStyle(view === "detection")} onClick={() => setView("detection")}>
+          <button type="button" style={segmentStyle(view === "detection")} onClick={() => activateView("detection")}>
             常量检测
           </button>
           <button
             type="button"
             style={segmentStyle(view === "known-digest")}
-            onClick={() => setView("known-digest")}
+            onClick={() => activateView("known-digest")}
           >
             已知摘要
           </button>
           <button
             type="button"
             style={segmentStyle(view === "functions")}
-            onClick={() => setView("functions")}
+            onClick={() => activateView("functions")}
           >
             函数识别
           </button>
           <button
             type="button"
             style={{ ...segmentStyle(view === "whitebox"), borderRight: "none" }}
-            onClick={() => setView("whitebox")}
+            onClick={() => activateView("whitebox")}
           >
             实现分析
           </button>
         </div>
       </div>
       <div style={{ flex: 1, minHeight: 0, display: "flex", overflow: "hidden" }}>
-        <div style={{ flex: 1, minWidth: 0, minHeight: 0, display: view === "value-search" ? "flex" : "none" }}>
+        <Suspense fallback={<div style={{ flex: 1, display: "flex", alignItems: "center", justifyContent: "center", color: "var(--text-secondary)", fontSize: 12 }}>正在加载分析面板…</div>}>
+        {mountedViews.has("value-search") && <div style={{ flex: 1, minWidth: 0, minHeight: 0, display: view === "value-search" ? "flex" : "none" }}>
           <ValueSearchPanel
             sessionId={props.sessionId}
             onJumpToSeq={props.onJumpToSeq}
             onTraceMemory={props.onTraceMemory}
           />
-        </div>
-        <div style={{ flex: 1, minWidth: 0, minHeight: 0, display: view === "materials" ? "flex" : "none" }}>
+        </div>}
+        {mountedViews.has("materials") && <div style={{ flex: 1, minWidth: 0, minHeight: 0, display: view === "materials" ? "flex" : "none" }}>
           <CryptoMaterialsPanel sessionId={props.sessionId} onJumpToSeq={props.onJumpToSeq} onCreateHook={createMaterialHook} />
-        </div>
-        <div style={{ flex: 1, minWidth: 0, minHeight: 0, display: view === "frida" ? "flex" : "none" }}>
+        </div>}
+        {mountedViews.has("frida") && <div style={{ flex: 1, minWidth: 0, minHeight: 0, display: view === "frida" ? "flex" : "none" }}>
           <FridaHookPanel seed={fridaSeed} />
-        </div>
-        <div style={{ flex: 1, minWidth: 0, minHeight: 0, display: view === "ollvm" ? "flex" : "none" }}>
+        </div>}
+        {mountedViews.has("ollvm") && <div style={{ flex: 1, minWidth: 0, minHeight: 0, display: view === "ollvm" ? "flex" : "none" }}>
           <OllvmPanel sessionId={props.sessionId} onJumpToSeq={props.onJumpToSeq} onPrepareFridaHook={createOllvmHook} />
-        </div>
-        <div style={{ flex: 1, minWidth: 0, minHeight: 0, display: view === "detection" ? "flex" : "none" }}>
+        </div>}
+        {mountedViews.has("detection") && <div style={{ flex: 1, minWidth: 0, minHeight: 0, display: view === "detection" ? "flex" : "none" }}>
           <DetectionPanel
             cryptoResults={props.cryptoResults}
             cryptoScanning={props.cryptoScanning}
             onJumpToSeq={props.onJumpToSeq}
           />
-        </div>
-        <div style={{ flex: 1, minWidth: 0, minHeight: 0, display: view === "known-digest" ? "flex" : "none" }}>
+        </div>}
+        {mountedViews.has("known-digest") && <div style={{ flex: 1, minWidth: 0, minHeight: 0, display: view === "known-digest" ? "flex" : "none" }}>
           <KnownDigestPanel
             sessionId={props.sessionId}
             hasStringIndex={props.hasStringIndex}
@@ -499,20 +508,21 @@ export default function CryptoPanel(props: Props) {
             onScanStrings={props.onScanStrings}
             onTraceInput={props.onTraceInput}
           />
-        </div>
-        <div style={{ flex: 1, minWidth: 0, minHeight: 0, display: view === "functions" ? "flex" : "none" }}>
+        </div>}
+        {mountedViews.has("functions") && <div style={{ flex: 1, minWidth: 0, minHeight: 0, display: view === "functions" ? "flex" : "none" }}>
           <CryptoFunctionsPanel
             sessionId={props.sessionId}
             onJumpToSeq={props.onJumpToSeq}
             onCreateHook={createFunctionHook}
           />
-        </div>
-        <div style={{ flex: 1, minWidth: 0, minHeight: 0, display: view === "whitebox" ? "flex" : "none" }}>
+        </div>}
+        {mountedViews.has("whitebox") && <div style={{ flex: 1, minWidth: 0, minHeight: 0, display: view === "whitebox" ? "flex" : "none" }}>
           <WhiteBoxPanel
             sessionId={props.sessionId}
             onJumpToSeq={props.onJumpToSeq}
           />
-        </div>
+        </div>}
+        </Suspense>
       </div>
     </div>
   );
