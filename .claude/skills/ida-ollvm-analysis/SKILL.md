@@ -35,10 +35,11 @@ Use `mcp__trace-ui__analyze_ollvm`, `mcp__trace-ui__compare_ollvm_traces`, `mcp_
 7. Reconcile dynamic observed successors with angr static successors. Investigate unobserved-static
    and dynamic-only edges, but do not assume either side is complete.
 8. For a selected opaque branch, generate a Frida 16 Hook at the branch offset or a reported
-   condition-source offset and let the user run it manually. Inspect the capture, select a `hook-enter`
-   event, then call `generate_angr_ollvm_script` with `frida_capture_path` and `frida_event_index`.
-   The tool must reject module or offset mismatches. Use `generate_angr_state_seed` separately when a
-   reusable standalone `configure_state(state)` function is desired.
+   condition-source offset and let the user run it manually. Inspect the capture, select one or more
+   exact `hook-enter` events, then call `generate_angr_ollvm_script` with `frida_capture_path` and
+   `frida_event_indices` (legacy `frida_event_index` remains supported). The tool must reject module or
+   offset mismatches. Optionally provide the exact AArch64 ELF path to embed a SHA-256 guard. Use
+   `generate_angr_state_seed` separately when a reusable standalone `configure_state(state)` function is desired.
 9. For a selected dispatcher candidate, generate a Frida 16 Hook at its exact `startOffset` and let the
    user run it manually. Import the `hook-enter` event and pass it to `generate_angr_ollvm_script`.
    Keep bounded flow enabled to stop at the next dispatcher, loop, external target, dead end, or bound;
@@ -81,7 +82,7 @@ Use `mcp__trace-ui__analyze_ollvm`, `mcp__trace-ui__compare_ollvm_traces`, `mcp_
   missing flags, SIMD, unread buffers, or entry-path constraints keep the result Candidate/Related. When
   Frida provides packed NZCV, the generated angr bridge carries it forward with a packed-register or
   N/Z/C/V fallback; the capture point still must have branch-equivalent flag semantics.
-- Bounded branch continuation applies only to the first trace-register seed per candidate and an exact
+- Bounded branch continuation applies only to the first trace-register seed per candidate and each exact
   branch/condition-source Frida seed. An exact dispatcher-entry seed instead explores to the next
   dispatcher, loop, exit, or bound and may report each target state register as `concrete`, `symbolic`
   with at most two alternatives, or `unavailable`. Blank state remains single-step. A `loop-detected`
@@ -90,6 +91,8 @@ Use `mcp__trace-ui__analyze_ollvm`, `mcp__trace-ui__compare_ollvm_traces`, `mcp_
 - Require the exact ELF/shared object for every case and enable `require_matching_binary`. A matching
   supplied SHA-256 confirms the selected files are identical, not that the trace format cryptographically
   attests which image was mapped at runtime.
+- When `generate_angr_ollvm_script` receives `static_binary_path`, the generated Python bridge checks that
+  selected file's SHA-256 before CFG/symbolic work. This is a file-identity guard, not runtime-image attestation.
 - Excluding child call ranges usually produces a cleaner function-local CFG. Include them only when the investigation explicitly needs interprocedural flow.
 - Do not mark OLLVM findings `Verified` solely from structural evidence.
 - Cross-version operation/CFG/state-role similarity is a relocation lead only. Module renames and offset

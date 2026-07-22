@@ -4,7 +4,8 @@ use crate::error::{Result, TraceError};
 use crate::query::elf_identity::{inspect_elf_binary, ElfBinaryIdentity};
 use crate::query::evidence_score::{score_evidence, EvidenceScoreSignal};
 use crate::query::ollvm::{
-    BranchStateObservation, DispatcherCandidate, DispatcherStateSnapshot,
+    BranchConditionOutcomeProfile, BranchConditionStateProfile, BranchConditionValueCount,
+    BranchFlagBitProfile, BranchStateObservation, DispatcherCandidate, DispatcherStateSnapshot,
     DispatcherStateTransition, DynamicBasicBlock, DynamicBlockInstruction, DynamicBranchProfile,
     DynamicCfgEdge, OllvmAnalysisOptions, OllvmBlockFingerprint, OllvmBranchCaseEvidence,
     OllvmBranchStability, OllvmCaseSummary, OllvmDispatcherCaseEvidence, OllvmDispatcherStability,
@@ -1274,6 +1275,7 @@ fn build_branch_profiles(stats: HashMap<u64, BranchStats>) -> Vec<DynamicBranchP
                         registers: BTreeMap::new(),
                     })
                     .collect(),
+                condition_state_profile: Default::default(),
             }
         })
         .collect()
@@ -1307,6 +1309,140 @@ fn attach_branch_state_evidence(
                 })
                 .collect();
         }
+        profile.condition_state_profile = build_condition_state_profile(
+            &profile.observations,
+            profile.execution_count,
+            profile.observations_truncated,
+            registers.first().cloned(),
+        );
+    }
+}
+
+fn build_condition_state_profile(
+    observations: &[BranchStateObservation],
+    execution_count: u64,
+    observations_truncated: bool,
+    source_register: Option<String>,
+) -> BranchConditionStateProfile {
+    let Some(source_register) = source_register else {
+        return BranchConditionStateProfile {
+            incomplete: execution_count > 0 || observations_truncated,
+            missing_observation_count: execution_count,
+            ..Default::default()
+        };
+    };
+    let mut values = BTreeMap::<String, u64>::new();
+    let mut outcome_values = BTreeMap::<String, BTreeMap<String, u64>>::new();
+    let mut outcome_counts = BTreeMap::<String, u64>::new();
+    let mut overall_flags = [0u64; 8];
+    let mut outcome_flags = BTreeMap::<String, [u64; 8]>::new();
+    let mut captured = 0u64;
+    let is_nzcv = source_register.eq_ignore_ascii_case("NZCV");
+    for observation in observations {
+        let Some(value) = observation.registers.get(&source_register) else {
+            continue;
+        };
+        let value = value.trim();
+        if value.is_empty() || value == "?" {
+            continue;
+        }
+        captured = captured.saturating_add(1);
+        *values.entry(value.to_string()).or_default() += 1;
+        *outcome_counts
+            .entry(observation.outcome.clone())
+            .or_default() += 1;
+        *outcome_values
+            .entry(observation.outcome.clone())
+            .or_default()
+            .entry(value.to_string())
+            .or_default() += 1;
+        if is_nzcv {
+            let Ok(parsed) = parse_hex_addr(value) else {
+                continue;
+            };
+            let flags = outcome_flags
+                .entry(observation.outcome.clone())
+                .or_default();
+            for (index, bit) in [31u8, 30, 29, 28].into_iter().enumerate() {
+                let set = ((parsed >> bit) & 1) != 0;
+                let slot = index * 2 + usize::from(set);
+                overall_flags[slot] = overall_flags[slot].saturating_add(1);
+                flags[slot] = flags[slot].saturating_add(1);
+            }
+        }
+    }
+    let mut value_items: Vec<_> = values
+        .into_iter()
+        .map(|(value, count)| BranchConditionValueCount { value, count })
+        .collect();
+    value_items.sort_by(|left, right| {
+        right
+            .count
+            .cmp(&left.count)
+            .then_with(|| left.value.cmp(&right.value))
+    });
+    let flag_names = ["N", "Z", "C", "V"];
+    let flag_bits = if is_nzcv {
+        flag_names
+            .iter()
+            .enumerate()
+            .map(|(index, flag)| BranchFlagBitProfile {
+                flag: (*flag).to_string(),
+                set_count: overall_flags[index * 2 + 1],
+                clear_count: overall_flags[index * 2],
+            })
+            .collect()
+    } else {
+        Vec::new()
+    };
+    let mut outcomes = outcome_counts
+        .into_iter()
+        .map(|(outcome, observation_count)| {
+            let mut outcome_value_items: Vec<_> = outcome_values
+                .remove(&outcome)
+                .unwrap_or_default()
+                .into_iter()
+                .map(|(value, count)| BranchConditionValueCount { value, count })
+                .collect();
+            outcome_value_items.sort_by(|left, right| {
+                right
+                    .count
+                    .cmp(&left.count)
+                    .then_with(|| left.value.cmp(&right.value))
+            });
+            let flags = outcome_flags.remove(&outcome).unwrap_or_default();
+            let outcome_flag_bits = if is_nzcv {
+                flag_names
+                    .iter()
+                    .enumerate()
+                    .map(|(index, flag)| BranchFlagBitProfile {
+                        flag: (*flag).to_string(),
+                        set_count: flags[index * 2 + 1],
+                        clear_count: flags[index * 2],
+                    })
+                    .collect()
+            } else {
+                Vec::new()
+            };
+            BranchConditionOutcomeProfile {
+                outcome,
+                observation_count,
+                values: outcome_value_items,
+                flag_bits: outcome_flag_bits,
+            }
+        })
+        .collect::<Vec<_>>();
+    outcomes.sort_by(|left, right| left.outcome.cmp(&right.outcome));
+    let missing = execution_count.saturating_sub(captured);
+    BranchConditionStateProfile {
+        source_register: Some(source_register),
+        captured_observation_count: captured,
+        missing_observation_count: missing,
+        distinct_value_count: value_items.len() as u32,
+        values: value_items,
+        flag_bits,
+        outcomes,
+        incomplete: missing > 0 || observations_truncated,
     }
 }
 
@@ -1402,6 +1538,7 @@ fn build_opaque_candidates(profiles: &[DynamicBranchProfile]) -> Vec<OpaqueBranc
             condition_source_offsets: profile.condition_source_offsets.clone(),
             observations: profile.observations.clone(),
             observations_truncated: profile.observations_truncated,
+            condition_state_profile: profile.condition_state_profile.clone(),
             rationale,
             assessment,
         });
@@ -2465,6 +2602,49 @@ mod tests {
         assert_eq!(branch_relevant_registers(&profile.disasm), vec!["X8"]);
     }
 
+    #[test]
+    fn aggregates_nzcv_bits_and_outcomes_without_claiming_completeness() {
+        let observations = vec![
+            BranchStateObservation {
+                seq: 1,
+                outcome: "taken".to_string(),
+                successor: "0x200".to_string(),
+                registers: [("NZCV".to_string(), "0x40000000".to_string())]
+                    .into_iter()
+                    .collect(),
+            },
+            BranchStateObservation {
+                seq: 2,
+                outcome: "fallthrough".to_string(),
+                successor: "0x108".to_string(),
+                registers: [("NZCV".to_string(), "0x20000000".to_string())]
+                    .into_iter()
+                    .collect(),
+            },
+        ];
+        let profile =
+            build_condition_state_profile(&observations, 3, true, Some("NZCV".to_string()));
+        assert_eq!(profile.captured_observation_count, 2);
+        assert_eq!(profile.missing_observation_count, 1);
+        assert_eq!(profile.distinct_value_count, 2);
+        assert!(profile.incomplete);
+        assert_eq!(profile.outcomes.len(), 2);
+        let z = profile
+            .flag_bits
+            .iter()
+            .find(|flag| flag.flag == "Z")
+            .unwrap();
+        assert_eq!(z.set_count, 1);
+        assert_eq!(z.clear_count, 1);
+        let c = profile
+            .flag_bits
+            .iter()
+            .find(|flag| flag.flag == "C")
+            .unwrap();
+        assert_eq!(c.set_count, 1);
+        assert_eq!(c.clear_count, 1);
+    }
+
     fn report_with_branch(session_id: &str, taken: u64, fallthrough: u64) -> OllvmReport {
         OllvmReport {
             schema_version: "trace-ui/ollvm-v1".to_string(),
@@ -2501,6 +2681,7 @@ mod tests {
                 condition_source_offsets: vec!["0x100".to_string()],
                 observations: Vec::new(),
                 observations_truncated: false,
+                condition_state_profile: Default::default(),
             }],
             dispatcher_candidates: Vec::new(),
             opaque_branch_candidates: Vec::new(),

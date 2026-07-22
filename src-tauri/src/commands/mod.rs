@@ -1064,6 +1064,60 @@ pub async fn load_ida_annotations(path: String) -> Result<trace_core::IdaAnnotat
     .map_err(|error| format!("Task execution failed: {error}"))?
 }
 
+fn build_angr_frida_seeds(
+    bundle: Option<&trace_core::FridaCaptureBundle>,
+    legacy_event_index: Option<u64>,
+    event_indices: Option<Vec<u64>>,
+    include_sp: bool,
+    include_lr: bool,
+) -> Result<Vec<trace_core::AngrStateSeed>, String> {
+    let mut indices = event_indices.unwrap_or_default();
+    if let Some(index) = legacy_event_index {
+        indices.push(index);
+    }
+    indices.sort_unstable();
+    indices.dedup();
+    if indices.len() > 32 {
+        return Err("at most 32 Frida events may seed one OLLVM angr script".to_string());
+    }
+    match (bundle, indices.is_empty()) {
+        (None, true) => Ok(Vec::new()),
+        (Some(_), true) => Err(
+            "fridaBundle requires fridaEventIndex or fridaEventIndices for OLLVM seed merging"
+                .to_string(),
+        ),
+        (None, false) => Err(
+            "fridaBundle must accompany fridaEventIndex/fridaEventIndices for OLLVM seed merging"
+                .to_string(),
+        ),
+        (Some(bundle), false) => indices
+            .into_iter()
+            .map(|event_index| {
+                trace_core::generate_angr_state_seed(bundle, event_index, include_sp, include_lr)
+            })
+            .collect(),
+    }
+}
+
+fn inspect_optional_elf_identity(
+    static_binary_path: Option<&str>,
+) -> Result<Option<trace_core::ElfBinaryIdentity>, String> {
+    let Some(path) = static_binary_path
+        .map(str::trim)
+        .filter(|path| !path.is_empty())
+    else {
+        return Ok(None);
+    };
+    let identity = trace_core::inspect_elf_binary(path)?;
+    if identity.elf_machine != 183 {
+        return Err(format!(
+            "angr OLLVM bridge requires an AArch64 ELF, got {}",
+            identity.architecture
+        ));
+    }
+    Ok(Some(identity))
+}
+
 #[tauri::command]
 pub fn generate_angr_ollvm_script(
     report: trace_core::OllvmReport,
@@ -1074,33 +1128,30 @@ pub fn generate_angr_ollvm_script(
     flow_max_states_per_probe: Option<u32>,
     frida_bundle: Option<trace_core::FridaCaptureBundle>,
     frida_event_index: Option<u64>,
+    frida_event_indices: Option<Vec<u64>>,
     frida_include_sp: Option<bool>,
     frida_include_lr: Option<bool>,
+    static_binary_path: Option<String>,
 ) -> Result<trace_core::AngrOllvmScript, String> {
-    let frida_seed =
-        match (frida_bundle.as_ref(), frida_event_index) {
-            (Some(bundle), Some(event_index)) => Some(trace_core::generate_angr_state_seed(
-                bundle,
-                event_index,
-                frida_include_sp.unwrap_or(false),
-                frida_include_lr.unwrap_or(true),
-            )?),
-            (None, None) => None,
-            _ => return Err(
-                "fridaBundle and fridaEventIndex must be provided together for OLLVM seed merging"
-                    .to_string(),
-            ),
-        };
-    trace_core::generate_angr_ollvm_script_with_seed_and_flow(
+    let frida_seeds = build_angr_frida_seeds(
+        frida_bundle.as_ref(),
+        frida_event_index,
+        frida_event_indices,
+        frida_include_sp.unwrap_or(false),
+        frida_include_lr.unwrap_or(true),
+    )?;
+    let expected_identity = inspect_optional_elf_identity(static_binary_path.as_deref())?;
+    trace_core::generate_angr_ollvm_script_with_seeds_flow_and_identity(
         &report,
         probe_opaque_branches.unwrap_or(true),
         use_cfg_emulated.unwrap_or(false),
-        frida_seed.as_ref(),
+        frida_seeds.iter().collect(),
         trace_core::AngrOllvmFlowConfig {
             enabled: explore_seeded_flows.unwrap_or(true),
             max_depth: flow_max_depth.unwrap_or(8),
             max_states_per_probe: flow_max_states_per_probe.unwrap_or(32),
         },
+        expected_identity.as_ref(),
     )
 }
 
@@ -1115,33 +1166,31 @@ pub async fn save_angr_ollvm_script(
     flow_max_states_per_probe: Option<u32>,
     frida_bundle: Option<trace_core::FridaCaptureBundle>,
     frida_event_index: Option<u64>,
+    frida_event_indices: Option<Vec<u64>>,
     frida_include_sp: Option<bool>,
     frida_include_lr: Option<bool>,
+    static_binary_path: Option<String>,
 ) -> Result<String, String> {
     tauri::async_runtime::spawn_blocking(move || {
-        let frida_seed = match (frida_bundle.as_ref(), frida_event_index) {
-            (Some(bundle), Some(event_index)) => Some(trace_core::generate_angr_state_seed(
-                bundle,
-                event_index,
-                frida_include_sp.unwrap_or(false),
-                frida_include_lr.unwrap_or(true),
-            )?),
-            (None, None) => None,
-            _ => return Err(
-                "fridaBundle and fridaEventIndex must be provided together for OLLVM seed merging"
-                    .to_string(),
-            ),
-        };
-        let generated = trace_core::generate_angr_ollvm_script_with_seed_and_flow(
+        let frida_seeds = build_angr_frida_seeds(
+            frida_bundle.as_ref(),
+            frida_event_index,
+            frida_event_indices,
+            frida_include_sp.unwrap_or(false),
+            frida_include_lr.unwrap_or(true),
+        )?;
+        let expected_identity = inspect_optional_elf_identity(static_binary_path.as_deref())?;
+        let generated = trace_core::generate_angr_ollvm_script_with_seeds_flow_and_identity(
             &report,
             probe_opaque_branches.unwrap_or(true),
             use_cfg_emulated.unwrap_or(false),
-            frida_seed.as_ref(),
+            frida_seeds.iter().collect(),
             trace_core::AngrOllvmFlowConfig {
                 enabled: explore_seeded_flows.unwrap_or(true),
                 max_depth: flow_max_depth.unwrap_or(8),
                 max_states_per_probe: flow_max_states_per_probe.unwrap_or(32),
             },
+            expected_identity.as_ref(),
         )?;
         let trimmed = path.trim();
         if trimmed.is_empty() {

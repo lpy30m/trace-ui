@@ -35,10 +35,11 @@ pub use query::analysis_summary::{
 };
 pub use query::angr::{
     generate_angr_ollvm_script, generate_angr_ollvm_script_with_seed,
-    generate_angr_ollvm_script_with_seed_and_flow, parse_angr_ollvm_result_bundle, AngrBlockResult,
-    AngrBranchProbe, AngrDispatcherProbe, AngrFlowExploration, AngrFlowPath, AngrOllvmFlowConfig,
-    AngrOllvmFridaSeedProvenance, AngrOllvmResultBundle, AngrOllvmScript, AngrRegisterValue,
-    AngrSuccessor,
+    generate_angr_ollvm_script_with_seed_and_flow,
+    generate_angr_ollvm_script_with_seeds_flow_and_identity, parse_angr_ollvm_result_bundle,
+    AngrBlockResult, AngrBranchProbe, AngrDispatcherProbe, AngrFlowExploration, AngrFlowPath,
+    AngrOllvmFlowConfig, AngrOllvmFridaSeedProvenance, AngrOllvmResultBundle, AngrOllvmScript,
+    AngrRegisterValue, AngrSuccessor,
 };
 pub use query::crypto_functions::{
     CryptoFamily, CryptoFunctionCandidate, CryptoFunctionIo, CryptoFunctionReport,
@@ -82,16 +83,17 @@ pub use query::hash_match::{
     HashMemoryMatchResponse, HashMemoryMatchResult, HashTransform, HashTransformOptions,
 };
 pub use query::ollvm::{
-    generate_ida_ollvm_script, parse_ida_annotation_bundle, BranchStateObservation,
-    DispatcherCandidate, DispatcherStateSnapshot, DispatcherStateTransition, DynamicBasicBlock,
-    DynamicBlockInstruction, DynamicBranchProfile, DynamicCfgEdge, IdaAnnotation,
-    IdaAnnotationBundle, IdaOllvmScript, OllvmAnalysisOptions, OllvmBlockFingerprint,
-    OllvmBranchCaseEvidence, OllvmBranchStability, OllvmCaseSummary, OllvmDispatcherCaseEvidence,
-    OllvmDispatcherStability, OllvmMultiTraceReport, OllvmMultiTraceRequest, OllvmReport,
-    OllvmScope, OllvmStateRegisterFingerprint, OllvmStateRegisterMatch, OllvmTraceCase,
-    OllvmVersionBlockCandidate, OllvmVersionDispatcherMapping, OllvmVersionMapReport,
-    OllvmVersionMapRequest, OllvmVersionSummary, OllvmVersionTargetMapping, OllvmVersionTraceCase,
-    OpaqueBranchCandidate,
+    generate_ida_ollvm_script, parse_ida_annotation_bundle, BranchConditionOutcomeProfile,
+    BranchConditionStateProfile, BranchConditionValueCount, BranchFlagBitProfile,
+    BranchStateObservation, DispatcherCandidate, DispatcherStateSnapshot,
+    DispatcherStateTransition, DynamicBasicBlock, DynamicBlockInstruction, DynamicBranchProfile,
+    DynamicCfgEdge, IdaAnnotation, IdaAnnotationBundle, IdaOllvmScript, OllvmAnalysisOptions,
+    OllvmBlockFingerprint, OllvmBranchCaseEvidence, OllvmBranchStability, OllvmCaseSummary,
+    OllvmDispatcherCaseEvidence, OllvmDispatcherStability, OllvmMultiTraceReport,
+    OllvmMultiTraceRequest, OllvmReport, OllvmScope, OllvmStateRegisterFingerprint,
+    OllvmStateRegisterMatch, OllvmTraceCase, OllvmVersionBlockCandidate,
+    OllvmVersionDispatcherMapping, OllvmVersionMapReport, OllvmVersionMapRequest,
+    OllvmVersionSummary, OllvmVersionTargetMapping, OllvmVersionTraceCase, OpaqueBranchCandidate,
 };
 pub use query::source_sink::{
     apply_resource_validation, classify_flow_endpoints, CallResourceContext,

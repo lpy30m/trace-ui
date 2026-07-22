@@ -1,5 +1,6 @@
 use serde::{Deserialize, Serialize};
 
+use crate::query::elf_identity::ElfBinaryIdentity;
 use crate::query::frida_capture::AngrStateSeed;
 use crate::query::ollvm::OllvmReport;
 use crate::utils::parse_hex_addr;
@@ -12,6 +13,10 @@ pub struct AngrOllvmScript {
     pub schema_version: String,
     #[serde(default)]
     pub frida_seed: Option<AngrOllvmFridaSeedProvenance>,
+    #[serde(default)]
+    pub frida_seeds: Vec<AngrOllvmFridaSeedProvenance>,
+    #[serde(default)]
+    pub expected_binary_identity: Option<ElfBinaryIdentity>,
     pub flow_config: AngrOllvmFlowConfig,
     pub warnings: Vec<String>,
 }
@@ -188,12 +193,18 @@ pub struct AngrOllvmResultBundle {
     pub schema: String,
     pub module_name: String,
     pub binary_sha256: String,
+    #[serde(default)]
+    pub expected_binary_sha256: Option<String>,
+    #[serde(default)]
+    pub binary_identity_matched: Option<bool>,
     pub mapped_base: String,
     pub architecture: String,
     pub angr_version: String,
     pub cfg_kind: String,
     #[serde(default)]
     pub frida_seed: Option<AngrOllvmFridaSeedProvenance>,
+    #[serde(default)]
+    pub frida_seeds: Vec<AngrOllvmFridaSeedProvenance>,
     #[serde(default)]
     pub flow_config: Option<AngrOllvmFlowConfig>,
     #[serde(default)]
@@ -413,25 +424,62 @@ pub fn generate_angr_ollvm_script_with_seed_and_flow(
     probe_opaque_branches: bool,
     use_cfg_emulated: bool,
     frida_seed: Option<&AngrStateSeed>,
+    flow_config: AngrOllvmFlowConfig,
+) -> Result<AngrOllvmScript, String> {
+    generate_angr_ollvm_script_with_seeds_flow_and_identity(
+        report,
+        probe_opaque_branches,
+        use_cfg_emulated,
+        frida_seed.into_iter().collect::<Vec<_>>(),
+        flow_config,
+        None,
+    )
+}
+
+/// Generate the manual angr bridge with optional exact ELF identity metadata.
+///
+/// The identity is embedded in the generated Python script and checked before
+/// any CFG/probe work. This protects against accidentally running a trace seed
+/// against a different build that happens to share the same module basename and
+/// offsets. The check is still about the user-selected file; it cannot attest
+/// which image was mapped in the original runtime trace.
+pub fn generate_angr_ollvm_script_with_seeds_flow_and_identity(
+    report: &OllvmReport,
+    probe_opaque_branches: bool,
+    use_cfg_emulated: bool,
+    frida_seeds: Vec<&AngrStateSeed>,
     mut flow_config: AngrOllvmFlowConfig,
+    expected_binary_identity: Option<&ElfBinaryIdentity>,
 ) -> Result<AngrOllvmScript, String> {
     if report.scope.module_name.trim().is_empty() {
         return Err("OLLVM report module name must not be empty".to_string());
     }
     validate_flow_config(&flow_config)?;
-    let (frida_seed_json, frida_seed_provenance) = match frida_seed {
-        Some(seed) => {
-            let (payload, provenance) = prepare_frida_seed(report, seed)?;
-            (payload, Some(provenance))
+    if frida_seeds.len() > 32 {
+        return Err("at most 32 Frida seeds may be embedded in one angr bridge".to_string());
+    }
+    let mut frida_seed_payloads = Vec::with_capacity(frida_seeds.len());
+    let mut frida_seed_provenances = Vec::with_capacity(frida_seeds.len());
+    let mut source_event_indices = std::collections::HashSet::new();
+    for seed in frida_seeds {
+        if !source_event_indices.insert(seed.source_event_index) {
+            return Err(format!(
+                "duplicate Frida seed source event index {}",
+                seed.source_event_index
+            ));
         }
-        None => (serde_json::Value::Null, None),
-    };
-    let has_dispatcher_seed = frida_seed_provenance
-        .as_ref()
-        .is_some_and(|provenance| !provenance.matched_dispatcher_offsets.is_empty());
-    let has_branch_seed = frida_seed_provenance
-        .as_ref()
-        .is_some_and(|provenance| !provenance.matched_branch_offsets.is_empty());
+        let (payload, provenance) = prepare_frida_seed(report, seed)?;
+        frida_seed_payloads.push(payload);
+        frida_seed_provenances.push(provenance);
+    }
+    let frida_seed_json = serde_json::Value::Array(frida_seed_payloads);
+    let frida_seed_provenance = frida_seed_provenances.first().cloned();
+    let has_dispatcher_seed = frida_seed_provenances
+        .iter()
+        .any(|provenance| !provenance.matched_dispatcher_offsets.is_empty());
+    let has_branch_seed = frida_seed_provenances
+        .iter()
+        .any(|provenance| !provenance.matched_branch_offsets.is_empty());
     if has_branch_seed && !probe_opaque_branches && !has_dispatcher_seed {
         return Err(
             "Frida branch/condition-source seed merging requires opaque branch probes".to_string(),
@@ -448,6 +496,13 @@ pub fn generate_angr_ollvm_script_with_seed_and_flow(
         .map_err(|error| format!("serialize OLLVM report failed: {error}"))?;
     let report_literal = serde_json::to_string(&report_json)
         .map_err(|error| format!("quote OLLVM report failed: {error}"))?;
+    let expected_binary_json = expected_binary_identity
+        .map(serde_json::to_string)
+        .transpose()
+        .map_err(|error| format!("serialize expected ELF identity failed: {error}"))?
+        .unwrap_or_else(|| "null".to_string());
+    let expected_binary_literal = serde_json::to_string(&expected_binary_json)
+        .map_err(|error| format!("quote expected ELF identity failed: {error}"))?;
     let function_name = report
         .scope
         .function_name
@@ -478,7 +533,8 @@ DEFAULT_CFG_EMULATED = __CFG_EMULATED__
 DEFAULT_EXPLORE_SEEDED_FLOWS = __EXPLORE_FLOWS__
 DEFAULT_FLOW_MAX_DEPTH = __FLOW_MAX_DEPTH__
 DEFAULT_FLOW_MAX_STATES = __FLOW_MAX_STATES__
-FRIDA_SEED = json.loads(__FRIDA_SEED_JSON__)
+FRIDA_SEEDS = json.loads(__FRIDA_SEEDS_JSON__)
+EXPECTED_BINARY_IDENTITY = json.loads(__EXPECTED_BINARY_IDENTITY__)
 
 
 def configure_state(state):
@@ -612,11 +668,11 @@ def _apply_trace_snapshot(state, snapshot):
     return seeded, errors
 
 
-def _frida_rebase(project, value):
-    if FRIDA_SEED is None:
+def _frida_rebase(project, value, seed):
+    if seed is None:
         return value
-    base_text = FRIDA_SEED.get("moduleBase")
-    size = int(FRIDA_SEED.get("moduleSize") or 0)
+    base_text = seed.get("moduleBase")
+    size = int(seed.get("moduleSize") or 0)
     if base_text and size > 0:
         base = int(base_text, 16)
         if base <= value < base + size:
@@ -624,13 +680,13 @@ def _frida_rebase(project, value):
     return value
 
 
-def _apply_frida_seed(state):
+def _apply_frida_seed(state, seed):
     seeded_registers = []
     seeded_memory = []
     errors = []
-    if FRIDA_SEED is None:
+    if seed is None:
         return seeded_registers, seeded_memory, errors
-    for register in FRIDA_SEED.get("registers", []):
+    for register in seed.get("registers", []):
         name = register["name"].lower()
         try:
             parsed = int(register["value"], 16)
@@ -638,13 +694,13 @@ def _apply_frida_seed(state):
                 if not _set_nzcv(state, parsed):
                     raise RuntimeError("angr architecture exposes no NZCV flags")
             else:
-                setattr(state.regs, name, _frida_rebase(state.project, parsed))
+                setattr(state.regs, name, _frida_rebase(state.project, parsed, seed))
             seeded_registers.append(name.upper())
         except Exception as error:
             errors.append("{}={}: {}".format(name, register.get("value"), error))
-    for region in FRIDA_SEED.get("memoryRegions", []):
+    for region in seed.get("memoryRegions", []):
         try:
-            address = _frida_rebase(state.project, int(region["address"], 16))
+            address = _frida_rebase(state.project, int(region["address"], 16), seed)
             state.memory.store(address, bytes.fromhex(region["bytesHex"]))
             seeded_memory.append(region.get("label") or region["address"])
         except Exception as error:
@@ -956,9 +1012,9 @@ def _probe_branch(project, candidate, snapshot=None, explore_flow=False, flow_ma
         }
 
 
-def _probe_branch_with_frida(project, candidate, explore_flow=False, flow_max_depth=8, flow_max_states=32):
+def _probe_branch_with_frida(project, candidate, seed, explore_flow=False, flow_max_depth=8, flow_max_states=32):
     branch_offset = candidate["branchOffset"].lower()
-    source_offset = FRIDA_SEED["captureOffset"].lower()
+    source_offset = seed["captureOffset"].lower()
     condition_sources = [value.lower() for value in candidate.get("conditionSourceOffsets", [])]
     if source_offset == branch_offset:
         instruction_count = 1
@@ -971,7 +1027,7 @@ def _probe_branch_with_frida(project, candidate, explore_flow=False, flow_max_de
                 "status": "probe_error",
                 "seedKind": "frida-capture-condition-source",
                 "sourceSeq": None,
-                "sourceEventIndex": FRIDA_SEED.get("sourceEventIndex"),
+                "sourceEventIndex": seed.get("sourceEventIndex"),
                 "sourceOffset": source_offset,
                 "seededRegisters": [],
                 "seededMemoryRegions": [],
@@ -992,7 +1048,7 @@ def _probe_branch_with_frida(project, candidate, explore_flow=False, flow_max_de
     try:
         source_address = project.loader.main_object.mapped_base + _offset(source_offset)
         state = configure_state(project.factory.blank_state(addr=source_address))
-        seeded_registers, seeded_memory, seed_errors = _apply_frida_seed(state)
+        seeded_registers, seeded_memory, seed_errors = _apply_frida_seed(state, seed)
         state.options.add(angr.options.LAZY_SOLVES)
         successors = project.factory.successors(
             state,
@@ -1028,7 +1084,7 @@ def _probe_branch_with_frida(project, candidate, explore_flow=False, flow_max_de
             "status": status,
             "seedKind": seed_kind,
             "sourceSeq": None,
-            "sourceEventIndex": FRIDA_SEED.get("sourceEventIndex"),
+            "sourceEventIndex": seed.get("sourceEventIndex"),
             "sourceOffset": source_offset,
             "seededRegisters": seeded_registers,
             "seededMemoryRegions": seeded_memory,
@@ -1045,7 +1101,7 @@ def _probe_branch_with_frida(project, candidate, explore_flow=False, flow_max_de
             "status": "probe_error",
             "seedKind": seed_kind,
             "sourceSeq": None,
-            "sourceEventIndex": FRIDA_SEED.get("sourceEventIndex"),
+            "sourceEventIndex": seed.get("sourceEventIndex"),
             "sourceOffset": source_offset,
             "seededRegisters": [],
             "seededMemoryRegions": [],
@@ -1058,9 +1114,9 @@ def _probe_branch_with_frida(project, candidate, explore_flow=False, flow_max_de
         }
 
 
-def _probe_dispatcher_with_frida(project, candidate, explore_flow=False, flow_max_depth=8, flow_max_states=32):
+def _probe_dispatcher_with_frida(project, candidate, seed, explore_flow=False, flow_max_depth=8, flow_max_states=32):
     dispatcher_offset = candidate["startOffset"].lower()
-    source_offset = FRIDA_SEED["captureOffset"].lower()
+    source_offset = seed["captureOffset"].lower()
     if source_offset != dispatcher_offset:
         return None
     limitation = (
@@ -1070,7 +1126,7 @@ def _probe_dispatcher_with_frida(project, candidate, explore_flow=False, flow_ma
     try:
         address = project.loader.main_object.mapped_base + _offset(dispatcher_offset)
         state = configure_state(project.factory.blank_state(addr=address))
-        seeded_registers, seeded_memory, seed_errors = _apply_frida_seed(state)
+        seeded_registers, seeded_memory, seed_errors = _apply_frida_seed(state, seed)
         state.options.add(angr.options.LAZY_SOLVES)
         source_state_values = _register_values(state, candidate.get("stateRegisters", []))
         flow = None
@@ -1089,7 +1145,7 @@ def _probe_dispatcher_with_frida(project, candidate, explore_flow=False, flow_ma
             "offset": dispatcher_offset,
             "status": status,
             "seedKind": "frida-capture-exact-dispatcher",
-            "sourceEventIndex": FRIDA_SEED.get("sourceEventIndex"),
+            "sourceEventIndex": seed.get("sourceEventIndex"),
             "sourceOffset": source_offset,
             "seededRegisters": seeded_registers,
             "seededMemoryRegions": seeded_memory,
@@ -1104,7 +1160,7 @@ def _probe_dispatcher_with_frida(project, candidate, explore_flow=False, flow_ma
             "offset": dispatcher_offset,
             "status": "probe_error",
             "seedKind": "frida-capture-exact-dispatcher",
-            "sourceEventIndex": FRIDA_SEED.get("sourceEventIndex"),
+            "sourceEventIndex": seed.get("sourceEventIndex"),
             "sourceOffset": source_offset,
             "seededRegisters": [],
             "seededMemoryRegions": [],
@@ -1117,6 +1173,19 @@ def _probe_dispatcher_with_frida(project, candidate, explore_flow=False, flow_ma
 
 
 def analyze(binary_path, prefer_emulated, probe_opaque, explore_flows, flow_max_depth, flow_max_states):
+    with open(binary_path, "rb") as source:
+        binary_sha256 = hashlib.sha256(source.read()).hexdigest()
+    expected_binary_sha256 = None
+    binary_identity_matched = None
+    if EXPECTED_BINARY_IDENTITY is not None:
+        expected_binary_sha256 = EXPECTED_BINARY_IDENTITY["binarySha256"].lower()
+        binary_identity_matched = binary_sha256.lower() == expected_binary_sha256
+        if not binary_identity_matched:
+            raise RuntimeError(
+                "exact ELF identity mismatch: expected SHA-256 {}, got {} for {}".format(
+                    expected_binary_sha256, binary_sha256, binary_path
+                )
+            )
     project = angr.Project(binary_path, auto_load_libs=False)
     cfg, cfg_kind, warnings = _build_cfg(project, prefer_emulated)
     architecture = project.arch.name
@@ -1137,10 +1206,11 @@ def analyze(binary_path, prefer_emulated, probe_opaque, explore_flows, flow_max_
                         flow_max_depth=flow_max_depth,
                         flow_max_states=flow_max_states,
                     ))
-            if FRIDA_SEED is not None:
+            for frida_seed in FRIDA_SEEDS:
                 frida_probe = _probe_branch_with_frida(
                     project,
                     item,
+                    frida_seed,
                     explore_flow=explore_flows,
                     flow_max_depth=flow_max_depth,
                     flow_max_states=flow_max_states,
@@ -1148,17 +1218,19 @@ def analyze(binary_path, prefer_emulated, probe_opaque, explore_flows, flow_max_
                 if frida_probe is not None:
                     probes.append(frida_probe)
     dispatcher_probes = []
-    if FRIDA_SEED is not None:
+    if FRIDA_SEEDS:
         for item in REPORT.get("dispatcherCandidates", []):
-            dispatcher_probe = _probe_dispatcher_with_frida(
-                project,
-                item,
-                explore_flow=explore_flows,
-                flow_max_depth=flow_max_depth,
-                flow_max_states=flow_max_states,
-            )
-            if dispatcher_probe is not None:
-                dispatcher_probes.append(dispatcher_probe)
+            for frida_seed in FRIDA_SEEDS:
+                dispatcher_probe = _probe_dispatcher_with_frida(
+                    project,
+                    item,
+                    frida_seed,
+                    explore_flow=explore_flows,
+                    flow_max_depth=flow_max_depth,
+                    flow_max_states=flow_max_states,
+                )
+                if dispatcher_probe is not None:
+                    dispatcher_probes.append(dispatcher_probe)
     warnings.extend([
         "Static CFG successors absent from the dynamic trace may be unexecuted, infeasible, or CFG recovery artifacts.",
         "Dynamic-only edges may indicate indirect control flow or static CFG recovery gaps.",
@@ -1167,19 +1239,22 @@ def analyze(binary_path, prefer_emulated, probe_opaque, explore_flows, flow_max_
     ])
     if explore_flows and (probe_opaque or dispatcher_probes):
         warnings.append("Bounded seeded-flow paths stop at configured depth/state limits and remain candidate execution-flow evidence.")
-    if FRIDA_SEED is not None:
-        warnings.append("Frida-seeded probes are emitted only for an exact module-relative branch, condition-source, or dispatcher-entry offset match; they remain candidate evidence.")
-    with open(binary_path, "rb") as source:
-        binary_sha256 = hashlib.sha256(source.read()).hexdigest()
+    if FRIDA_SEEDS:
+        warnings.append("Frida-seeded probes are emitted only for exact module-relative branch, condition-source, or dispatcher-entry offset matches; they remain candidate evidence.")
+    if binary_identity_matched:
+        warnings.append("The manually supplied ELF matched the SHA-256 embedded when this script was generated. This validates the selected file, not the image mapped during the original trace.")
     return {
         "schema": SCHEMA,
         "moduleName": REPORT["scope"]["moduleName"],
         "binarySha256": binary_sha256,
+        "expectedBinarySha256": expected_binary_sha256,
+        "binaryIdentityMatched": binary_identity_matched,
         "mappedBase": hex(project.loader.main_object.mapped_base),
         "architecture": architecture,
         "angrVersion": getattr(angr, "__version__", "unknown"),
         "cfgKind": cfg_kind,
-        "fridaSeed": FRIDA_SEED.get("provenance") if FRIDA_SEED is not None else None,
+        "fridaSeed": FRIDA_SEEDS[0].get("provenance") if FRIDA_SEEDS else None,
+        "fridaSeeds": [seed.get("provenance") for seed in FRIDA_SEEDS],
         "flowConfig": {
             "enabled": bool(explore_flows and (probe_opaque or dispatcher_probes)),
             "maxDepth": flow_max_depth,
@@ -1252,7 +1327,8 @@ if __name__ == "__main__":
             "__FLOW_MAX_STATES__",
             &flow_config.max_states_per_probe.to_string(),
         )
-        .replace("__FRIDA_SEED_JSON__", &frida_seed_literal);
+        .replace("__FRIDA_SEEDS_JSON__", &frida_seed_literal)
+        .replace("__EXPECTED_BINARY_IDENTITY__", &expected_binary_literal);
     let mut warnings = vec![
         "Trace UI generates the script but does not install or execute angr; run it manually in an isolated Python environment.".to_string(),
         "Use the exact ELF/shared object that produced the trace. Module offsets are aligned to angr's main-object mapped base.".to_string(),
@@ -1260,13 +1336,13 @@ if __name__ == "__main__":
     ];
     if flow_config.enabled {
         warnings.push(format!(
-            "Bounded symbolic flow continuation is enabled for the first trace-register branch seed and exact Frida branch/dispatcher seed (depth {}, at most {} states per probe). Paths remain Candidate/Related evidence.",
+            "Bounded symbolic flow continuation is enabled for the first trace-register branch seed and each exact Frida branch/dispatcher seed (depth {}, at most {} states per probe). Paths remain Candidate/Related evidence.",
             flow_config.max_depth, flow_config.max_states_per_probe
         ));
     }
     if frida_seed_provenance.is_some() {
         warnings.push(
-            "The embedded Frida seed is applied only to exact branch/condition-source or dispatcher-entry offset matches. Missing flags, SIMD state, memory, and entry-path constraints can still change feasibility."
+            "Each embedded Frida seed is applied only to exact branch/condition-source or dispatcher-entry offset matches. Missing flags, SIMD state, memory, and entry-path constraints can still change feasibility."
                 .to_string(),
         );
     } else {
@@ -1280,6 +1356,8 @@ if __name__ == "__main__":
         script,
         schema_version: "trace-ui/angr-ollvm-v1".to_string(),
         frida_seed: frida_seed_provenance,
+        frida_seeds: frida_seed_provenances,
+        expected_binary_identity: expected_binary_identity.cloned(),
         flow_config,
         warnings,
     })
@@ -1438,57 +1516,91 @@ pub fn parse_angr_ollvm_result_bundle(bytes: &[u8]) -> Result<AngrOllvmResultBun
     {
         return Err("angr result binarySha256 must contain 64 hexadecimal characters".to_string());
     }
-    parse_hex_addr(&bundle.mapped_base)?;
-    if let Some(seed) = &bundle.frida_seed {
-        if seed.module_name != bundle.module_name {
+    if let Some(expected) = &bundle.expected_binary_sha256 {
+        if expected.len() != 64
+            || !expected
+                .chars()
+                .all(|character| character.is_ascii_hexdigit())
+        {
             return Err(
-                "angr result Frida seed moduleName does not match bundle moduleName".to_string(),
+                "angr result expectedBinarySha256 must contain 64 hexadecimal characters"
+                    .to_string(),
             );
         }
-        parse_hex_addr(&seed.capture_offset)?;
-        for offset in &seed.matched_probe_offsets {
-            parse_hex_addr(offset)?;
-            let branch_match = bundle.branch_probes.iter().any(|probe| {
-                probe.offset.eq_ignore_ascii_case(offset)
-                    && probe.source_event_index == Some(seed.source_event_index)
-                    && probe
-                        .seed_kind
-                        .as_deref()
-                        .is_some_and(|kind| kind.starts_with("frida-capture-"))
-            });
-            let dispatcher_match = bundle.dispatcher_probes.iter().any(|probe| {
-                probe.offset.eq_ignore_ascii_case(offset)
-                    && probe.source_event_index == seed.source_event_index
-                    && probe.seed_kind == "frida-capture-exact-dispatcher"
-            });
-            if !branch_match && !dispatcher_match {
+        if bundle.binary_identity_matched == Some(true)
+            && !expected.eq_ignore_ascii_case(&bundle.binary_sha256)
+        {
+            return Err("angr result marks binary identity matched but hashes differ".to_string());
+        }
+    } else if bundle.binary_identity_matched.is_some() {
+        return Err("angr result binaryIdentityMatched requires expectedBinarySha256".to_string());
+    }
+    parse_hex_addr(&bundle.mapped_base)?;
+    let frida_provenances = if !bundle.frida_seeds.is_empty() {
+        bundle.frida_seeds.iter().collect::<Vec<_>>()
+    } else {
+        bundle.frida_seed.iter().collect::<Vec<_>>()
+    };
+    if !frida_provenances.is_empty() {
+        let mut event_indices = std::collections::HashSet::new();
+        for seed in &frida_provenances {
+            if seed.module_name != bundle.module_name {
+                return Err(
+                    "angr result Frida seed moduleName does not match bundle moduleName"
+                        .to_string(),
+                );
+            }
+            if !event_indices.insert(seed.source_event_index) {
                 return Err(format!(
+                    "angr result contains duplicate Frida provenance event {}",
+                    seed.source_event_index
+                ));
+            }
+            parse_hex_addr(&seed.capture_offset)?;
+            for offset in &seed.matched_probe_offsets {
+                parse_hex_addr(offset)?;
+                let branch_match = bundle.branch_probes.iter().any(|probe| {
+                    probe.offset.eq_ignore_ascii_case(offset)
+                        && probe.source_event_index == Some(seed.source_event_index)
+                        && probe
+                            .seed_kind
+                            .as_deref()
+                            .is_some_and(|kind| kind.starts_with("frida-capture-"))
+                });
+                let dispatcher_match = bundle.dispatcher_probes.iter().any(|probe| {
+                    probe.offset.eq_ignore_ascii_case(offset)
+                        && probe.source_event_index == seed.source_event_index
+                        && probe.seed_kind == "frida-capture-exact-dispatcher"
+                });
+                if !branch_match && !dispatcher_match {
+                    return Err(format!(
                     "angr result Frida provenance has no matching branch or dispatcher probe at {offset}"
                 ));
+                }
             }
-        }
-        for offset in &seed.matched_branch_offsets {
-            parse_hex_addr(offset)?;
-            if !seed
-                .matched_probe_offsets
-                .iter()
-                .any(|matched| matched.eq_ignore_ascii_case(offset))
-            {
-                return Err(format!(
+            for offset in &seed.matched_branch_offsets {
+                parse_hex_addr(offset)?;
+                if !seed
+                    .matched_probe_offsets
+                    .iter()
+                    .any(|matched| matched.eq_ignore_ascii_case(offset))
+                {
+                    return Err(format!(
                     "angr result Frida branch offset {offset} is absent from matchedProbeOffsets"
                 ));
+                }
             }
-        }
-        for offset in &seed.matched_dispatcher_offsets {
-            parse_hex_addr(offset)?;
-            if !seed
-                .matched_probe_offsets
-                .iter()
-                .any(|matched| matched.eq_ignore_ascii_case(offset))
-            {
-                return Err(format!(
+            for offset in &seed.matched_dispatcher_offsets {
+                parse_hex_addr(offset)?;
+                if !seed
+                    .matched_probe_offsets
+                    .iter()
+                    .any(|matched| matched.eq_ignore_ascii_case(offset))
+                {
+                    return Err(format!(
                     "angr result Frida dispatcher offset {offset} is absent from matchedProbeOffsets"
                 ));
+                }
             }
         }
     } else if bundle.branch_probes.iter().any(|probe| {
@@ -1593,15 +1705,14 @@ pub fn parse_angr_ollvm_result_bundle(bytes: &[u8]) -> Result<AngrOllvmResultBun
                 probe.offset
             ));
         }
-        let seed = bundle
-            .frida_seed
-            .as_ref()
-            .ok_or_else(|| "angr dispatcher probe lacks top-level Frida provenance".to_string())?;
-        if probe.source_event_index != seed.source_event_index
-            || !seed
-                .matched_probe_offsets
-                .iter()
-                .any(|offset| offset.eq_ignore_ascii_case(&probe.offset))
+        let seed = frida_provenances
+            .iter()
+            .find(|seed| seed.source_event_index == probe.source_event_index)
+            .ok_or_else(|| "angr dispatcher probe lacks matching Frida provenance".to_string())?;
+        if !seed
+            .matched_probe_offsets
+            .iter()
+            .any(|offset| offset.eq_ignore_ascii_case(&probe.offset))
         {
             return Err(format!(
                 "angr dispatcher probe provenance mismatch at {}",
@@ -1682,6 +1793,7 @@ mod tests {
                 condition_source_offsets: vec!["0x100".to_string()],
                 observations: Vec::new(),
                 observations_truncated: false,
+                condition_state_profile: Default::default(),
             }],
             dispatcher_candidates: vec![DispatcherCandidate {
                 block_id: "libtarget.so+0x80".to_string(),
@@ -1728,6 +1840,7 @@ mod tests {
                         .collect(),
                 }],
                 observations_truncated: false,
+                condition_state_profile: Default::default(),
                 rationale: "single observed outcome".to_string(),
                 assessment: score_evidence(
                     "opaque-branch",
@@ -1844,6 +1957,45 @@ mod tests {
     }
 
     #[test]
+    fn embeds_multiple_exact_frida_seeds_and_optional_elf_guard() {
+        let first = sample_frida_seed("0x100");
+        let mut second = sample_frida_seed("0x80");
+        second.source_event_index = 8;
+        let identity = ElfBinaryIdentity {
+            binary_path: "/tmp/libtarget.so".to_string(),
+            binary_sha256: "ab".repeat(32),
+            file_size: 123,
+            format: "ELF64".to_string(),
+            architecture: "AArch64".to_string(),
+            elf_machine: 183,
+            build_id: Some("build".to_string()),
+        };
+        let generated = generate_angr_ollvm_script_with_seeds_flow_and_identity(
+            &sample_report(),
+            true,
+            false,
+            vec![&first, &second],
+            AngrOllvmFlowConfig::default(),
+            Some(&identity),
+        )
+        .unwrap();
+        assert_eq!(generated.frida_seeds.len(), 2);
+        assert_eq!(generated.frida_seeds[0].source_event_index, 7);
+        assert_eq!(generated.frida_seeds[1].source_event_index, 8);
+        assert_eq!(
+            generated
+                .expected_binary_identity
+                .as_ref()
+                .unwrap()
+                .binary_sha256,
+            identity.binary_sha256
+        );
+        assert!(generated.script.contains("FRIDA_SEEDS = json.loads"));
+        assert!(generated.script.contains("EXPECTED_BINARY_IDENTITY"));
+        assert!(generated.script.contains(&identity.binary_sha256));
+    }
+
+    #[test]
     fn embeds_exact_dispatcher_seed_without_requiring_branch_probes() {
         let seed = sample_frida_seed("0x80");
         let generated = generate_angr_ollvm_script_with_seed_and_flow(
@@ -1956,6 +2108,37 @@ mod tests {
           "cfgKind":"CFGFast"
         }"#;
         assert!(parse_angr_ollvm_result_bundle(wrong).is_err());
+    }
+
+    #[test]
+    fn validates_embedded_exact_elf_identity_result() {
+        let valid = br#"{
+          "schema":"trace-ui/angr-ollvm-v1",
+          "moduleName":"libtarget.so",
+          "binarySha256":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          "expectedBinarySha256":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          "binaryIdentityMatched":true,
+          "mappedBase":"0x400000",
+          "architecture":"AARCH64",
+          "angrVersion":"9.2",
+          "cfgKind":"CFGFast",
+          "blocks":[],
+          "branchProbes":[],
+          "warnings":[]
+        }"#;
+        assert!(parse_angr_ollvm_result_bundle(valid).is_ok());
+        let mismatch = br#"{
+          "schema":"trace-ui/angr-ollvm-v1",
+          "moduleName":"libtarget.so",
+          "binarySha256":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          "expectedBinarySha256":"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+          "binaryIdentityMatched":true,
+          "mappedBase":"0x400000",
+          "architecture":"AARCH64",
+          "angrVersion":"9.2",
+          "cfgKind":"CFGFast"
+        }"#;
+        assert!(parse_angr_ollvm_result_bundle(mismatch).is_err());
     }
 
     #[test]

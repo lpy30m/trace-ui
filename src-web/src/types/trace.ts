@@ -748,6 +748,35 @@ export interface BranchStateObservation {
   registers: Record<string, string>;
 }
 
+export interface BranchConditionValueCount {
+  value: string;
+  count: number;
+}
+
+export interface BranchFlagBitProfile {
+  flag: string;
+  setCount: number;
+  clearCount: number;
+}
+
+export interface BranchConditionOutcomeProfile {
+  outcome: string;
+  observationCount: number;
+  values: BranchConditionValueCount[];
+  flagBits: BranchFlagBitProfile[];
+}
+
+export interface BranchConditionStateProfile {
+  sourceRegister: string | null;
+  capturedObservationCount: number;
+  missingObservationCount: number;
+  distinctValueCount: number;
+  values: BranchConditionValueCount[];
+  flagBits: BranchFlagBitProfile[];
+  outcomes: BranchConditionOutcomeProfile[];
+  incomplete: boolean;
+}
+
 export interface DynamicBranchProfile {
   branchOffset: string;
   disasm: string;
@@ -759,6 +788,7 @@ export interface DynamicBranchProfile {
   conditionSourceOffsets: string[];
   observations: BranchStateObservation[];
   observationsTruncated: boolean;
+  conditionStateProfile: BranchConditionStateProfile;
 }
 
 export interface DispatcherCandidate {
@@ -789,6 +819,7 @@ export interface OpaqueBranchCandidate {
   conditionSourceOffsets: string[];
   observations: BranchStateObservation[];
   observationsTruncated: boolean;
+  conditionStateProfile: BranchConditionStateProfile;
   rationale: string;
   assessment: EvidenceAssessment;
 }
@@ -1011,6 +1042,8 @@ export interface AngrOllvmScript {
   script: string;
   schemaVersion: string;
   fridaSeed: AngrOllvmFridaSeedProvenance | null;
+  fridaSeeds: AngrOllvmFridaSeedProvenance[];
+  expectedBinaryIdentity: ElfBinaryIdentity | null;
   flowConfig: AngrOllvmFlowConfig;
   warnings: string[];
 }
@@ -1118,11 +1151,14 @@ export interface AngrOllvmResultBundle {
   schema: string;
   moduleName: string;
   binarySha256: string;
+  expectedBinarySha256: string | null;
+  binaryIdentityMatched: boolean | null;
   mappedBase: string;
   architecture: string;
   angrVersion: string;
   cfgKind: string;
   fridaSeed: AngrOllvmFridaSeedProvenance | null;
+  fridaSeeds: AngrOllvmFridaSeedProvenance[];
   flowConfig: AngrOllvmFlowConfig | null;
   blocks: AngrBlockResult[];
   branchProbes: AngrBranchProbe[];

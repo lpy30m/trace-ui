@@ -14,21 +14,22 @@ use trace_core::{
     analyze_frida_crypto_materials as build_frida_crypto_materials,
     analyze_frida_ollvm_dispatcher_capture as build_frida_ollvm_dispatcher_capture,
     api_types::TraceLine, apply_resource_validation, classify_flow_endpoints,
-    generate_angr_ollvm_script_with_seed_and_flow,
+    generate_angr_ollvm_script_with_seeds_flow_and_identity,
     generate_angr_state_seed as build_angr_state_seed, generate_frida_hook as build_frida_hook,
     generate_frida_ollvm_dispatcher_hook as build_frida_ollvm_dispatcher_hook,
-    generate_ida_ollvm_script, list_frida_hook_recipes as build_frida_hook_recipes,
-    parse_angr_ollvm_result_bundle, parse_frida_capture_bundle, parse_hex_addr,
-    parse_ida_annotation_bundle, score_evidence, summarize_dependency_graph, AnalysisEvidence,
-    AngrOllvmFlowConfig, BuildOptions, CryptoFunctionsOptions, CryptoMaterialKind,
-    CryptoMaterialMultiTraceRequest, CryptoMaterialOptions, CryptoMaterialTraceCase,
-    DepTreeOptions, EvidenceScoreSignal, ForwardSliceOptions, FridaArgumentKind, FridaArgumentSpec,
-    FridaCaptureDirection, FridaHookRequest, FridaOllvmDispatcherAtlasOptions,
-    FridaOllvmDispatcherHookOptions, FridaStalkerMode, HashAlgorithm, HashMatchRequest,
-    HashTransformOptions, OllvmAnalysisOptions, OllvmMultiTraceRequest, OllvmTraceCase,
-    OllvmVersionMapRequest, OllvmVersionTraceCase, SearchOptions, SliceOptions, StringQueryOptions,
-    TraceDiffOptions, TraceEngine, ValueEndian, ValueSearchKind, ValueSearchRequest,
-    WhiteBoxMultiTraceRequest, WhiteBoxOptions, WhiteBoxTraceCaseRequest,
+    generate_ida_ollvm_script, inspect_elf_binary,
+    list_frida_hook_recipes as build_frida_hook_recipes, parse_angr_ollvm_result_bundle,
+    parse_frida_capture_bundle, parse_hex_addr, parse_ida_annotation_bundle, score_evidence,
+    summarize_dependency_graph, AnalysisEvidence, AngrOllvmFlowConfig, BuildOptions,
+    CryptoFunctionsOptions, CryptoMaterialKind, CryptoMaterialMultiTraceRequest,
+    CryptoMaterialOptions, CryptoMaterialTraceCase, DepTreeOptions, EvidenceScoreSignal,
+    ForwardSliceOptions, FridaArgumentKind, FridaArgumentSpec, FridaCaptureDirection,
+    FridaHookRequest, FridaOllvmDispatcherAtlasOptions, FridaOllvmDispatcherHookOptions,
+    FridaStalkerMode, HashAlgorithm, HashMatchRequest, HashTransformOptions, OllvmAnalysisOptions,
+    OllvmMultiTraceRequest, OllvmTraceCase, OllvmVersionMapRequest, OllvmVersionTraceCase,
+    SearchOptions, SliceOptions, StringQueryOptions, TraceDiffOptions, TraceEngine, ValueEndian,
+    ValueSearchKind, ValueSearchRequest, WhiteBoxMultiTraceRequest, WhiteBoxOptions,
+    WhiteBoxTraceCaseRequest,
 };
 
 fn decode_hex_bytes(value: &str) -> Result<Vec<u8>, String> {
@@ -4604,7 +4605,7 @@ impl TraceToolHandler {
 
     #[tool(
         name = "generate_angr_ollvm_script",
-        description = "Analyze a trace-scoped function/range and generate a standalone Python angr bridge for manual execution. The script reconciles static/dynamic CFG evidence, runs blank/trace-register branch probes, and can embed one user-captured Frida 16 hook-enter or ollvm-dispatcher-hit seed only when its module-relative offset exactly matches an opaque branch, recorded condition source, or dispatcher entry. Branch seeds get bounded post-branch flow; dispatcher seeds get bounded next-dispatcher/loop/exit exploration with state-register values. Trace UI never executes Frida or angr; all structural results remain Candidate/Related."
+        description = "Analyze a trace-scoped function/range and generate a standalone Python angr bridge for manual execution. The script reconciles static/dynamic CFG evidence, runs blank/trace-register branch probes, and can embed up to 32 independent user-captured Frida 16 hook-enter or ollvm-dispatcher-hit seeds when each module-relative offset exactly matches an opaque branch, recorded condition source, or dispatcher entry. Branch seeds get bounded post-branch flow; dispatcher seeds get bounded next-dispatcher/loop/exit exploration with state-register values. An optional exact ELF path embeds a SHA-256 guard that refuses a different file. Trace UI never executes Frida or angr; all structural results remain Candidate/Related."
     )]
     async fn generate_angr_ollvm_script(
         &self,
@@ -4627,37 +4628,73 @@ impl TraceToolHandler {
                     },
                 )
                 .map_err(|error| error.to_string())?;
-            let frida_seed = match (req.frida_capture_path.as_deref(), req.frida_event_index) {
-                (Some(path), Some(event_index)) => {
+            let mut event_indices = req.frida_event_indices;
+            if let Some(event_index) = req.frida_event_index {
+                event_indices.push(event_index);
+            }
+            event_indices.sort_unstable();
+            event_indices.dedup();
+            if event_indices.len() > 32 {
+                return Err("at most 32 Frida events may seed one OLLVM angr script".to_string());
+            }
+            let frida_seeds = match (req.frida_capture_path.as_deref(), event_indices.is_empty()) {
+                (Some(path), false) => {
                     let bytes = std::fs::read(path)
                         .map_err(|error| format!("failed to read Frida capture: {error}"))?;
                     let bundle = parse_frida_capture_bundle(&bytes)?;
-                    Some(build_angr_state_seed(
-                        &bundle,
-                        event_index,
-                        req.frida_include_sp,
-                        req.frida_include_lr,
-                    )?)
+                    event_indices
+                        .into_iter()
+                        .map(|event_index| {
+                            build_angr_state_seed(
+                                &bundle,
+                                event_index,
+                                req.frida_include_sp,
+                                req.frida_include_lr,
+                            )
+                        })
+                        .collect::<Result<Vec<_>, _>>()?
                 }
-                (None, None) => None,
-                _ => {
+                (None, true) => Vec::new(),
+                (Some(_), true) => {
                     return Err(
-                        "frida_capture_path and frida_event_index must be provided together"
+                        "frida_capture_path requires frida_event_index or frida_event_indices"
+                            .to_string(),
+                    )
+                }
+                (None, false) => {
+                    return Err(
+                        "frida_event_index/frida_event_indices require frida_capture_path"
                             .to_string(),
                     )
                 }
             };
-            Ok(json(&generate_angr_ollvm_script_with_seed_and_flow(
-                &report,
-                req.probe_opaque_branches,
-                req.use_cfg_emulated,
-                frida_seed.as_ref(),
-                AngrOllvmFlowConfig {
-                    enabled: req.explore_seeded_flows,
-                    max_depth: req.flow_max_depth,
-                    max_states_per_probe: req.flow_max_states_per_probe,
-                },
-            )?))
+            let expected_identity = match req.static_binary_path.as_deref().map(str::trim) {
+                Some(path) if !path.is_empty() => {
+                    let identity = inspect_elf_binary(path)?;
+                    if identity.elf_machine != 183 {
+                        return Err(format!(
+                            "angr OLLVM bridge requires an AArch64 ELF, got {}",
+                            identity.architecture
+                        ));
+                    }
+                    Some(identity)
+                }
+                _ => None,
+            };
+            Ok(json(
+                &generate_angr_ollvm_script_with_seeds_flow_and_identity(
+                    &report,
+                    req.probe_opaque_branches,
+                    req.use_cfg_emulated,
+                    frida_seeds.iter().collect(),
+                    AngrOllvmFlowConfig {
+                        enabled: req.explore_seeded_flows,
+                        max_depth: req.flow_max_depth,
+                        max_states_per_probe: req.flow_max_states_per_probe,
+                    },
+                    expected_identity.as_ref(),
+                )?,
+            ))
         })
         .await
     }

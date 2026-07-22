@@ -29,10 +29,12 @@ Use `mcp__trace-ui__list_frida_hook_recipes`, `mcp__trace-ui__generate_frida_hoo
 9. When angr initialization is requested, run `generate_angr_state_seed` for that event. Keep SP
    opt-in and explain that heap/stack addresses are process-specific.
 10. For an OLLVM probe, generate the Hook at the reported branch, condition-source, or dispatcher
-    `startOffset`, select its `hook-enter` event, and pass `frida_capture_path` plus
-    `frida_event_index` to `generate_angr_ollvm_script`. Do not bypass an exact-offset mismatch. Retain
-    bounded seeded-flow for post-branch continuation or next-dispatcher exploration, keep depth/state
-    caps small, and leave both Frida and angr execution to the user.
+    `startOffset`, select one or more exact `hook-enter`/`ollvm-dispatcher-hit` events, and pass
+    `frida_capture_path` plus `frida_event_indices` (legacy `frida_event_index` remains supported) to
+    `generate_angr_ollvm_script`. Do not bypass an exact-offset mismatch. Optionally provide the exact
+    AArch64 ELF path so the generated manual script embeds a SHA-256 guard. Retain bounded seeded-flow
+    for post-branch continuation or next-dispatcher exploration, keep depth/state caps small, and leave
+    both Frida and angr execution to the user.
 11. When several ranked dispatchers must be observed together, call
     `generate_frida_ollvm_dispatcher_hook` for the same narrow OLLVM scope. Give the standalone script
     to the user for manual execution, then call `analyze_frida_ollvm_dispatcher_capture` on the saved

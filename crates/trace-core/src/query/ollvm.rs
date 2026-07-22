@@ -128,6 +128,49 @@ pub struct BranchStateObservation {
     pub registers: BTreeMap<String, String>,
 }
 
+#[derive(Clone, Debug, Default, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct BranchConditionValueCount {
+    pub value: String,
+    pub count: u64,
+}
+
+#[derive(Clone, Debug, Default, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct BranchFlagBitProfile {
+    pub flag: String,
+    pub set_count: u64,
+    pub clear_count: u64,
+}
+
+#[derive(Clone, Debug, Default, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct BranchConditionOutcomeProfile {
+    pub outcome: String,
+    pub observation_count: u64,
+    #[serde(default)]
+    pub values: Vec<BranchConditionValueCount>,
+    #[serde(default)]
+    pub flag_bits: Vec<BranchFlagBitProfile>,
+}
+
+#[derive(Clone, Debug, Default, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct BranchConditionStateProfile {
+    #[serde(default)]
+    pub source_register: Option<String>,
+    pub captured_observation_count: u64,
+    pub missing_observation_count: u64,
+    pub distinct_value_count: u32,
+    #[serde(default)]
+    pub values: Vec<BranchConditionValueCount>,
+    #[serde(default)]
+    pub flag_bits: Vec<BranchFlagBitProfile>,
+    #[serde(default)]
+    pub outcomes: Vec<BranchConditionOutcomeProfile>,
+    pub incomplete: bool,
+}
+
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct DynamicBranchProfile {
@@ -143,6 +186,8 @@ pub struct DynamicBranchProfile {
     pub observations: Vec<BranchStateObservation>,
     #[serde(default)]
     pub observations_truncated: bool,
+    #[serde(default)]
+    pub condition_state_profile: BranchConditionStateProfile,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -182,6 +227,8 @@ pub struct OpaqueBranchCandidate {
     pub observations: Vec<BranchStateObservation>,
     #[serde(default)]
     pub observations_truncated: bool,
+    #[serde(default)]
+    pub condition_state_profile: BranchConditionStateProfile,
     pub rationale: String,
     pub assessment: EvidenceAssessment,
 }

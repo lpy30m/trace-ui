@@ -1239,19 +1239,28 @@ pub struct GenerateAngrOllvmScriptRequest {
     #[serde(default = "default_angr_flow_states")]
     pub flow_max_states_per_probe: u32,
     #[schemars(
-        description = "Optional absolute path to a user-captured trace-ui/frida-hook-v1 file. Must be paired with frida_event_index; Trace UI reads the file but never executes Frida. The exact offset may match an opaque branch, condition source, or dispatcher entry."
+        description = "Optional absolute path to a user-captured trace-ui/frida-hook-v1 file. Must be paired with frida_event_index or frida_event_indices; Trace UI reads the file but never executes Frida. Every exact offset must match an opaque branch, condition source, or dispatcher entry."
     )]
     pub frida_capture_path: Option<String>,
     #[schemars(
         description = "Normalized hook-enter or ollvm-dispatcher-hit event index whose exact module-relative offset must match an opaque branch, recorded condition source, or dispatcher entry"
     )]
     pub frida_event_index: Option<u64>,
+    #[schemars(
+        description = "Up to 32 normalized hook-enter or ollvm-dispatcher-hit event indices to embed as independent exact-offset seeds. This is additive with legacy frida_event_index and duplicates are removed."
+    )]
+    #[serde(default)]
+    pub frida_event_indices: Vec<u64>,
     #[schemars(description = "Include captured SP in the embedded Frida seed (default: false)")]
     #[serde(default)]
     pub frida_include_sp: bool,
     #[schemars(description = "Include captured LR/X30 in the embedded Frida seed (default: true)")]
     #[serde(default = "default_true")]
     pub frida_include_lr: bool,
+    #[schemars(
+        description = "Optional exact AArch64 ELF/shared-object path. Its SHA-256 is embedded in the generated script, which refuses to analyze a different file when the user runs it manually."
+    )]
+    pub static_binary_path: Option<String>,
 }
 
 #[derive(Debug, Deserialize, JsonSchema)]
@@ -1568,8 +1577,10 @@ mod tests {
             serde_json::from_value(serde_json::json!({})).unwrap();
         assert!(request.frida_capture_path.is_none());
         assert!(request.frida_event_index.is_none());
+        assert!(request.frida_event_indices.is_empty());
         assert!(!request.frida_include_sp);
         assert!(request.frida_include_lr);
+        assert!(request.static_binary_path.is_none());
         assert!(request.explore_seeded_flows);
         assert_eq!(request.flow_max_depth, 8);
         assert_eq!(request.flow_max_states_per_probe, 32);

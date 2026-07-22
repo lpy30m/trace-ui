@@ -129,9 +129,10 @@ export default function OllvmPanel({ sessionId, onJumpToSeq, onPrepareFridaHook 
   const [angrDisplay, setAngrDisplay] = useState<"script" | "results">("script");
   const [angrFridaBundle, setAngrFridaBundle] = useState<FridaCaptureBundle | null>(null);
   const [angrFridaPath, setAngrFridaPath] = useState<string | null>(null);
-  const [angrFridaEventIndex, setAngrFridaEventIndex] = useState("");
+  const [angrFridaEventIndices, setAngrFridaEventIndices] = useState<number[]>([]);
   const [angrFridaIncludeSp, setAngrFridaIncludeSp] = useState(false);
   const [angrFridaIncludeLr, setAngrFridaIncludeLr] = useState(true);
+  const [angrStaticBinaryPath, setAngrStaticBinaryPath] = useState<string | null>(null);
   const [atlasMaxDispatchers, setAtlasMaxDispatchers] = useState("12");
   const [atlasIdleGapMs, setAtlasIdleGapMs] = useState("1000");
   const [atlasMaxEvents, setAtlasMaxEvents] = useState("50000");
@@ -158,7 +159,8 @@ export default function OllvmPanel({ sessionId, onJumpToSeq, onPrepareFridaHook 
     setAngrSavedPath(null);
     setAngrFridaBundle(null);
     setAngrFridaPath(null);
-    setAngrFridaEventIndex("");
+    setAngrFridaEventIndices([]);
+    setAngrStaticBinaryPath(null);
     setAtlasScript(null);
     setAtlasBundle(null);
     setAtlasCapturePath(null);
@@ -181,10 +183,10 @@ export default function OllvmPanel({ sessionId, onJumpToSeq, onPrepareFridaHook 
   const angrFridaEvents = useMemo<FridaCaptureEvent[]>(() => (
     angrFridaBundle?.events.filter(event => (event.event === "hook-enter" || event.event === "ollvm-dispatcher-hit") && Object.keys(event.registers).length > 0) || []
   ), [angrFridaBundle]);
-  const selectedAngrFridaEvent = useMemo(() => {
-    const index = optionalNumber(angrFridaEventIndex);
-    return index == null ? null : angrFridaEvents.find(event => event.index === index) || null;
-  }, [angrFridaEventIndex, angrFridaEvents]);
+  const selectedAngrFridaEvents = useMemo(() => {
+    const selected = new Set(angrFridaEventIndices);
+    return angrFridaEvents.filter(event => selected.has(event.index));
+  }, [angrFridaEventIndices, angrFridaEvents]);
 
   const useSelectedFunction = useCallback(async () => {
     if (!sessionId || selectedSeq == null) return;
@@ -596,7 +598,7 @@ export default function OllvmPanel({ sessionId, onJumpToSeq, onPrepareFridaHook 
       if (events.length === 0) throw new Error("capture has no hook-enter or dispatcher-hit event with registers");
       setAngrFridaBundle(bundle);
       setAngrFridaPath(path);
-      setAngrFridaEventIndex(String(events[0].index));
+      setAngrFridaEventIndices([events[0].index]);
       setAngrProbeOpaque(true);
       setAngrScript(null);
       setError(null);
@@ -608,7 +610,29 @@ export default function OllvmPanel({ sessionId, onJumpToSeq, onPrepareFridaHook 
   const clearAngrFridaCapture = useCallback(() => {
     setAngrFridaBundle(null);
     setAngrFridaPath(null);
-    setAngrFridaEventIndex("");
+    setAngrFridaEventIndices([]);
+    setAngrScript(null);
+  }, []);
+
+  const selectAngrStaticBinary = useCallback(async () => {
+    const { open } = await import("@tauri-apps/plugin-dialog");
+    const path = await open({
+      multiple: false,
+      directory: false,
+      title: "Select exact AArch64 ELF/shared object",
+      filters: [{ name: "ELF/shared object", extensions: ["so", "elf", "bin"] }],
+    });
+    if (typeof path !== "string") return;
+    setAngrStaticBinaryPath(path);
+    setAngrScript(null);
+  }, []);
+
+  const toggleAngrFridaEvent = useCallback((eventIndex: number) => {
+    setAngrFridaEventIndices(current => {
+      if (current.includes(eventIndex)) return current.filter(index => index !== eventIndex);
+      if (current.length >= 32) return current;
+      return [...current, eventIndex].sort((left, right) => left - right);
+    });
     setAngrScript(null);
   }, []);
 
@@ -623,10 +647,12 @@ export default function OllvmPanel({ sessionId, onJumpToSeq, onPrepareFridaHook 
         exploreSeededFlows: angrExploreFlows,
         flowMaxDepth: optionalNumber(angrFlowDepth) ?? 8,
         flowMaxStatesPerProbe: optionalNumber(angrFlowStates) ?? 32,
-        fridaBundle: selectedAngrFridaEvent ? angrFridaBundle : null,
-        fridaEventIndex: selectedAngrFridaEvent?.index ?? null,
+        fridaBundle: selectedAngrFridaEvents.length > 0 ? angrFridaBundle : null,
+        fridaEventIndex: null,
+        fridaEventIndices: selectedAngrFridaEvents.map(event => event.index),
         fridaIncludeSp: angrFridaIncludeSp,
         fridaIncludeLr: angrFridaIncludeLr,
+        staticBinaryPath: angrStaticBinaryPath,
       });
       setAngrScript(generated);
       setAngrDisplay("script");
@@ -635,7 +661,7 @@ export default function OllvmPanel({ sessionId, onJumpToSeq, onPrepareFridaHook 
       setError(String(reason));
       return null;
     }
-  }, [angrCfgEmulated, angrExploreFlows, angrFlowDepth, angrFlowStates, angrFridaBundle, angrFridaIncludeLr, angrFridaIncludeSp, angrProbeOpaque, report, selectedAngrFridaEvent]);
+  }, [angrCfgEmulated, angrExploreFlows, angrFlowDepth, angrFlowStates, angrFridaBundle, angrFridaIncludeLr, angrFridaIncludeSp, angrProbeOpaque, angrStaticBinaryPath, report, selectedAngrFridaEvents]);
 
   const saveAngrScript = useCallback(async () => {
     if (!report) return;
@@ -656,16 +682,18 @@ export default function OllvmPanel({ sessionId, onJumpToSeq, onPrepareFridaHook 
         exploreSeededFlows: angrExploreFlows,
         flowMaxDepth: optionalNumber(angrFlowDepth) ?? 8,
         flowMaxStatesPerProbe: optionalNumber(angrFlowStates) ?? 32,
-        fridaBundle: selectedAngrFridaEvent ? angrFridaBundle : null,
-        fridaEventIndex: selectedAngrFridaEvent?.index ?? null,
+        fridaBundle: selectedAngrFridaEvents.length > 0 ? angrFridaBundle : null,
+        fridaEventIndex: null,
+        fridaEventIndices: selectedAngrFridaEvents.map(event => event.index),
         fridaIncludeSp: angrFridaIncludeSp,
         fridaIncludeLr: angrFridaIncludeLr,
+        staticBinaryPath: angrStaticBinaryPath,
       });
       setAngrSavedPath(written);
     } catch (reason) {
       setError(String(reason));
     }
-  }, [angrCfgEmulated, angrExploreFlows, angrFlowDepth, angrFlowStates, angrFridaBundle, angrFridaIncludeLr, angrFridaIncludeSp, angrProbeOpaque, angrScript, generateAngrScript, report, selectedAngrFridaEvent]);
+  }, [angrCfgEmulated, angrExploreFlows, angrFlowDepth, angrFlowStates, angrFridaBundle, angrFridaIncludeLr, angrFridaIncludeSp, angrProbeOpaque, angrScript, angrStaticBinaryPath, generateAngrScript, report, selectedAngrFridaEvents]);
 
   const importAngrResults = useCallback(async () => {
     if (!report) return;
@@ -814,6 +842,27 @@ export default function OllvmPanel({ sessionId, onJumpToSeq, onPrepareFridaHook 
                 <button type="button" style={buttonStyle} onClick={() => prepareFridaOffsetHook(candidate.branchOffset, "branch")}>Prepare branch Hook</button>
               </div>
               <div style={{ marginTop: 4, paddingLeft: 88, color: "var(--text-secondary)" }}>{candidate.rationale}</div>
+              {candidate.conditionStateProfile.sourceRegister && (
+                <div style={{ marginTop: 5, marginLeft: 88, padding: "5px 7px", border: "1px solid var(--border-color)", borderRadius: 3, background: "var(--bg-secondary)" }}>
+                  <div style={{ display: "flex", gap: 8, alignItems: "center", flexWrap: "wrap" }}>
+                    <strong>Condition state {candidate.conditionStateProfile.sourceRegister}</strong>
+                    <span>{candidate.conditionStateProfile.capturedObservationCount} captured / {candidate.conditionStateProfile.missingObservationCount} missing</span>
+                    <span>{candidate.conditionStateProfile.distinctValueCount} distinct values</span>
+                    {candidate.conditionStateProfile.incomplete && <span style={{ color: "#d29922" }}>incomplete profile</span>}
+                    {candidate.conditionStateProfile.flagBits.map(flag => (
+                      <code key={`${candidate.branchOffset}-flag-${flag.flag}`}>{flag.flag}=1:{flag.setCount} / 0:{flag.clearCount}</code>
+                    ))}
+                  </div>
+                  <div style={{ marginTop: 4, display: "flex", gap: 6, flexWrap: "wrap", color: "var(--text-tertiary)" }}>
+                    {candidate.conditionStateProfile.values.map(value => <code key={`${candidate.branchOffset}-condition-${value.value}`}>{value.value} ×{value.count}</code>)}
+                    {candidate.conditionStateProfile.outcomes.map(outcome => (
+                      <span key={`${candidate.branchOffset}-outcome-${outcome.outcome}`}>
+                        {outcome.outcome}: {outcome.values.map(value => `${value.value}×${value.count}`).join(", ") || `${outcome.observationCount} observations`}
+                      </span>
+                    ))}
+                  </div>
+                </div>
+              )}
               {candidate.conditionSourceOffsets.length > 0 && (
                 <div style={{ marginTop: 5, paddingLeft: 88, display: "flex", gap: 6, alignItems: "center", flexWrap: "wrap" }}>
                   <span style={{ color: "var(--text-tertiary)" }}>Condition sources</span>
@@ -1244,7 +1293,24 @@ export default function OllvmPanel({ sessionId, onJumpToSeq, onPrepareFridaHook 
               </div>
             </div>
             <div style={{ marginTop: 6, color: "var(--text-tertiary)", lineHeight: 1.4 }}>
-              Branch continuation applies to the first trace-register seed and exact branch/condition Frida seed. An exact dispatcher-entry seed instead explores bounded paths until another dispatcher, loop, exit, or configured limit. Blank-state probes remain single-step.
+              Branch continuation applies to the first trace-register seed and every selected exact branch/condition Frida seed. Exact dispatcher-entry seeds explore independently until another dispatcher, loop, exit, or configured limit. Blank-state probes remain single-step.
+            </div>
+            <div style={{ marginTop: 10, paddingTop: 9, borderTop: "1px solid var(--border-color)" }}>
+              <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
+                <strong>Exact ELF identity guard</strong>
+                <span style={{ flex: 1 }} />
+                <button type="button" style={buttonStyle} onClick={selectAngrStaticBinary}>Select ELF</button>
+                <button type="button" style={{ ...buttonStyle, opacity: angrStaticBinaryPath ? 1 : 0.5 }} disabled={!angrStaticBinaryPath} onClick={() => { setAngrStaticBinaryPath(null); setAngrScript(null); }}>Clear</button>
+              </div>
+              <div style={{ marginTop: 5, color: "var(--text-tertiary)", lineHeight: 1.4 }}>
+                Trace UI hashes the selected AArch64 ELF and embeds its SHA-256. The manual Python bridge refuses a different file before CFG or symbolic analysis starts.
+              </div>
+              {angrStaticBinaryPath && <div title={angrStaticBinaryPath} style={{ marginTop: 5, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", color: "var(--text-secondary)" }}>{angrStaticBinaryPath}</div>}
+              {angrScript?.expectedBinaryIdentity && (
+                <div style={{ marginTop: 5, color: "#3fb950", overflowWrap: "anywhere" }}>
+                  SHA-256 guard: <code>{angrScript.expectedBinaryIdentity.binarySha256}</code>
+                </div>
+              )}
             </div>
             <div style={{ marginTop: 10, paddingTop: 9, borderTop: "1px solid var(--border-color)" }}>
               <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
@@ -1254,33 +1320,37 @@ export default function OllvmPanel({ sessionId, onJumpToSeq, onPrepareFridaHook 
                 <button type="button" style={{ ...buttonStyle, opacity: angrFridaBundle ? 1 : 0.5 }} disabled={!angrFridaBundle} onClick={clearAngrFridaCapture}>Clear</button>
               </div>
               <div style={{ marginTop: 5, color: "var(--text-tertiary)", lineHeight: 1.4 }}>
-                The selected hook-enter target must exactly match an opaque branch, recorded condition-source, or dispatcher-entry module offset. Trace UI embeds the seed but never runs Frida or angr.
+                Select up to 32 events. Every hook-enter/dispatcher-hit target must exactly match an opaque branch, recorded condition-source, or dispatcher-entry module offset. Trace UI embeds the seeds but never runs Frida or angr.
               </div>
               {angrFridaBundle && (
                 <div style={{ marginTop: 7 }}>
                   <div title={angrFridaPath || ""} style={{ overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", color: "var(--text-secondary)" }}>{angrFridaPath?.split(/[\\/]/).pop()}</div>
-                  <select style={{ ...inputStyle, width: "100%", marginTop: 5 }} value={angrFridaEventIndex} onChange={event => { setAngrFridaEventIndex(event.target.value); setAngrScript(null); }}>
+                  <div style={{ maxHeight: 180, marginTop: 5, overflow: "auto", border: "1px solid var(--border-color)", borderRadius: 3 }}>
                     {angrFridaEvents.map(event => (
-                      <option key={event.index} value={event.index}>#{event.index} · {event.functionName} · {event.moduleName || "unknown module"} · {event.target || "no target"}</option>
+                      <label key={event.index} style={{ display: "grid", gridTemplateColumns: "20px minmax(0, 1fr)", gap: 5, alignItems: "start", padding: "5px 6px", borderBottom: "1px solid var(--border-color)", cursor: "pointer" }}>
+                        <input type="checkbox" checked={angrFridaEventIndices.includes(event.index)} onChange={() => toggleAngrFridaEvent(event.index)} />
+                        <span>
+                          <span style={{ display: "block" }}>#{event.index} · {event.functionName} · {event.moduleName || "unknown module"} · {event.target || "no target"}</span>
+                          <span style={{ display: "block", color: "var(--text-tertiary)" }}>{Object.keys(event.registers).length} registers · {event.captures.length} buffers · thread {event.threadId}</span>
+                        </span>
+                      </label>
                     ))}
-                  </select>
-                  {selectedAngrFridaEvent && (
-                    <div style={{ marginTop: 5, color: "var(--text-secondary)", lineHeight: 1.4 }}>
-                      {Object.keys(selectedAngrFridaEvent.registers).length} registers · {selectedAngrFridaEvent.captures.length} buffers · thread {selectedAngrFridaEvent.threadId}
-                    </div>
-                  )}
+                  </div>
+                  <div style={{ marginTop: 5, color: "var(--text-secondary)" }}>{selectedAngrFridaEvents.length} selected / 32 maximum</div>
                   <div style={{ display: "flex", gap: 12, marginTop: 5 }}>
                     <label style={{ display: "flex", alignItems: "center", gap: 4 }}><input type="checkbox" checked={angrFridaIncludeLr} onChange={event => { setAngrFridaIncludeLr(event.target.checked); setAngrScript(null); }} />Include LR</label>
                     <label style={{ display: "flex", alignItems: "center", gap: 4 }}><input type="checkbox" checked={angrFridaIncludeSp} onChange={event => { setAngrFridaIncludeSp(event.target.checked); setAngrScript(null); }} />Include SP</label>
                   </div>
                 </div>
               )}
-              {angrScript?.fridaSeed && (
+              {angrScript && angrScript.fridaSeeds.length > 0 && (
                 <div style={{ marginTop: 7, padding: 7, border: "1px solid #d29922", borderRadius: 4, background: "var(--bg-secondary)", lineHeight: 1.4 }}>
-                  <strong>Embedded Candidate seed</strong>
-                  <div><code>{angrScript.fridaSeed.captureOffset}</code> → {angrScript.fridaSeed.matchedProbeOffsets.join(", ")}</div>
-                  {angrScript.fridaSeed.matchedDispatcherOffsets.length > 0 && <div>Dispatcher entry: {angrScript.fridaSeed.matchedDispatcherOffsets.join(", ")}</div>}
-                  <div>{angrScript.fridaSeed.registersSeeded.length} registers · {angrScript.fridaSeed.memoryRegionCount} memory regions · event #{angrScript.fridaSeed.sourceEventIndex}</div>
+                  <strong>{angrScript.fridaSeeds.length} embedded Candidate seed{angrScript.fridaSeeds.length === 1 ? "" : "s"}</strong>
+                  {angrScript.fridaSeeds.map(seed => (
+                    <div key={seed.sourceEventIndex} style={{ marginTop: 4 }}>
+                      event #{seed.sourceEventIndex} · <code>{seed.captureOffset}</code> → {seed.matchedProbeOffsets.join(", ")} · {seed.registersSeeded.length} registers · {seed.memoryRegionCount} memory regions
+                    </div>
+                  ))}
                 </div>
               )}
             </div>
@@ -1300,9 +1370,14 @@ export default function OllvmPanel({ sessionId, onJumpToSeq, onPrepareFridaHook 
                 <strong>{angrResults.cfgKind} / angr {angrResults.angrVersion}</strong>
                 <div>{angrResults.architecture} mapped at {angrResults.mappedBase}</div>
                 <div title={angrResults.binarySha256} style={{ overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>SHA-256 {angrResults.binarySha256}</div>
+                {angrResults.expectedBinarySha256 && (
+                  <div style={{ color: angrResults.binaryIdentityMatched ? "#3fb950" : "#e5484d" }}>
+                    Exact ELF guard {angrResults.binaryIdentityMatched ? "matched" : "mismatch"}
+                  </div>
+                )}
                 <div>{angrResults.blocks.length} blocks / {angrResults.branchProbes.length} branch probes / {angrResults.dispatcherProbes.length} dispatcher probes</div>
                 {angrResults.flowConfig?.enabled && <div>{angrResults.branchProbes.filter(probe => probe.flowExploration).length + angrResults.dispatcherProbes.filter(probe => probe.flowExploration).length} bounded flows / depth {angrResults.flowConfig.maxDepth} / {angrResults.flowConfig.maxStatesPerProbe} states each</div>}
-                {angrResults.fridaSeed && <div>Frida event #{angrResults.fridaSeed.sourceEventIndex} at {angrResults.fridaSeed.captureOffset} → {angrResults.fridaSeed.matchedProbeOffsets.join(", ")}</div>}
+                {angrResults.fridaSeeds.length > 0 && <div>{angrResults.fridaSeeds.length} Frida seeds: {angrResults.fridaSeeds.map(seed => `#${seed.sourceEventIndex}@${seed.captureOffset}`).join(", ")}</div>}
               </div>
             )}
             {angrScript?.warnings.map((warning, index) => <div key={`script-${index}`} style={{ marginTop: 5, color: "#d29922" }}>{warning}</div>)}
