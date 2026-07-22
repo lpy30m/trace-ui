@@ -711,6 +711,166 @@ pub async fn load_frida_capture(path: String) -> Result<trace_core::FridaCapture
 }
 
 #[tauri::command]
+pub fn generate_frida_ollvm_dispatcher_hook(
+    report: trace_core::OllvmReport,
+    max_dispatchers: Option<u32>,
+    idle_gap_ms: Option<u32>,
+    max_events: Option<u32>,
+) -> Result<trace_core::FridaOllvmDispatcherHookScript, String> {
+    trace_core::generate_frida_ollvm_dispatcher_hook(
+        &report,
+        &trace_core::FridaOllvmDispatcherHookOptions {
+            max_dispatchers: max_dispatchers.unwrap_or(12),
+            idle_gap_ms: idle_gap_ms.unwrap_or(1_000),
+            max_events: max_events.unwrap_or(50_000),
+        },
+    )
+}
+
+#[tauri::command]
+pub async fn save_frida_ollvm_dispatcher_hook(
+    path: String,
+    report: trace_core::OllvmReport,
+    max_dispatchers: Option<u32>,
+    idle_gap_ms: Option<u32>,
+    max_events: Option<u32>,
+) -> Result<String, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        let generated = trace_core::generate_frida_ollvm_dispatcher_hook(
+            &report,
+            &trace_core::FridaOllvmDispatcherHookOptions {
+                max_dispatchers: max_dispatchers.unwrap_or(12),
+                idle_gap_ms: idle_gap_ms.unwrap_or(1_000),
+                max_events: max_events.unwrap_or(50_000),
+            },
+        )?;
+        let trimmed = path.trim();
+        if trimmed.is_empty() {
+            return Err("output path must not be empty".to_string());
+        }
+        let mut output_path = std::path::PathBuf::from(trimmed);
+        if output_path.extension().and_then(|value| value.to_str()) != Some("js") {
+            output_path.set_extension("js");
+        }
+        let parent = output_path
+            .parent()
+            .filter(|value| !value.as_os_str().is_empty())
+            .ok_or_else(|| "output path must include a parent directory".to_string())?;
+        if !parent.is_dir() {
+            return Err(format!(
+                "output directory does not exist: {}",
+                parent.display()
+            ));
+        }
+        std::fs::write(&output_path, generated.script.as_bytes())
+            .map_err(|error| format!("failed to save dispatcher hook script: {error}"))?;
+        Ok(output_path.to_string_lossy().into_owned())
+    })
+    .await
+    .map_err(|error| format!("Task execution failed: {error}"))?
+}
+
+fn frida_ollvm_atlas_options(
+    idle_gap_ms: Option<u32>,
+    max_events: Option<u32>,
+    max_values_per_register: Option<u32>,
+    max_state_changes_per_transition: Option<u32>,
+    max_flow_length: Option<u32>,
+    max_flows: Option<u32>,
+) -> trace_core::FridaOllvmDispatcherAtlasOptions {
+    trace_core::FridaOllvmDispatcherAtlasOptions {
+        idle_gap_ms: idle_gap_ms.unwrap_or(1_000),
+        max_events: max_events.unwrap_or(50_000),
+        max_values_per_register: max_values_per_register.unwrap_or(64),
+        max_state_changes_per_transition: max_state_changes_per_transition.unwrap_or(128),
+        max_flow_length: max_flow_length.unwrap_or(256),
+        max_flows: max_flows.unwrap_or(2_048),
+    }
+}
+
+#[tauri::command]
+pub async fn analyze_frida_ollvm_dispatcher_capture(
+    report: trace_core::OllvmReport,
+    bundle: trace_core::FridaCaptureBundle,
+    idle_gap_ms: Option<u32>,
+    max_events: Option<u32>,
+    max_values_per_register: Option<u32>,
+    max_state_changes_per_transition: Option<u32>,
+    max_flow_length: Option<u32>,
+    max_flows: Option<u32>,
+) -> Result<trace_core::FridaOllvmDispatcherAtlas, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        trace_core::analyze_frida_ollvm_dispatcher_capture(
+            &report,
+            &bundle,
+            &frida_ollvm_atlas_options(
+                idle_gap_ms,
+                max_events,
+                max_values_per_register,
+                max_state_changes_per_transition,
+                max_flow_length,
+                max_flows,
+            ),
+        )
+    })
+    .await
+    .map_err(|error| format!("Task execution failed: {error}"))?
+}
+
+#[tauri::command]
+pub async fn save_frida_ollvm_dispatcher_atlas(
+    path: String,
+    report: trace_core::OllvmReport,
+    bundle: trace_core::FridaCaptureBundle,
+    idle_gap_ms: Option<u32>,
+    max_events: Option<u32>,
+    max_values_per_register: Option<u32>,
+    max_state_changes_per_transition: Option<u32>,
+    max_flow_length: Option<u32>,
+    max_flows: Option<u32>,
+) -> Result<String, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        let atlas = trace_core::analyze_frida_ollvm_dispatcher_capture(
+            &report,
+            &bundle,
+            &frida_ollvm_atlas_options(
+                idle_gap_ms,
+                max_events,
+                max_values_per_register,
+                max_state_changes_per_transition,
+                max_flow_length,
+                max_flows,
+            ),
+        )?;
+        let trimmed = path.trim();
+        if trimmed.is_empty() {
+            return Err("output path must not be empty".to_string());
+        }
+        let mut output_path = std::path::PathBuf::from(trimmed);
+        if output_path.extension().and_then(|value| value.to_str()) != Some("json") {
+            output_path.set_extension("json");
+        }
+        let parent = output_path
+            .parent()
+            .filter(|value| !value.as_os_str().is_empty())
+            .ok_or_else(|| "output path must include a parent directory".to_string())?;
+        if !parent.is_dir() {
+            return Err(format!(
+                "output directory does not exist: {}",
+                parent.display()
+            ));
+        }
+        let bytes = serde_json::to_vec_pretty(&atlas)
+            .map_err(|error| format!("failed to serialize dispatcher atlas: {error}"))?;
+        std::fs::write(&output_path, bytes)
+            .map_err(|error| format!("failed to save dispatcher atlas: {error}"))?;
+        Ok(output_path.to_string_lossy().into_owned())
+    })
+    .await
+    .map_err(|error| format!("Task execution failed: {error}"))?
+}
+
+#[tauri::command]
 pub async fn analyze_frida_crypto_materials(
     bundle: trace_core::FridaCaptureBundle,
     max_materials: Option<u32>,

@@ -957,7 +957,9 @@ pub struct GenerateAngrStateSeedRequest {
         description = "Absolute path to a user-captured trace-ui/frida-hook-v1 JSON/NDJSON file"
     )]
     pub file_path: String,
-    #[schemars(description = "Normalized capture event index, normally a hook-enter event")]
+    #[schemars(
+        description = "Normalized capture event index, normally a hook-enter or ollvm-dispatcher-hit event"
+    )]
     pub event_index: u64,
     #[schemars(
         description = "Seed SP from the capture (default: false; uncaptured stack bytes remain unconstrained)"
@@ -1008,6 +1010,69 @@ pub struct AnalyzeOllvmRequest {
     #[schemars(description = "Maximum returned edges (default: 3000, max: 50000)")]
     #[serde(default = "default_ollvm_edges")]
     pub max_edges: u32,
+}
+
+#[derive(Debug, Deserialize, JsonSchema)]
+pub struct GenerateFridaOllvmDispatcherHookRequest {
+    #[schemars(description = "Session ID (optional if only one session is open)")]
+    pub session_id: Option<String>,
+    pub node_id: Option<u32>,
+    pub module_name: Option<String>,
+    pub start_seq: Option<u32>,
+    pub end_seq: Option<u32>,
+    #[serde(default)]
+    pub include_child_calls: bool,
+    #[serde(default = "default_ollvm_blocks")]
+    pub max_blocks: u32,
+    #[serde(default = "default_ollvm_edges")]
+    pub max_edges: u32,
+    #[schemars(
+        description = "Maximum ranked dispatcher startOffsets included in the generated Frida 16 script (1-64, default: 12)"
+    )]
+    #[serde(default = "default_frida_ollvm_dispatchers")]
+    pub max_dispatchers: u32,
+    #[schemars(
+        description = "Per-thread idle gap used to start a new candidate flow ID (1-600000 ms, default: 1000)"
+    )]
+    #[serde(default = "default_frida_ollvm_idle_gap")]
+    pub idle_gap_ms: u32,
+    #[schemars(
+        description = "Maximum dispatcher-hit events emitted before the generated script stops recording (1-200000, default: 50000)"
+    )]
+    #[serde(default = "default_frida_ollvm_events")]
+    pub max_events: u32,
+}
+
+#[derive(Debug, Deserialize, JsonSchema)]
+pub struct AnalyzeFridaOllvmDispatcherCaptureRequest {
+    #[schemars(description = "Session ID (optional if only one session is open)")]
+    pub session_id: Option<String>,
+    pub node_id: Option<u32>,
+    pub module_name: Option<String>,
+    pub start_seq: Option<u32>,
+    pub end_seq: Option<u32>,
+    #[serde(default)]
+    pub include_child_calls: bool,
+    #[serde(default = "default_ollvm_blocks")]
+    pub max_blocks: u32,
+    #[serde(default = "default_ollvm_edges")]
+    pub max_edges: u32,
+    #[schemars(
+        description = "Absolute path to user-captured trace-ui/frida-hook-v1 JSON/NDJSON produced by manually running the generated dispatcher script or compatible exact-offset hooks"
+    )]
+    pub frida_capture_path: String,
+    #[serde(default = "default_frida_ollvm_idle_gap")]
+    pub idle_gap_ms: u32,
+    #[serde(default = "default_frida_ollvm_events")]
+    pub max_events: u32,
+    #[serde(default = "default_frida_ollvm_state_values")]
+    pub max_values_per_register: u32,
+    #[serde(default = "default_frida_ollvm_state_changes")]
+    pub max_state_changes_per_transition: u32,
+    #[serde(default = "default_frida_ollvm_flow_length")]
+    pub max_flow_length: u32,
+    #[serde(default = "default_frida_ollvm_flows")]
+    pub max_flows: u32,
 }
 
 #[derive(Debug, Deserialize, Serialize, JsonSchema)]
@@ -1168,7 +1233,7 @@ pub struct GenerateAngrOllvmScriptRequest {
     )]
     pub frida_capture_path: Option<String>,
     #[schemars(
-        description = "Normalized hook-enter event index whose exact module-relative offset must match an opaque branch, recorded condition source, or dispatcher entry"
+        description = "Normalized hook-enter or ollvm-dispatcher-hit event index whose exact module-relative offset must match an opaque branch, recorded condition source, or dispatcher entry"
     )]
     pub frida_event_index: Option<u64>,
     #[schemars(description = "Include captured SP in the embedded Frida seed (default: false)")]
@@ -1193,6 +1258,34 @@ fn default_ollvm_blocks() -> u32 {
 
 fn default_ollvm_edges() -> u32 {
     3_000
+}
+
+fn default_frida_ollvm_dispatchers() -> u32 {
+    12
+}
+
+fn default_frida_ollvm_idle_gap() -> u32 {
+    1_000
+}
+
+fn default_frida_ollvm_events() -> u32 {
+    50_000
+}
+
+fn default_frida_ollvm_state_values() -> u32 {
+    64
+}
+
+fn default_frida_ollvm_state_changes() -> u32 {
+    128
+}
+
+fn default_frida_ollvm_flow_length() -> u32 {
+    256
+}
+
+fn default_frida_ollvm_flows() -> u32 {
+    2_048
 }
 
 fn default_ollvm_version_matches() -> u32 {
@@ -1430,6 +1523,27 @@ mod tests {
         .unwrap();
         assert!(!request.include_sp);
         assert!(request.include_lr);
+    }
+
+    #[test]
+    fn frida_ollvm_dispatcher_requests_use_bounded_defaults() {
+        let hook: GenerateFridaOllvmDispatcherHookRequest =
+            serde_json::from_value(serde_json::json!({})).unwrap();
+        assert_eq!(hook.max_dispatchers, 12);
+        assert_eq!(hook.idle_gap_ms, 1_000);
+        assert_eq!(hook.max_events, 50_000);
+
+        let atlas: AnalyzeFridaOllvmDispatcherCaptureRequest =
+            serde_json::from_value(serde_json::json!({
+                "frida_capture_path": "capture.ndjson"
+            }))
+            .unwrap();
+        assert_eq!(atlas.idle_gap_ms, 1_000);
+        assert_eq!(atlas.max_events, 50_000);
+        assert_eq!(atlas.max_values_per_register, 64);
+        assert_eq!(atlas.max_state_changes_per_transition, 128);
+        assert_eq!(atlas.max_flow_length, 256);
+        assert_eq!(atlas.max_flows, 2_048);
     }
 
     #[test]

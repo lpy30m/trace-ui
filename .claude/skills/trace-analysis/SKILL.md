@@ -110,6 +110,14 @@ MD5/SHA/HMAC/PBKDF2 calls. Select an exact event index, then call
 build-specific and heap/stack addresses as process-specific. Never claim the seed proves real-entry or
 branch reachability.
 
+**"Capture several OLLVM dispatchers and reconstruct the observed transition atlas."**
+→ Run `analyze_ollvm` on a narrow scope, then call `generate_frida_ollvm_dispatcher_hook` with bounded
+dispatcher/event limits. Return or save the Frida 16.x JavaScript and let the user execute it manually.
+After the user supplies JSON/NDJSON, call `analyze_frida_ollvm_dispatcher_capture` with the same scope.
+Require exact dispatcher offsets and prefer dedicated `captureSessionId`/`flowId`/contiguous
+`hitSequence`. Treat legacy idle-gap flow grouping, adjacent transitions, state changes, and paths as
+Candidate/Related execution samples rather than call boundaries, a complete CFG, or deobfuscation.
+
 **"Show OLLVM execution structure in IDA."**
 → `analyze_ollvm` on a call-tree node or narrow module/seq range, normally with child calls excluded.
 Then `generate_ida_ollvm_script` for manual execution in IDA. Inspect exported
@@ -195,7 +203,7 @@ recomputes to a known digest.
 | Taint | `taint_analysis` (backward), `forward_taint_analysis`, `get_tainted_lines`, `start_forward_taint_analysis` |
 | Functions | `analyze_function` (node_id / name / list) |
 | Diff | `compare_traces`, `start_trace_diff` |
-| Frida | `list_frida_hook_recipes`, `generate_frida_hook`, `inspect_frida_capture`, `analyze_frida_crypto_materials`, `generate_angr_state_seed` (user executes hooks manually) |
+| Frida | `list_frida_hook_recipes`, `generate_frida_hook`, `generate_frida_ollvm_dispatcher_hook`, `inspect_frida_capture`, `analyze_frida_crypto_materials`, `analyze_frida_ollvm_dispatcher_capture`, `generate_angr_state_seed` (user executes hooks manually) |
 | IDA / angr / OLLVM | `analyze_ollvm`, `compare_ollvm_traces`, `map_ollvm_versions`, `generate_ida_ollvm_script`, `inspect_ida_annotations`, `generate_angr_ollvm_script`, `inspect_angr_ollvm_results` |
 | Orchestration | `auto_investigate`, `start_auto_investigation`, `start_crypto_investigation` |
 | Evidence store | `list_analyses`, `get_analysis`, `compare_analyses`, `export_analysis_report`, `delete_analysis` |

@@ -82,6 +82,11 @@ Line numbers in taint `@LINE` specs are **1-based**; `start_seq`/`end_seq`/`seq`
   emits `trace-ui/frida-hook-v1` messages and `TRACE_UI_JSON` strict-JSON log lines. It is generated
   only; the user manually attaches and loads it. `capture_registers:true` records X0-X28, FP/LR/SP/PC,
   plus NZCV when the Frida 16 ARM64 context exposes it; buffer argument selection remains X0-X7.
+- **generate_frida_ollvm_dispatcher_hook** accepts an OLLVM scope plus
+  `max_dispatchers?=12`, `idle_gap_ms?=1000`, and `max_events?=50000`. It generates one bounded Frida
+  16.x script for ranked dispatcher `startOffset` values, up to 64 targets and 200000 hits. Dedicated
+  `ollvm-dispatcher-hit` events include full ARM64 GPRs, `dispatcherOffset`, `captureSessionId`,
+  `flowId`, `hitSequence`, and candidate state registers. Trace UI never runs the script.
 - **inspect_frida_capture** `{file_path}` reads user-captured JSON objects/arrays, Frida send envelopes,
   NDJSON, or `TRACE_UI_JSON`-prefixed CLI logs. It normalizes call IDs, module metadata, registers,
   buffers, returns, backtraces, and Stalker batch counts without running Frida.
@@ -89,6 +94,15 @@ Line numbers in taint `@LINE` specs are **1-based**; `start_seq`/`end_seq`/`seq`
   imported captures by callId and indexes key/password/salt/IV/nonce/AAD/tag/input/output/digest/MAC/KDF
   candidates. Exact MD5/SHA, HMAC, and PBKDF2 recomputation may open the Verified gate for that captured
   call. PBKDF2 work is bounded; label-only roles remain Related.
+- **analyze_frida_ollvm_dispatcher_capture** accepts the same OLLVM scope plus
+  `frida_capture_path`, `idle_gap_ms?=1000`, `max_events?=50000`,
+  `max_values_per_register?=64`, `max_state_changes_per_transition?=128`,
+  `max_flow_length?=256`, and `max_flows?=2048`. It cross-checks `dispatcherOffset` against
+  `target-moduleBase`, requires an exact current dispatcher `startOffset`, and connects adjacent hits
+  only within one capture session/thread/flow with contiguous sequence numbers when present. It returns
+  bounded nodes, transitions, state-value distributions, state changes, and paths, then saves a
+  `frida_ollvm_dispatcher_atlas` analysis. Legacy captures use warned idle-gap-derived flows. Every
+  result remains Candidate/Related.
 - **generate_angr_state_seed** `{file_path,event_index,include_sp?=false,include_lr?=true}` returns a
   manual Python `configure_state(state)` function. It rebases pointers inside the captured module and
   seeds captured byte buffers. Heap/stack addresses remain process-specific, and capture-point
@@ -127,7 +141,7 @@ Line numbers in taint `@LINE` specs are **1-based**; `start_seq`/`end_seq`/`seq`
   `probe_opaque_branches?=true`, `use_cfg_emulated?=false`,
   `explore_seeded_flows?=true`, `flow_max_depth?=8`, `flow_max_states_per_probe?=32`, and optional
   `frida_capture_path`, `frida_event_index`, `frida_include_sp?=false`, `frida_include_lr?=true`.
-  The Frida fields must select a user-captured hook-enter event whose module-relative target exactly
+  The Frida fields must select a user-captured `hook-enter` or `ollvm-dispatcher-hit` event whose module-relative target exactly
   matches an opaque branch, one of its recorded condition-source offsets, or a dispatcher `startOffset`;
   mismatches are rejected.
   It returns standalone Python that the

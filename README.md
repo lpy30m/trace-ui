@@ -18,6 +18,7 @@
 - **密码算法识别** — 自动扫描 trace 中的密码算法常量模式，覆盖 AES、DES、SM3、MD5、SHA、CRC32、TEA、RC4 等 28 种魔数模式
 - **Crypto Materials 索引** — 统一索引 key、password、salt、IV、nonce、counter、明文/密文、digest/MAC、AAD 和 tag，并对可观察的 AES、MD5/SHA、HMAC、PBKDF2 做确定性复算
 - **Frida 16 Hook 与捕获回导** — 可套用常见 OpenSSL/CommonCrypto 配方，或按导出符号/module-relative offset 生成 ARM64 Interceptor/Stalker 脚本；寄存器快照覆盖 X0-X28、FP/LR/SP/PC 与可用的 NZCV，用户手动执行后可导回 JSON/NDJSON，索引密码材料并生成 angr state seed；应用不会 attach、spawn、load 或执行 Hook
+- **Frida OLLVM Dispatcher Atlas** — 从 OLLVM 报告一次生成最多 64 个 ranked dispatcher `startOffset` 的 Frida 16.x 手动脚本；用户自行运行后导入 `ollvm-dispatcher-hit`，按 capture session、线程、flow 和连续 hit sequence 汇总 dispatcher 节点、状态寄存器分布、相邻 transition 与候选执行路径。legacy 捕获使用 idle-gap 启发式分 flow，所有结果保持 Candidate/Related。
 - **IDA / OLLVM 动态桥接** — 按 module offset 构建动态 CFG、排序 dispatcher/opaque branch 候选，重建 dispatcher state-register 轨迹，并生成可手动运行的 IDAPython 注释/着色/双向 JSON 脚本
 - **angr / OLLVM 静动态对账** — 生成由用户手动运行的 Python/angr 脚本，将 CFGFast/CFGEmulated 静态后继与动态 trace 边对账，执行 blank、trace-register 与 exact-offset Frida seed 候选探测；dispatcher-entry seed 可有界探索下一 dispatcher/循环/退出并回导候选 state-register 值
 - **OLLVM 多运行稳定性矩阵** — 对比 2–16 条受控 trace 的 dispatcher、状态寄存器和分支结果；可为每条运行绑定 exact ELF，SHA-256 不一致时拒绝错位比较；alternate outcome 明确反对全局 opaque
@@ -88,7 +89,7 @@ claude mcp add trace-ui --transport http http://127.0.0.1:19821/mcp
 | 结构与对比 | `get_call_tree`、`analyze_function`、`compare_traces` |
 | 密码分析 | `analyze_crypto_functions`、`analyze_crypto_implementations`、`analyze_crypto_materials`、`analyze_known_digest` |
 | 多 trace 参数隔离 | `compare_crypto_material_traces`、`compare_crypto_table_traces` |
-| Frida 16 脚本与回导 | `list_frida_hook_recipes`、`generate_frida_hook`、`inspect_frida_capture`、`analyze_frida_crypto_materials`、`generate_angr_state_seed`（用户手动执行 Hook） |
+| Frida 16 脚本与回导 | `list_frida_hook_recipes`、`generate_frida_hook`、`generate_frida_ollvm_dispatcher_hook`、`inspect_frida_capture`、`analyze_frida_crypto_materials`、`analyze_frida_ollvm_dispatcher_capture`、`generate_angr_state_seed`（用户手动执行 Hook） |
 | IDA / angr / OLLVM | `analyze_ollvm`、`compare_ollvm_traces`、`map_ollvm_versions`、`generate_ida_ollvm_script`、`inspect_ida_annotations`、`generate_angr_ollvm_script`、`inspect_angr_ollvm_results` |
 | 证据与编排 | `list_analyses`、`get_analysis`、`compare_analyses`、`auto_investigate` |
 
@@ -164,6 +165,7 @@ Crypto 面板新增四条面向 native 逆向的工作流：
 
 - **Materials**：从调用 ABI、hexdump 和语义复算中汇总 key/input/output/IV/nonce/salt/AAD/tag 等材料。只有确定性复算结果会进入 Verified；仅凭参数位置推断的角色保持 Related。
 - **Frida Hook**：可从 Crypto Function/Material 或 OLLVM branch/condition-source/dispatcher-entry 候选预填 module-relative offset，也可套用 OpenSSL/BoringSSL、Apple CommonCrypto 的 MD5/SHA、HMAC、PBKDF2、EVP、CCCrypt 审计配方，生成 `trace-ui/frida-hook-v1` 的 Frida 16.x JavaScript。参数 buffer 仍限定 X0-X7；开启寄存器捕获时记录 X0-X28、FP/LR/SP/PC 和运行时可提供的 NZCV。支持固定长度、长度寄存器、返回时 `*Xn` 输出长度、backtrace 和有界 Stalker。长度指针读取失败会输出 `readError`，不会回退读取最大缓冲区。用户手动执行并保存结果；应用不会 attach、spawn、load 或执行脚本。
+- **Frida OLLVM Dispatcher Atlas**：`generate_frida_ollvm_dispatcher_hook` 从当前 OLLVM report 的 ranked dispatcher 候选生成一个有界 Frida 16.x 脚本（默认 12 个目标、50,000 hits），脚本只在精确入口命中时发送完整 ARM64 GPR、运行时 `target - moduleBase`、`captureSessionId`、`flowId` 与 `hitSequence`。用户自行 attach/spawn/load/run 并保存 JSON/NDJSON 后，`analyze_frida_ollvm_dispatcher_capture` 只接受与当前报告 `startOffset` 精确匹配的事件，构建节点、相邻 transition、state-register value distribution、state changes 和 flow paths；不同 session/线程/flow 或缺失连续序号不会连边。module basename + offset 不能证明 exact binary，legacy flow 也只是 idle-gap 启发式。
 - **IDA / OLLVM**：按 ASLR 稳定的 module offset 生成动态 basic blocks/edges，排序控制流平坦化 dispatcher 与 opaque branch 候选，并从寄存器 checkpoint 重建 dispatcher block-entry 状态值及变化边。IDAPython 会写入候选、状态变化和 branch register snapshot 注释。动态 trace 只覆盖实际执行路径，因此这些结论始终是候选证据，不代表完整静态 CFG 或自动去混淆。
 - **多运行 OLLVM**：可为 2–16 个已打开 trace 分别填写 node/range，并为选中的运行绑定 exact ELF。默认要求所有 ELF 的 SHA-256 完全一致；不同哈希会直接拒绝按 module offset 对齐。报告同时保存 Build ID（若 ELF 提供）和身份状态。`alternate-outcomes-observed` 是反对“全局 opaque”的直接动态证据；`stable-single-outcome-across-runs` 仍不能证明未执行路径不可达，ELF 一致也不会把结构证据升级为 Verified。
 - **跨版本 OLLVM**：独立的 Cross-version 页面和 `map_ollvm_versions` MCP 工具接受 2–8 个版本；每个版本必须提供唯一 version ID、独立 trace scope 与 exact AArch64 ELF，并要求 SHA-256 两两不同。baseline dispatcher 会在其他版本的动态 blocks 中按最长公共归一化操作序列、终止操作、出入度、edge kind、dispatcher role 和 state-register 行为匹配 top-N 候选；前两名分差不超过 5 时明确标记 ambiguous。模块名和 offset 可以变化，但 source offset、concrete state value、Frida capture 与 angr seed 绝不能直接套到目标版本，必须为每个版本重新生成 exact-offset Hook/seed。全部结果保持 Candidate/Related。
@@ -174,6 +176,8 @@ IDA 脚本中的 `export_ida_annotations()` 可手动导出 `trace-ui/ida-ollvm-
 angr 脚本输出 `trace-ui/angr-ollvm-v1` JSON，并记录 exact ELF 的 SHA-256、mapped base、angr 版本和 CFG 类型。Trace UI 只生成/保存脚本和导入结果，不安装或自动执行 angr。
 
 Frida 捕获回导支持 JSON object/array、标准 send envelope、NDJSON 和带前缀的 CLI 日志。选中一次捕获后可生成 `trace-ui/angr-state-seed-v1` Python，填充 X0-X7、可选 SP/LR 和已捕获内存；module 内指针会按 mapped base 重定位，heap/stack 地址仍属于单次进程证据。
+
+专用 dispatcher 捕获事件使用同一 `trace-ui/frida-hook-v1` 协议，事件类型为 `ollvm-dispatcher-hit`；`dispatcherOffset` 与 `target/moduleBase` 会交叉校验。该 atlas 是执行样本的结构化索引，不是完整 CFG、自动去平坦化或函数调用边界证明。
 
 捕获文件还可按 `callId` 建立独立密码材料索引：显式 label 可提示 key/password/salt/IV/nonce/AAD/tag/input/output/digest/MAC，若同一次调用内存在完整 byteArray，则会对 MD5/SHA、HMAC 与受限迭代次数的 PBKDF2 做确定性重算。只有重算匹配才打开 Verified gate；标签和方向推断保持 Related。
 

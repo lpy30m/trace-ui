@@ -64,6 +64,16 @@ pub struct FridaCaptureEvent {
     #[serde(default)]
     pub target: Option<String>,
     #[serde(default)]
+    pub dispatcher_offset: Option<String>,
+    #[serde(default)]
+    pub capture_session_id: Option<String>,
+    #[serde(default)]
+    pub flow_id: Option<String>,
+    #[serde(default)]
+    pub hit_sequence: Option<u64>,
+    #[serde(default)]
+    pub candidate_state_registers: Vec<String>,
+    #[serde(default)]
     pub registers: BTreeMap<String, String>,
     #[serde(default)]
     pub captures: Vec<FridaCapturedValue>,
@@ -265,6 +275,23 @@ fn parse_event(value: Value, index: u64, warnings: &mut Vec<String>) -> Option<F
         module_base: string_field(object, "moduleBase"),
         module_size: u64_field(object, "moduleSize"),
         target: string_field(object, "target"),
+        dispatcher_offset: string_field(object, "dispatcherOffset"),
+        capture_session_id: string_field(object, "captureSessionId"),
+        flow_id: string_field(object, "flowId"),
+        hit_sequence: u64_field(object, "hitSequence"),
+        candidate_state_registers: object
+            .get("candidateStateRegisters")
+            .and_then(Value::as_array)
+            .map(|items| {
+                items
+                    .iter()
+                    .filter_map(Value::as_str)
+                    .filter(|value| !value.trim().is_empty())
+                    .map(ToOwned::to_owned)
+                    .take(32)
+                    .collect()
+            })
+            .unwrap_or_default(),
         registers,
         captures,
         return_value: string_field(object, "returnValue"),

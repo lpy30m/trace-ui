@@ -66,6 +66,13 @@ pub use query::frida_hook::{
     generate_frida_hook, FridaArgumentKind, FridaArgumentSpec, FridaCaptureDirection,
     FridaHookRequest, FridaHookScript, FridaStalkerMode,
 };
+pub use query::frida_ollvm::{
+    analyze_frida_ollvm_dispatcher_capture, generate_frida_ollvm_dispatcher_hook,
+    FridaOllvmDispatcherAtlas, FridaOllvmDispatcherAtlasOptions, FridaOllvmDispatcherFlow,
+    FridaOllvmDispatcherHookOptions, FridaOllvmDispatcherHookScript,
+    FridaOllvmDispatcherHookTarget, FridaOllvmDispatcherNode, FridaOllvmDispatcherTransition,
+    FridaOllvmRegisterValueSummary, FridaOllvmStateChange, FridaOllvmStateValueCount,
+};
 pub use query::frida_recipe::{list_frida_hook_recipes, FridaHookRecipe};
 pub use query::function_inspect::{
     FunctionCallAnnotation, FunctionInspection, FunctionRef, MemTouch, RegValue,

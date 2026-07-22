@@ -260,9 +260,6 @@ fn prepare_frida_seed(
             seed.schema_version
         ));
     }
-    if seed.source_event != "hook-enter" {
-        return Err("OLLVM Frida seeds must come from a hook-enter event".to_string());
-    }
     let module_name = seed
         .module_name
         .as_deref()
@@ -308,6 +305,14 @@ fn prepare_frida_seed(
         .collect::<Vec<_>>();
     matched_dispatcher_offsets.sort_by_key(|value| parse_hex_addr(value).unwrap_or(u64::MAX));
     matched_dispatcher_offsets.dedup();
+    if seed.source_event != "hook-enter"
+        && !(seed.source_event == "ollvm-dispatcher-hit" && !matched_dispatcher_offsets.is_empty())
+    {
+        return Err(
+            "OLLVM Frida seeds must come from hook-enter or an exact ollvm-dispatcher-hit event"
+                .to_string(),
+        );
+    }
     let mut matched_probe_offsets = matched_branch_offsets
         .iter()
         .chain(&matched_dispatcher_offsets)
@@ -1821,6 +1826,39 @@ mod tests {
         assert!(generated.flow_config.enabled);
         assert!(generated.script.contains("frida-capture-exact-dispatcher"));
         assert!(generated.script.contains("dispatcherProbes"));
+    }
+
+    #[test]
+    fn embeds_exact_dispatcher_hit_event_from_multi_hook_capture() {
+        let mut seed = sample_frida_seed("0x80");
+        seed.source_event = "ollvm-dispatcher-hit".to_string();
+        seed.hook_id = "ollvm-dispatcher-80".to_string();
+        let generated = generate_angr_ollvm_script_with_seed_and_flow(
+            &sample_report(),
+            false,
+            false,
+            Some(&seed),
+            AngrOllvmFlowConfig::default(),
+        )
+        .unwrap();
+        assert_eq!(
+            generated
+                .frida_seed
+                .as_ref()
+                .unwrap()
+                .matched_dispatcher_offsets,
+            vec!["0x80"]
+        );
+
+        let mut branch_seed = sample_frida_seed("0x100");
+        branch_seed.source_event = "ollvm-dispatcher-hit".to_string();
+        assert!(generate_angr_ollvm_script_with_seed(
+            &sample_report(),
+            true,
+            false,
+            Some(&branch_seed)
+        )
+        .is_err());
     }
 
     #[test]

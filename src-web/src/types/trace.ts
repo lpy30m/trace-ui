@@ -479,6 +479,27 @@ export interface FridaHookScript {
   fridaApiVersion: string;
 }
 
+export interface FridaOllvmDispatcherHookTarget {
+  hookId: string;
+  blockId: string;
+  offset: string;
+  stateRegisters: string[];
+  score: number;
+}
+
+export interface FridaOllvmDispatcherHookScript {
+  schemaVersion: string;
+  moduleName: string;
+  fileName: string;
+  targets: FridaOllvmDispatcherHookTarget[];
+  idleGapMs: number;
+  maxEvents: number;
+  script: string;
+  warnings: string[];
+  protocolVersion: string;
+  fridaApiVersion: string;
+}
+
 export interface FridaHookSeed {
   sourceLabel: string;
   moduleName: string;
@@ -516,6 +537,11 @@ export interface FridaCaptureEvent {
   moduleBase: string | null;
   moduleSize: number | null;
   target: string | null;
+  dispatcherOffset: string | null;
+  captureSessionId: string | null;
+  flowId: string | null;
+  hitSequence: number | null;
+  candidateStateRegisters: string[];
   registers: Record<string, string>;
   captures: FridaCapturedValue[];
   returnValue: string | null;
@@ -534,6 +560,82 @@ export interface FridaCaptureBundle {
   leaveEventCount: number;
   stalkerEventCount: number;
   warnings: string[];
+}
+
+export interface FridaOllvmStateValueCount {
+  value: string;
+  executionCount: number;
+  firstEventIndex: number;
+  lastEventIndex: number;
+}
+
+export interface FridaOllvmRegisterValueSummary {
+  register: string;
+  observedCount: number;
+  missingCount: number;
+  values: FridaOllvmStateValueCount[];
+  valuesTruncated: boolean;
+}
+
+export interface FridaOllvmDispatcherNode {
+  blockId: string;
+  offset: string;
+  eventCount: number;
+  threadCount: number;
+  flowCount: number;
+  stateRegisters: string[];
+  registerValues: FridaOllvmRegisterValueSummary[];
+}
+
+export interface FridaOllvmStateChange {
+  register: string;
+  fromValue: string;
+  toValue: string;
+  executionCount: number;
+  sampleFromEventIndex: number;
+  sampleToEventIndex: number;
+}
+
+export interface FridaOllvmDispatcherTransition {
+  fromOffset: string;
+  toOffset: string;
+  executionCount: number;
+  threadCount: number;
+  flowCount: number;
+  sampleFromEventIndex: number;
+  sampleToEventIndex: number;
+  stateChanges: FridaOllvmStateChange[];
+  stateChangesTruncated: boolean;
+}
+
+export interface FridaOllvmDispatcherFlow {
+  flowId: string;
+  captureSessionId: string | null;
+  threadId: number;
+  eventCount: number;
+  firstEventIndex: number;
+  lastEventIndex: number;
+  offsets: string[];
+  offsetsTruncated: boolean;
+  explicitFlowId: boolean;
+}
+
+export interface FridaOllvmDispatcherAtlas {
+  schemaVersion: string;
+  moduleName: string;
+  sourceFormat: string;
+  matchedEventCount: number;
+  skippedEventCount: number;
+  threadCount: number;
+  flowCount: number;
+  explicitFlowCount: number;
+  derivedFlowCount: number;
+  nodes: FridaOllvmDispatcherNode[];
+  transitions: FridaOllvmDispatcherTransition[];
+  flows: FridaOllvmDispatcherFlow[];
+  flowsTruncated: boolean;
+  warnings: string[];
+  limitations: string[];
 }
 
 export interface AngrSeedMemoryRegion {

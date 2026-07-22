@@ -11,17 +11,20 @@ use rmcp::{
 
 use crate::types::*;
 use trace_core::{
-    analyze_frida_crypto_materials as build_frida_crypto_materials, api_types::TraceLine,
-    apply_resource_validation, classify_flow_endpoints,
+    analyze_frida_crypto_materials as build_frida_crypto_materials,
+    analyze_frida_ollvm_dispatcher_capture as build_frida_ollvm_dispatcher_capture,
+    api_types::TraceLine, apply_resource_validation, classify_flow_endpoints,
     generate_angr_ollvm_script_with_seed_and_flow,
     generate_angr_state_seed as build_angr_state_seed, generate_frida_hook as build_frida_hook,
+    generate_frida_ollvm_dispatcher_hook as build_frida_ollvm_dispatcher_hook,
     generate_ida_ollvm_script, list_frida_hook_recipes as build_frida_hook_recipes,
     parse_angr_ollvm_result_bundle, parse_frida_capture_bundle, parse_hex_addr,
     parse_ida_annotation_bundle, score_evidence, summarize_dependency_graph, AnalysisEvidence,
     AngrOllvmFlowConfig, BuildOptions, CryptoFunctionsOptions, CryptoMaterialKind,
     CryptoMaterialMultiTraceRequest, CryptoMaterialOptions, CryptoMaterialTraceCase,
     DepTreeOptions, EvidenceScoreSignal, ForwardSliceOptions, FridaArgumentKind, FridaArgumentSpec,
-    FridaCaptureDirection, FridaHookRequest, FridaStalkerMode, HashAlgorithm, HashMatchRequest,
+    FridaCaptureDirection, FridaHookRequest, FridaOllvmDispatcherAtlasOptions,
+    FridaOllvmDispatcherHookOptions, FridaStalkerMode, HashAlgorithm, HashMatchRequest,
     HashTransformOptions, OllvmAnalysisOptions, OllvmMultiTraceRequest, OllvmTraceCase,
     OllvmVersionMapRequest, OllvmVersionTraceCase, SearchOptions, SliceOptions, StringQueryOptions,
     TraceDiffOptions, TraceEngine, ValueEndian, ValueSearchKind, ValueSearchRequest,
@@ -4060,7 +4063,7 @@ impl TraceToolHandler {
 
     #[tool(
         name = "generate_frida_hook",
-        description = "Generate a bounded ARM64 Frida 16.x Interceptor hook for a module export or module-relative offset. Decodes selected X0-X7 arguments with fixed/register/leave-time pointer-derived lengths and can snapshot X0-X28, FP/LR/SP/PC plus best-effort NZCV, return value, backtrace, and bounded Stalker events. The script emits trace-ui/frida-hook-v1 messages and is loaded manually by the user."
+        description = "Generate a bounded ARM64 Frida 16.x Interceptor hook for a module export or module-relative offset. Decodes selected X0-X7 arguments with fixed/register/leave-time pointer-derived lengths and can snapshot X0-X28, FP/LR/SP/PC plus best-effort NZCV, return value, backtrace, and bounded Stalker events. The script emits trace-ui/frida-hook-v1 messages and is loaded manually by the user; Trace UI does not attach, spawn, load, or execute it."
     )]
     fn generate_frida_hook(
         &self,
@@ -4217,6 +4220,138 @@ impl TraceToolHandler {
                     &sid,
                     "ollvm_dynamic_cfg",
                     "Dynamic CFG and OLLVM candidate analysis",
+                    request_record,
+                    result.clone(),
+                    evidence,
+                )
+                .map_err(|error| error.to_string())?;
+            result["analysisId"] = serde_json::json!(record.analysis_id);
+            result["saved"] = serde_json::json!(true);
+            Ok(json(&result))
+        })
+        .await
+    }
+
+    #[tool(
+        name = "generate_frida_ollvm_dispatcher_hook",
+        description = "Analyze a trace-scoped ARM64 function/range and generate one bounded Frida 16.x JavaScript script that Interceptor-hooks multiple ranked dispatcher startOffsets. The script emits per-thread flow IDs, hit sequences, full GPR snapshots, and exact runtime-relative offsets as trace-ui/frida-hook-v1 events. Trace UI only generates the script; the user manually attaches/spawns/loads/runs it."
+    )]
+    async fn generate_frida_ollvm_dispatcher_hook(
+        &self,
+        Parameters(req): Parameters<GenerateFridaOllvmDispatcherHookRequest>,
+    ) -> Result<String, String> {
+        let sid = self.resolve_session(req.session_id)?;
+        let engine = self.engine.clone();
+        blocking(move || {
+            let report = engine
+                .analyze_ollvm(
+                    &sid,
+                    OllvmAnalysisOptions {
+                        node_id: req.node_id,
+                        module_name: req.module_name,
+                        start_seq: req.start_seq,
+                        end_seq: req.end_seq,
+                        include_child_calls: req.include_child_calls,
+                        max_blocks: req.max_blocks,
+                        max_edges: req.max_edges,
+                    },
+                )
+                .map_err(|error| error.to_string())?;
+            Ok(json(&build_frida_ollvm_dispatcher_hook(
+                &report,
+                &FridaOllvmDispatcherHookOptions {
+                    max_dispatchers: req.max_dispatchers,
+                    idle_gap_ms: req.idle_gap_ms,
+                    max_events: req.max_events,
+                },
+            )?))
+        })
+        .await
+    }
+
+    #[tool(
+        name = "analyze_frida_ollvm_dispatcher_capture",
+        description = "Reconcile a user-captured trace-ui/frida-hook-v1 JSON/NDJSON file with exact dispatcher startOffsets from a trace-scoped OLLVM report. Builds bounded per-thread/per-flow dispatcher nodes, adjacent transition counts, state-register value distributions, and state changes. Dedicated-script flow IDs are preferred; legacy captures use an idle-gap heuristic. Results are Candidate/Related only and are saved as an analysis_id. Trace UI never executes Frida."
+    )]
+    async fn analyze_frida_ollvm_dispatcher_capture(
+        &self,
+        Parameters(req): Parameters<AnalyzeFridaOllvmDispatcherCaptureRequest>,
+    ) -> Result<String, String> {
+        let sid = self.resolve_session(req.session_id)?;
+        let request_record = serde_json::json!({
+            "nodeId": req.node_id,
+            "moduleName": req.module_name.clone(),
+            "startSeq": req.start_seq,
+            "endSeq": req.end_seq,
+            "includeChildCalls": req.include_child_calls,
+            "fridaCapturePath": req.frida_capture_path.clone(),
+            "idleGapMs": req.idle_gap_ms,
+            "maxEvents": req.max_events,
+            "maxValuesPerRegister": req.max_values_per_register,
+            "maxStateChangesPerTransition": req.max_state_changes_per_transition,
+            "maxFlowLength": req.max_flow_length,
+            "maxFlows": req.max_flows,
+        });
+        let engine = self.engine.clone();
+        blocking(move || {
+            let report = engine
+                .analyze_ollvm(
+                    &sid,
+                    OllvmAnalysisOptions {
+                        node_id: req.node_id,
+                        module_name: req.module_name,
+                        start_seq: req.start_seq,
+                        end_seq: req.end_seq,
+                        include_child_calls: req.include_child_calls,
+                        max_blocks: req.max_blocks,
+                        max_edges: req.max_edges,
+                    },
+                )
+                .map_err(|error| error.to_string())?;
+            let bytes = std::fs::read(&req.frida_capture_path)
+                .map_err(|error| format!("failed to read Frida dispatcher capture: {error}"))?;
+            let bundle = parse_frida_capture_bundle(&bytes)?;
+            let atlas = build_frida_ollvm_dispatcher_capture(
+                &report,
+                &bundle,
+                &FridaOllvmDispatcherAtlasOptions {
+                    idle_gap_ms: req.idle_gap_ms,
+                    max_events: req.max_events,
+                    max_values_per_register: req.max_values_per_register,
+                    max_state_changes_per_transition: req.max_state_changes_per_transition,
+                    max_flow_length: req.max_flow_length,
+                    max_flows: req.max_flows,
+                },
+            )?;
+            let mut evidence = AnalysisEvidence::default();
+            push_unique(&mut evidence.modules, atlas.module_name.clone());
+            for node in &atlas.nodes {
+                push_unique(&mut evidence.addresses, node.offset.clone());
+                push_unique(
+                    &mut evidence.operations,
+                    format!("frida_dispatcher_node:{}:{}", node.offset, node.event_count),
+                );
+            }
+            for transition in &atlas.transitions {
+                push_unique(&mut evidence.addresses, transition.from_offset.clone());
+                push_unique(&mut evidence.addresses, transition.to_offset.clone());
+                push_unique(
+                    &mut evidence.operations,
+                    format!(
+                        "frida_dispatcher_transition:{}->{}:{}",
+                        transition.from_offset, transition.to_offset, transition.execution_count
+                    ),
+                );
+            }
+            evidence.warnings.extend(atlas.limitations.clone());
+            evidence.warnings.extend(atlas.warnings.clone());
+            let mut result = serde_json::to_value(&atlas)
+                .map_err(|error| format!("serialize dispatcher atlas failed: {error}"))?;
+            let record = engine
+                .save_analysis(
+                    &sid,
+                    "frida_ollvm_dispatcher_atlas",
+                    "User-captured Frida OLLVM dispatcher transition atlas",
                     request_record,
                     result.clone(),
                     evidence,
@@ -4467,7 +4602,7 @@ impl TraceToolHandler {
 
     #[tool(
         name = "generate_angr_ollvm_script",
-        description = "Analyze a trace-scoped function/range and generate a standalone Python angr bridge for manual execution. The script reconciles static/dynamic CFG evidence, runs blank/trace-register branch probes, and can embed one user-captured Frida 16 hook-enter seed only when its module-relative offset exactly matches an opaque branch, recorded condition source, or dispatcher entry. Branch seeds get bounded post-branch flow; dispatcher seeds get bounded next-dispatcher/loop/exit exploration with state-register values. Trace UI never executes Frida or angr; all structural results remain Candidate/Related."
+        description = "Analyze a trace-scoped function/range and generate a standalone Python angr bridge for manual execution. The script reconciles static/dynamic CFG evidence, runs blank/trace-register branch probes, and can embed one user-captured Frida 16 hook-enter or ollvm-dispatcher-hit seed only when its module-relative offset exactly matches an opaque branch, recorded condition source, or dispatcher entry. Branch seeds get bounded post-branch flow; dispatcher seeds get bounded next-dispatcher/loop/exit exploration with state-register values. Trace UI never executes Frida or angr; all structural results remain Candidate/Related."
     )]
     async fn generate_angr_ollvm_script(
         &self,

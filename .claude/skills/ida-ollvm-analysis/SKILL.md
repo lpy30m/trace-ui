@@ -8,7 +8,9 @@ description: Analyze ARM64 dynamic traces for OLLVM control-flow-flattening and 
 Use `mcp__trace-ui__analyze_ollvm`, `mcp__trace-ui__compare_ollvm_traces`, `mcp__trace-ui__map_ollvm_versions`, `mcp__trace-ui__generate_ida_ollvm_script`,
 `mcp__trace-ui__inspect_ida_annotations`, `mcp__trace-ui__generate_angr_ollvm_script`,
 `mcp__trace-ui__inspect_angr_ollvm_results`, `mcp__trace-ui__inspect_frida_capture`, and
-`mcp__trace-ui__generate_angr_state_seed`.
+`mcp__trace-ui__generate_angr_state_seed`. For multi-dispatcher manual capture, also use
+`mcp__trace-ui__generate_frida_ollvm_dispatcher_hook` and
+`mcp__trace-ui__analyze_frida_ollvm_dispatcher_capture`.
 
 ## Workflow
 
@@ -41,11 +43,16 @@ Use `mcp__trace-ui__analyze_ollvm`, `mcp__trace-ui__compare_ollvm_traces`, `mcp_
    user run it manually. Import the `hook-enter` event and pass it to `generate_angr_ollvm_script`.
    Keep bounded flow enabled to stop at the next dispatcher, loop, external target, dead end, or bound;
    inspect source/target state-register values as Candidate/Related leads only.
-10. Keep bounded seeded-flow enabled when the question is where a captured state can travel after the
+10. To observe several ranked dispatchers in one user-controlled run, call
+    `generate_frida_ollvm_dispatcher_hook`, return/save the Frida 16.x script, and stop until the user
+    supplies its capture. Then call `analyze_frida_ollvm_dispatcher_capture` on the same OLLVM scope.
+    Review exact-offset nodes, state-value distributions, adjacent transitions, state changes, and
+    flow paths; do not treat idle-gap flow grouping as a call boundary or the atlas as a recovered CFG.
+11. Keep bounded seeded-flow enabled when the question is where a captured state can travel after the
    candidate branch. Start with `flow_max_depth:8` and `flow_max_states_per_probe:32`; lower them when
    several candidates branch heavily. Inspect loop/depth-limit/state-limit/dead-end/external-target
    endings and the final bounded path constraints as leads, not recovered control flow.
-11. For different binary builds, call `map_ollvm_versions` with two to eight independent version IDs,
+12. For different binary builds, call `map_ollvm_versions` with two to eight independent version IDs,
     trace scopes, and exact AArch64 ELF paths. Every SHA-256 must differ; repeated runs of one ELF belong
     in `compare_ollvm_traces`. Review normalized operation/CFG/state-role candidates and ambiguous top
     scores. Never carry source offsets, concrete state values, Frida captures, or angr seeds into the
@@ -60,6 +67,9 @@ Use `mcp__trace-ui__analyze_ollvm`, `mcp__trace-ui__compare_ollvm_traces`, `mcp_
   the tested build/scope. It does not explain why the outcome changed.
 - Dispatcher state transitions are reconstructed from trace register checkpoints at candidate block
   entry. Missing/unknown registers and truncated snapshots are normal coverage limits.
+- Frida dispatcher-atlas transitions are adjacent exact-offset hits only within one capture session,
+  thread, and flow. Dedicated scripts provide hit sequences; legacy captures use idle-gap-derived flows.
+  Both are execution-specific Candidate/Related evidence and can miss unhooked or unexecuted paths.
 - Dynamic traces contain only executed instructions. Do not infer missing blocks, alternate paths, or complete static CFG coverage.
 - CFGFast successors absent from the trace may be unexecuted, infeasible, or CFG recovery artifacts.
 - Dynamic-only successors may reflect indirect control flow, trace scope boundaries, or static CFG recovery gaps.

@@ -5,8 +5,9 @@ description: Generate bounded ARM64 Frida 16.x JavaScript hook scripts, inspect 
 
 # Generate Frida 16 hooks with trace-ui
 
-Use `mcp__trace-ui__list_frida_hook_recipes`, `mcp__trace-ui__generate_frida_hook`, `mcp__trace-ui__inspect_frida_capture`,
-`mcp__trace-ui__analyze_frida_crypto_materials`, and
+Use `mcp__trace-ui__list_frida_hook_recipes`, `mcp__trace-ui__generate_frida_hook`,
+`mcp__trace-ui__generate_frida_ollvm_dispatcher_hook`, `mcp__trace-ui__inspect_frida_capture`,
+`mcp__trace-ui__analyze_frida_crypto_materials`, `mcp__trace-ui__analyze_frida_ollvm_dispatcher_capture`, and
 `mcp__trace-ui__generate_angr_state_seed`. Generated hooks target Frida 16.x JavaScript APIs and emit
 `trace-ui/frida-hook-v1` messages with `send()` plus `TRACE_UI_JSON` strict-JSON log lines.
 
@@ -32,6 +33,12 @@ Use `mcp__trace-ui__list_frida_hook_recipes`, `mcp__trace-ui__generate_frida_hoo
     `frida_event_index` to `generate_angr_ollvm_script`. Do not bypass an exact-offset mismatch. Retain
     bounded seeded-flow for post-branch continuation or next-dispatcher exploration, keep depth/state
     caps small, and leave both Frida and angr execution to the user.
+11. When several ranked dispatchers must be observed together, call
+    `generate_frida_ollvm_dispatcher_hook` for the same narrow OLLVM scope. Give the standalone script
+    to the user for manual execution, then call `analyze_frida_ollvm_dispatcher_capture` on the saved
+    capture. Prefer dedicated `ollvm-dispatcher-hit` events with `captureSessionId`, `flowId`, and
+    contiguous `hitSequence`; treat legacy idle-gap-derived flows and every atlas edge as
+    Candidate/Related only.
 
 ## Request fields
 
@@ -67,6 +74,10 @@ Use `mcp__trace-ui__list_frida_hook_recipes`, `mcp__trace-ui__generate_frida_hoo
   one of its recorded condition-source offsets, or a dispatcher `startOffset`. Exact matching prevents
   obvious state-point misuse; it does not prove real-entry reachability, complete dispatcher recovery,
   or completeness of flags, SIMD, and memory.
+- For a dispatcher atlas, require `dispatcherOffset` to agree with `target - moduleBase` and to equal a
+  current report dispatcher `startOffset`. Connect events only inside one capture session, thread, and
+  flow; when both events have `hitSequence`, require consecutive values. These checks do not attest the
+  loaded binary build or turn adjacent hits into a complete CFG.
 
 ## Frida 16 boundary
 

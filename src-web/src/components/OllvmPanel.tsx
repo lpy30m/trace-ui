@@ -8,6 +8,8 @@ import type {
   FridaCaptureBundle,
   FridaCaptureEvent,
   FridaHookSeed,
+  FridaOllvmDispatcherAtlas,
+  FridaOllvmDispatcherHookScript,
   FunctionInspection,
   IdaAnnotationBundle,
   IdaOllvmScript,
@@ -97,7 +99,7 @@ export default function OllvmPanel({ sessionId, onJumpToSeq, onPrepareFridaHook 
   const [mappingVersions, setMappingVersions] = useState(false);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const [section, setSection] = useState<"dispatchers" | "state" | "opaque" | "blocks" | "edges" | "compare" | "versions" | "ida" | "angr">("dispatchers");
+  const [section, setSection] = useState<"dispatchers" | "state" | "opaque" | "blocks" | "edges" | "compare" | "versions" | "atlas" | "ida" | "angr">("dispatchers");
   const [openBlock, setOpenBlock] = useState<string | null>(null);
   const [idaImageBase, setIdaImageBase] = useState("");
   const [addUserXrefs, setAddUserXrefs] = useState(false);
@@ -118,6 +120,17 @@ export default function OllvmPanel({ sessionId, onJumpToSeq, onPrepareFridaHook 
   const [angrFridaEventIndex, setAngrFridaEventIndex] = useState("");
   const [angrFridaIncludeSp, setAngrFridaIncludeSp] = useState(false);
   const [angrFridaIncludeLr, setAngrFridaIncludeLr] = useState(true);
+  const [atlasMaxDispatchers, setAtlasMaxDispatchers] = useState("12");
+  const [atlasIdleGapMs, setAtlasIdleGapMs] = useState("1000");
+  const [atlasMaxEvents, setAtlasMaxEvents] = useState("50000");
+  const [atlasScript, setAtlasScript] = useState<FridaOllvmDispatcherHookScript | null>(null);
+  const [atlasBundle, setAtlasBundle] = useState<FridaCaptureBundle | null>(null);
+  const [atlasCapturePath, setAtlasCapturePath] = useState<string | null>(null);
+  const [atlasResult, setAtlasResult] = useState<FridaOllvmDispatcherAtlas | null>(null);
+  const [atlasSavedPath, setAtlasSavedPath] = useState<string | null>(null);
+  const [atlasResultSavedPath, setAtlasResultSavedPath] = useState<string | null>(null);
+  const [atlasDisplay, setAtlasDisplay] = useState<"script" | "result">("script");
+  const [atlasBusy, setAtlasBusy] = useState(false);
 
   useEffect(() => {
     setReport(null);
@@ -132,6 +145,12 @@ export default function OllvmPanel({ sessionId, onJumpToSeq, onPrepareFridaHook 
     setAngrFridaBundle(null);
     setAngrFridaPath(null);
     setAngrFridaEventIndex("");
+    setAtlasScript(null);
+    setAtlasBundle(null);
+    setAtlasCapturePath(null);
+    setAtlasResult(null);
+    setAtlasSavedPath(null);
+    setAtlasResultSavedPath(null);
     setError(null);
   }, [sessionId]);
 
@@ -146,7 +165,7 @@ export default function OllvmPanel({ sessionId, onJumpToSeq, onPrepareFridaHook 
   }), [endSeq, includeChildCalls, moduleName, nodeId, startSeq]);
 
   const angrFridaEvents = useMemo<FridaCaptureEvent[]>(() => (
-    angrFridaBundle?.events.filter(event => event.event === "hook-enter" && Object.keys(event.registers).length > 0) || []
+    angrFridaBundle?.events.filter(event => (event.event === "hook-enter" || event.event === "ollvm-dispatcher-hit") && Object.keys(event.registers).length > 0) || []
   ), [angrFridaBundle]);
   const selectedAngrFridaEvent = useMemo(() => {
     const index = optionalNumber(angrFridaEventIndex);
@@ -173,6 +192,10 @@ export default function OllvmPanel({ sessionId, onJumpToSeq, onPrepareFridaHook 
     setIdaScript(null);
     setAngrScript(null);
     setAngrResults(null);
+    setAtlasScript(null);
+    setAtlasResult(null);
+    setAtlasSavedPath(null);
+    setAtlasResultSavedPath(null);
     try {
       const result = await invoke<OllvmReport>("analyze_ollvm", { sessionId, options });
       setReport(result);
@@ -351,6 +374,138 @@ export default function OllvmPanel({ sessionId, onJumpToSeq, onPrepareFridaHook 
     });
   }, [onPrepareFridaHook, report]);
 
+  const generateAtlasHook = useCallback(async (): Promise<FridaOllvmDispatcherHookScript | null> => {
+    if (!report) return null;
+    setAtlasBusy(true);
+    setError(null);
+    try {
+      const generated = await invoke<FridaOllvmDispatcherHookScript>("generate_frida_ollvm_dispatcher_hook", {
+        report,
+        maxDispatchers: optionalNumber(atlasMaxDispatchers) ?? 12,
+        idleGapMs: optionalNumber(atlasIdleGapMs) ?? 1_000,
+        maxEvents: optionalNumber(atlasMaxEvents) ?? 50_000,
+      });
+      setAtlasScript(generated);
+      setAtlasDisplay("script");
+      return generated;
+    } catch (reason) {
+      setError(String(reason));
+      return null;
+    } finally {
+      setAtlasBusy(false);
+    }
+  }, [atlasIdleGapMs, atlasMaxDispatchers, atlasMaxEvents, report]);
+
+  const saveAtlasHook = useCallback(async () => {
+    if (!report) return;
+    const generated = atlasScript || await generateAtlasHook();
+    if (!generated) return;
+    const { save } = await import("@tauri-apps/plugin-dialog");
+    const path = await save({
+      defaultPath: generated.fileName,
+      filters: [{ name: "Frida JavaScript", extensions: ["js"] }],
+    });
+    if (typeof path !== "string") return;
+    try {
+      const written = await invoke<string>("save_frida_ollvm_dispatcher_hook", {
+        path,
+        report,
+        maxDispatchers: optionalNumber(atlasMaxDispatchers) ?? 12,
+        idleGapMs: optionalNumber(atlasIdleGapMs) ?? 1_000,
+        maxEvents: optionalNumber(atlasMaxEvents) ?? 50_000,
+      });
+      setAtlasSavedPath(written);
+      setError(null);
+    } catch (reason) {
+      setError(String(reason));
+    }
+  }, [atlasIdleGapMs, atlasMaxDispatchers, atlasMaxEvents, atlasScript, generateAtlasHook, report]);
+
+  const importAtlasCapture = useCallback(async () => {
+    const { open } = await import("@tauri-apps/plugin-dialog");
+    const path = await open({
+      multiple: false,
+      directory: false,
+      title: "Select manually captured dispatcher Frida 16 output",
+      filters: [{ name: "Frida capture", extensions: ["json", "jsonl", "ndjson", "log", "txt"] }],
+    });
+    if (typeof path !== "string") return;
+    try {
+      const bundle = await invoke<FridaCaptureBundle>("load_frida_capture", { path });
+      const events = bundle.events.filter(event => (event.event === "ollvm-dispatcher-hit" || event.event === "hook-enter") && Object.keys(event.registers).length > 0);
+      if (events.length === 0) throw new Error("capture has no dispatcher-compatible event with registers");
+      setAtlasBundle(bundle);
+      setAtlasCapturePath(path);
+      setAtlasResult(null);
+      setAtlasResultSavedPath(null);
+      setError(null);
+    } catch (reason) {
+      setError(String(reason));
+    }
+  }, []);
+
+  const analyzeAtlasCapture = useCallback(async (): Promise<FridaOllvmDispatcherAtlas | null> => {
+    if (!report || !atlasBundle) return null;
+    setAtlasBusy(true);
+    setError(null);
+    try {
+      const atlas = await invoke<FridaOllvmDispatcherAtlas>("analyze_frida_ollvm_dispatcher_capture", {
+        report,
+        bundle: atlasBundle,
+        idleGapMs: optionalNumber(atlasIdleGapMs) ?? 1_000,
+        maxEvents: optionalNumber(atlasMaxEvents) ?? 50_000,
+        maxValuesPerRegister: 64,
+        maxStateChangesPerTransition: 128,
+        maxFlowLength: 256,
+        maxFlows: 2_048,
+      });
+      setAtlasResult(atlas);
+      setAtlasDisplay("result");
+      return atlas;
+    } catch (reason) {
+      setError(String(reason));
+      return null;
+    } finally {
+      setAtlasBusy(false);
+    }
+  }, [atlasBundle, atlasIdleGapMs, atlasMaxEvents, report]);
+
+  const saveAtlasResult = useCallback(async () => {
+    if (!report || !atlasBundle) return;
+    const atlas = atlasResult || await analyzeAtlasCapture();
+    if (!atlas) return;
+    const { save } = await import("@tauri-apps/plugin-dialog");
+    const path = await save({
+      defaultPath: `${report.scope.moduleName.replace(/[^A-Za-z0-9_.-]+/g, "_")}-ollvm-dispatcher-atlas.json`,
+      filters: [{ name: "Trace UI dispatcher atlas", extensions: ["json"] }],
+    });
+    if (typeof path !== "string") return;
+    try {
+      const written = await invoke<string>("save_frida_ollvm_dispatcher_atlas", {
+        path,
+        report,
+        bundle: atlasBundle,
+        idleGapMs: optionalNumber(atlasIdleGapMs) ?? 1_000,
+        maxEvents: optionalNumber(atlasMaxEvents) ?? 50_000,
+        maxValuesPerRegister: 64,
+        maxStateChangesPerTransition: 128,
+        maxFlowLength: 256,
+        maxFlows: 2_048,
+      });
+      setAtlasResultSavedPath(written);
+      setError(null);
+    } catch (reason) {
+      setError(String(reason));
+    }
+  }, [analyzeAtlasCapture, atlasBundle, atlasIdleGapMs, atlasMaxEvents, atlasResult, report]);
+
+  const clearAtlasCapture = useCallback(() => {
+    setAtlasBundle(null);
+    setAtlasCapturePath(null);
+    setAtlasResult(null);
+    setAtlasResultSavedPath(null);
+  }, []);
+
   const generateIdaScript = useCallback(async (): Promise<IdaOllvmScript | null> => {
     if (!report) return null;
     setError(null);
@@ -415,8 +570,8 @@ export default function OllvmPanel({ sessionId, onJumpToSeq, onPrepareFridaHook 
     if (typeof path !== "string") return;
     try {
       const bundle = await invoke<FridaCaptureBundle>("load_frida_capture", { path });
-      const events = bundle.events.filter(event => event.event === "hook-enter" && Object.keys(event.registers).length > 0);
-      if (events.length === 0) throw new Error("capture has no hook-enter event with registers");
+      const events = bundle.events.filter(event => (event.event === "hook-enter" || event.event === "ollvm-dispatcher-hit") && Object.keys(event.registers).length > 0);
+      if (events.length === 0) throw new Error("capture has no hook-enter or dispatcher-hit event with registers");
       setAngrFridaBundle(bundle);
       setAngrFridaPath(path);
       setAngrFridaEventIndex(String(events[0].index));
@@ -545,6 +700,7 @@ export default function OllvmPanel({ sessionId, onJumpToSeq, onPrepareFridaHook 
         {sectionButton("edges", `Edges${report ? ` (${report.edgeCount})` : ""}`)}
         {sectionButton("compare", "Multi-run")}
         {sectionButton("versions", "Cross-version")}
+        {sectionButton("atlas", "Frida atlas")}
         {sectionButton("ida", "IDA bridge")}
         {sectionButton("angr", "angr bridge")}
         <label style={{ display: "flex", alignItems: "center", gap: 4, marginLeft: 10, color: "var(--text-secondary)", fontSize: 10, flexShrink: 0, whiteSpace: "nowrap" }}>
@@ -879,6 +1035,118 @@ export default function OllvmPanel({ sessionId, onJumpToSeq, onPrepareFridaHook 
               ))}
               {versionMap.dispatcherMappings.length === 0 && <div style={{ color: "var(--text-tertiary)" }}>The baseline trace has no dispatcher candidate to map.</div>}
               {versionMap.limitations.map((limitation, index) => <div key={index} style={{ marginTop: 5, color: "#d29922" }}>{limitation}</div>)}
+            </div>
+          )}
+        </div>
+      )}
+
+      {report && section === "atlas" && (
+        <div style={{ flex: 1, minHeight: 0, display: "flex", overflow: "hidden" }}>
+          <div style={{ width: 430, padding: 10, borderRight: "1px solid var(--border-color)", overflow: "auto", fontSize: 11 }}>
+            <div style={{ color: "var(--text-secondary)", lineHeight: 1.5 }}>
+              Generate one bounded Frida 16 script for several exact dispatcher startOffsets. Run it manually, import the captured JSON/NDJSON, then reconstruct per-thread candidate dispatcher flows and state changes. Trace UI never attaches, spawns, loads, or runs Frida.
+            </div>
+            <div style={{ display: "grid", gridTemplateColumns: "150px minmax(0, 1fr)", gap: 7, alignItems: "center", marginTop: 10 }}>
+              <label htmlFor="atlas-dispatchers">Dispatcher targets</label>
+              <input id="atlas-dispatchers" style={inputStyle} value={atlasMaxDispatchers} onChange={event => { setAtlasMaxDispatchers(event.target.value); setAtlasScript(null); }} />
+              <label htmlFor="atlas-idle-gap">Flow idle gap (ms)</label>
+              <input id="atlas-idle-gap" style={inputStyle} value={atlasIdleGapMs} onChange={event => { setAtlasIdleGapMs(event.target.value); setAtlasScript(null); setAtlasResult(null); }} />
+              <label htmlFor="atlas-max-events">Maximum hit events</label>
+              <input id="atlas-max-events" style={inputStyle} value={atlasMaxEvents} onChange={event => { setAtlasMaxEvents(event.target.value); setAtlasScript(null); setAtlasResult(null); }} />
+            </div>
+            <div style={{ display: "flex", gap: 6, flexWrap: "wrap", marginTop: 10 }}>
+              <button type="button" style={{ ...buttonStyle, background: "var(--btn-primary)", color: "#fff", border: "none", opacity: atlasBusy ? 0.6 : 1 }} disabled={atlasBusy} onClick={generateAtlasHook}>{atlasBusy ? "Working..." : "Generate Frida 16 script"}</button>
+              <button type="button" style={buttonStyle} onClick={saveAtlasHook}>Save .js</button>
+              <button type="button" style={buttonStyle} onClick={importAtlasCapture}>Import capture</button>
+              <button type="button" style={{ ...buttonStyle, opacity: atlasBundle && !atlasBusy ? 1 : 0.5 }} disabled={!atlasBundle || atlasBusy} onClick={analyzeAtlasCapture}>Build atlas</button>
+              <button type="button" style={{ ...buttonStyle, opacity: atlasBundle ? 1 : 0.5 }} disabled={!atlasBundle} onClick={saveAtlasResult}>Save atlas JSON</button>
+            </div>
+            <div style={{ display: "flex", gap: 6, marginTop: 8 }}>
+              <button type="button" style={{ ...buttonStyle, background: atlasDisplay === "script" ? "var(--bg-selected)" : "var(--bg-input)", opacity: atlasScript ? 1 : 0.5 }} disabled={!atlasScript} onClick={() => setAtlasDisplay("script")}>Generated script</button>
+              <button type="button" style={{ ...buttonStyle, background: atlasDisplay === "result" ? "var(--bg-selected)" : "var(--bg-input)", opacity: atlasResult ? 1 : 0.5 }} disabled={!atlasResult} onClick={() => setAtlasDisplay("result")}>Capture atlas</button>
+              <span style={{ flex: 1 }} />
+              <button type="button" style={{ ...buttonStyle, opacity: atlasBundle ? 1 : 0.5 }} disabled={!atlasBundle} onClick={clearAtlasCapture}>Clear capture</button>
+            </div>
+            {atlasSavedPath && <div title={atlasSavedPath} style={{ marginTop: 8, color: "#3fb950", overflow: "hidden", textOverflow: "ellipsis" }}>Hook saved: {atlasSavedPath}</div>}
+            {atlasResultSavedPath && <div title={atlasResultSavedPath} style={{ marginTop: 5, color: "#3fb950", overflow: "hidden", textOverflow: "ellipsis" }}>Atlas saved: {atlasResultSavedPath}</div>}
+            {atlasBundle && (
+              <div style={{ marginTop: 10, padding: 8, border: "1px solid var(--border-color)", borderRadius: 4, background: "var(--bg-secondary)", lineHeight: 1.5 }}>
+                <strong>User-captured file</strong>
+                <div title={atlasCapturePath || ""} style={{ overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{atlasCapturePath?.split(/[\\/]/).pop()}</div>
+                <div>{atlasBundle.events.filter(event => event.event === "ollvm-dispatcher-hit").length} dedicated hits · {atlasBundle.enterEventCount} hook-enter events · {atlasBundle.hookIds.length} hooks</div>
+              </div>
+            )}
+            {atlasScript && (
+              <div style={{ marginTop: 10, lineHeight: 1.5 }}>
+                <strong>{atlasScript.targets.length} dispatcher targets</strong>
+                <div>{atlasScript.fridaApiVersion} · idle {atlasScript.idleGapMs} ms · limit {atlasScript.maxEvents.toLocaleString()}</div>
+                <div style={{ marginTop: 4, display: "flex", gap: 4, flexWrap: "wrap" }}>
+                  {atlasScript.targets.map(target => <button key={target.offset} type="button" style={buttonStyle} onClick={() => jumpOffset(target.offset)}>{target.offset} · {target.score}</button>)}
+                </div>
+              </div>
+            )}
+            {atlasResult && (
+              <div style={{ marginTop: 10, lineHeight: 1.5 }}>
+                <strong>{atlasResult.nodes.length} nodes · {atlasResult.transitions.length} transitions</strong>
+                <div>{atlasResult.matchedEventCount} matched / {atlasResult.skippedEventCount} skipped · {atlasResult.threadCount} threads · {atlasResult.flowCount} flows</div>
+                <div>{atlasResult.explicitFlowCount} explicit / {atlasResult.derivedFlowCount} derived flows</div>
+              </div>
+            )}
+            {atlasScript?.warnings.map((warning, index) => <div key={`atlas-script-${index}`} style={{ marginTop: 5, color: "#d29922" }}>{warning}</div>)}
+            {atlasResult?.warnings.map((warning, index) => <div key={`atlas-warning-${index}`} style={{ marginTop: 5, color: "#d29922" }}>{warning}</div>)}
+            {atlasResult?.limitations.map((limitation, index) => <div key={`atlas-limit-${index}`} style={{ marginTop: 5, color: "var(--text-tertiary)" }}>{limitation}</div>)}
+          </div>
+          {atlasDisplay === "script" ? (
+            <pre style={{ flex: 1, minWidth: 0, margin: 0, padding: 10, overflow: "auto", background: "var(--bg-primary)", color: "var(--text-primary)", fontSize: 10, lineHeight: 1.45, whiteSpace: "pre" }}>{atlasScript?.script || ""}</pre>
+          ) : (
+            <div style={{ flex: 1, minWidth: 0, overflow: "auto", fontSize: 11 }}>
+              {atlasResult?.transitions.map((transition, index) => (
+                <div key={`${transition.fromOffset}-${transition.toOffset}-${index}`} style={{ padding: "7px 8px", borderBottom: "1px solid var(--border-color)" }}>
+                  <div style={{ display: "flex", alignItems: "center", gap: 7, flexWrap: "wrap" }}>
+                    <button type="button" style={buttonStyle} onClick={() => jumpOffset(transition.fromOffset)}>{transition.fromOffset}</button>
+                    <span>→</span>
+                    <button type="button" style={buttonStyle} onClick={() => jumpOffset(transition.toOffset)}>{transition.toOffset}</button>
+                    <strong>{transition.executionCount} hits</strong>
+                    <span>{transition.threadCount} threads / {transition.flowCount} flows</span>
+                    <span style={{ color: "var(--text-tertiary)" }}>events #{transition.sampleFromEventIndex} → #{transition.sampleToEventIndex}</span>
+                  </div>
+                  {transition.stateChanges.length > 0 && (
+                    <div style={{ marginTop: 5, paddingLeft: 12, display: "flex", gap: 5, flexWrap: "wrap" }}>
+                      {transition.stateChanges.slice(0, 24).map(change => (
+                        <code key={`${change.register}-${change.fromValue}-${change.toValue}`} title={`events #${change.sampleFromEventIndex} → #${change.sampleToEventIndex}`}>
+                          {change.register}:{change.fromValue}→{change.toValue} ×{change.executionCount}
+                        </code>
+                      ))}
+                      {(transition.stateChanges.length > 24 || transition.stateChangesTruncated) && <span style={{ color: "#d29922" }}>state changes truncated</span>}
+                    </div>
+                  )}
+                </div>
+              ))}
+              {atlasResult && atlasResult.transitions.length === 0 && <div style={{ padding: 14, color: "var(--text-secondary)" }}>No adjacent exact dispatcher transitions survived the thread/flow checks.</div>}
+              {atlasResult?.nodes.map(node => (
+                <details key={`atlas-node-${node.offset}`} style={{ padding: "7px 8px", borderBottom: "1px solid var(--border-color)" }}>
+                  <summary style={{ cursor: "pointer" }}>
+                    <button type="button" style={buttonStyle} onClick={event => { event.preventDefault(); jumpOffset(node.offset); }}>{node.offset}</button>
+                    <span style={{ marginLeft: 8 }}>{node.eventCount} hits · {node.threadCount} threads · {node.flowCount} flows · {node.stateRegisters.join(", ") || "no ranked state register"}</span>
+                  </summary>
+                  <div style={{ marginTop: 6, paddingLeft: 12 }}>
+                    {node.registerValues.map(register => (
+                      <div key={`${node.offset}-${register.register}`} style={{ marginTop: 4 }}>
+                        <code>{register.register}</code> {register.observedCount} observed / {register.missingCount} missing
+                        <span style={{ marginLeft: 8 }}>{register.values.slice(0, 16).map(value => `${value.value}×${value.executionCount}`).join(", ") || "no value"}</span>
+                        {(register.values.length > 16 || register.valuesTruncated) && <span style={{ marginLeft: 6, color: "#d29922" }}>truncated</span>}
+                      </div>
+                    ))}
+                  </div>
+                </details>
+              ))}
+              {atlasResult?.flows.slice(0, 256).map(flow => (
+                <div key={`${flow.captureSessionId}-${flow.threadId}-${flow.flowId}`} style={{ padding: "5px 8px", borderBottom: "1px solid var(--border-color)", color: "var(--text-secondary)" }}>
+                  <code>{flow.explicitFlowId ? "explicit" : "derived"} · T{flow.threadId} · {flow.eventCount} hits</code>
+                  <span title={flow.offsets.join(" → ")} style={{ marginLeft: 8 }}>{flow.offsets.join(" → ")}{flow.offsetsTruncated ? " → …" : ""}</span>
+                </div>
+              ))}
+              {atlasResult && (atlasResult.flows.length > 256 || atlasResult.flowsTruncated) && <div style={{ padding: 8, color: "#d29922" }}>Flow list truncated; aggregate node/transition counts are retained.</div>}
             </div>
           )}
         </div>
