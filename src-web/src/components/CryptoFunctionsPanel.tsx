@@ -142,10 +142,10 @@ export default function CryptoFunctionsPanel({ sessionId, onJumpToSeq, onCreateH
             background: "var(--btn-primary)", color: "#fff", border: "none", borderRadius: 3,
             opacity: !sessionId || loading ? 0.6 : 1,
           }}
-        >{loading ? "Analyzing..." : "Analyze Functions"}</button>
+        >{loading ? "分析中…" : "分析函数"}</button>
         {report && (
           <span style={{ color: "var(--text-tertiary)", fontSize: 11 }}>
-            {report.candidates.length} candidates · {report.magicHitCount} const hits · {report.cryptoInsnCount} crypto insns
+            {report.candidates.length} 个候选 · {report.magicHitCount} 个常量命中 · {report.cryptoInsnCount} 条密码指令
             {report.candidatesTruncated && "（已截断）"}
           </span>
         )}
@@ -155,12 +155,12 @@ export default function CryptoFunctionsPanel({ sessionId, onJumpToSeq, onCreateH
         {error && <div style={{ padding: 16, color: "#e5484d", fontSize: 12 }}>{error}</div>}
         {!error && !report && !loading && (
           <div style={{ padding: 16, color: "var(--text-secondary)", fontSize: 12 }}>
-            Click "Analyze Functions" to aggregate crypto evidence by function.
+            点击“分析函数”，按函数聚合密码常量、专用指令与调用证据。
           </div>
         )}
         {report && report.candidates.length === 0 && (
           <div style={{ padding: 16, color: "var(--text-secondary)", fontSize: 12 }}>
-            No crypto signals found in any function.
+            未在任何函数中发现达到阈值的密码学信号。
           </div>
         )}
         {report && report.candidates.map(c => (

@@ -430,10 +430,10 @@ export default function CryptoPanel(props: Props) {
           overflow: "hidden", flexShrink: 0,
         }}>
           <button type="button" style={segmentStyle(view === "value-search")} onClick={() => setView("value-search")}>
-            Value Search
+            值搜索
           </button>
           <button type="button" style={segmentStyle(view === "materials")} onClick={() => setView("materials")}>
-            Materials
+            材料
           </button>
           <button type="button" style={segmentStyle(view === "frida")} onClick={() => setView("frida")}>
             Frida Hook
@@ -442,28 +442,28 @@ export default function CryptoPanel(props: Props) {
             IDA / OLLVM
           </button>
           <button type="button" style={segmentStyle(view === "detection")} onClick={() => setView("detection")}>
-            Detection
+            常量检测
           </button>
           <button
             type="button"
             style={segmentStyle(view === "known-digest")}
             onClick={() => setView("known-digest")}
           >
-            Known Digest
+            已知摘要
           </button>
           <button
             type="button"
             style={segmentStyle(view === "functions")}
             onClick={() => setView("functions")}
           >
-            Functions
+            函数识别
           </button>
           <button
             type="button"
             style={{ ...segmentStyle(view === "whitebox"), borderRight: "none" }}
             onClick={() => setView("whitebox")}
           >
-            Implementations
+            实现分析
           </button>
         </div>
       </div>

@@ -1,6 +1,7 @@
 import React, { useCallback, useEffect, useMemo, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { emit } from "@tauri-apps/api/event";
+import { maskSensitiveHex } from "../utils/sensitiveMaterial";
 import type {
   CryptoFormula,
   CryptoMaterial,
@@ -83,15 +84,16 @@ function GradeBadge({ grade, score }: { grade: string; score: number }) {
   );
 }
 
-function MaterialRow({ material, onJumpToSeq, onCreateHook }: {
+function MaterialRow({ material, onJumpToSeq, onCreateHook, showFullMaterial }: {
   material: CryptoMaterial;
   onJumpToSeq: (seq: number) => void;
   onCreateHook?: (material: CryptoMaterial) => void;
+  showFullMaterial: boolean;
 }) {
   const [open, setOpen] = useState(false);
-  const hexPreview = material.bytesHex
-    ? `${material.bytesHex.slice(0, 96)}${material.bytesHex.length > 96 ? "…" : ""}`
-    : "bytes not captured";
+  const hexPreview = showFullMaterial
+    ? (material.bytesHex || "未捕获字节")
+    : maskSensitiveHex(material.bytesHex);
   return (
     <div style={{ borderBottom: "1px solid var(--border-color)" }}>
       <div
@@ -102,7 +104,7 @@ function MaterialRow({ material, onJumpToSeq, onCreateHook }: {
         <span style={{ width: 78, color: kindColor(material.kind), fontWeight: 600 }}>{material.kind}</span>
         <span style={{ width: 120, color: "var(--text-secondary)" }}>{material.role}</span>
         <span style={{ width: 112, color: "var(--asm-mnemonic)" }}>{material.algorithm || "—"}</span>
-        <code title={material.bytesHex || undefined} style={{ flex: 1, minWidth: 80, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", color: "var(--text-primary)" }}>
+        <code title={material.bytesHex ? (showFullMaterial ? "完整材料已显示" : "敏感材料已遮罩") : undefined} style={{ flex: 1, minWidth: 80, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", color: "var(--text-primary)" }}>
           {hexPreview}
         </code>
         <span style={{ width: 56, color: "var(--text-tertiary)", textAlign: "right" }}>
@@ -122,7 +124,7 @@ function MaterialRow({ material, onJumpToSeq, onCreateHook }: {
         <div style={{ padding: "7px 12px 10px 87px", background: "var(--bg-secondary)", color: "var(--text-secondary)", fontSize: 11 }}>
           <div style={{ display: "flex", gap: 6, flexWrap: "wrap", marginBottom: 6 }}>
             {material.bytesHex && (
-              <button type="button" style={buttonStyle} onClick={() => navigator.clipboard.writeText(material.bytesHex!)}>复制十六进制</button>
+              <button type="button" style={buttonStyle} onClick={() => navigator.clipboard.writeText(material.bytesHex!)}>复制完整十六进制</button>
             )}
             {material.address && material.observationSeq != null && (
               <button
@@ -169,6 +171,7 @@ export default function CryptoMaterialsPanel({ sessionId, onJumpToSeq, onCreateH
   const [comparison, setComparison] = useState<CryptoMaterialMultiTraceReport | null>(null);
   const [cases, setCases] = useState<EditableCase[]>([]);
   const [includeUnknown, setIncludeUnknown] = useState(false);
+  const [showFullMaterials, setShowFullMaterials] = useState(false);
   const [loading, setLoading] = useState(false);
   const [comparing, setComparing] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -262,16 +265,20 @@ export default function CryptoMaterialsPanel({ sessionId, onJumpToSeq, onCreateH
           disabled={!sessionId || loading}
           onClick={analyze}
         >
-          {loading ? "Indexing…" : "Index Materials"}
+          {loading ? "索引中…" : "索引材料"}
         </button>
         <label style={{ display: "flex", alignItems: "center", gap: 4, fontSize: 11, color: "var(--text-secondary)", flexShrink: 0, whiteSpace: "nowrap" }}>
           <input type="checkbox" checked={includeUnknown} onChange={event => setIncludeUnknown(event.target.checked)} />
-          Include unclassified call buffers
+          包含未分类调用缓冲区
+        </label>
+        <label style={{ display: "flex", alignItems: "center", gap: 4, fontSize: 11, color: "var(--text-secondary)", flexShrink: 0, whiteSpace: "nowrap" }}>
+          <input type="checkbox" checked={showFullMaterials} onChange={event => setShowFullMaterials(event.target.checked)} />
+          显示完整材料
         </label>
         <span style={{ flex: 1 }} />
         {report && (
           <span style={{ color: "var(--text-tertiary)", fontSize: 11, flexShrink: 0, whiteSpace: "nowrap" }}>
-            {report.materials.length} materials · {report.verifiedMaterials} verified · {report.formulas.length} formulas
+            {report.materials.length} 个材料 · {report.verifiedMaterials} 个已验证 · {report.formulas.length} 个公式
           </span>
         )}
       </div>
@@ -292,7 +299,7 @@ export default function CryptoMaterialsPanel({ sessionId, onJumpToSeq, onCreateH
             }}
             onClick={() => setSection(item)}
           >
-            {item === "compare" ? "Multi-trace Salt/Nonce" : item}
+            {item === "materials" ? "材料" : item === "formulas" ? "公式" : "多 Trace Salt/Nonce"}
           </button>
         ))}
       </div>
@@ -301,11 +308,11 @@ export default function CryptoMaterialsPanel({ sessionId, onJumpToSeq, onCreateH
         {error && <div style={{ padding: 12, color: "#e5484d", fontSize: 11 }}>{error}</div>}
         {!report && !loading && section !== "compare" && (
           <div style={{ padding: 16, color: "var(--text-secondary)", fontSize: 12 }}>
-            Index observed key, input, output, IV/nonce, digest, HMAC and KDF material. Verified means the observed bytes were deterministically recomputed.
+            索引 trace 中观察到的 key、输入、输出、IV/nonce、digest、HMAC 与 KDF 材料。只有可被确定性复算的字节才会标记为 Verified。
           </div>
         )}
         {section === "materials" && report?.materials.map(material => (
-          <MaterialRow key={material.materialId} material={material} onJumpToSeq={onJumpToSeq} onCreateHook={onCreateHook} />
+          <MaterialRow key={material.materialId} material={material} onJumpToSeq={onJumpToSeq} onCreateHook={onCreateHook} showFullMaterial={showFullMaterials} />
         ))}
         {section === "materials" && report && report.materials.length === 0 && (
           <div style={{ padding: 16, color: "var(--text-secondary)", fontSize: 12 }}>

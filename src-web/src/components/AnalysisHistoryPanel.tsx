@@ -36,16 +36,16 @@ function fmtTime(ms: number): string {
 }
 
 const EVIDENCE_GROUPS: Array<[keyof AnalysisEvidence, string]> = [
-  ["algorithms", "Algorithms"],
-  ["digests", "Digests"],
-  ["functions", "Functions"],
-  ["modules", "Modules"],
-  ["keyStrings", "Key strings"],
-  ["memoryReads", "Mem reads"],
-  ["memoryWrites", "Mem writes"],
-  ["addresses", "Addresses"],
-  ["operations", "Operations"],
-  ["warnings", "Warnings"],
+  ["algorithms", "算法"],
+  ["digests", "摘要"],
+  ["functions", "函数"],
+  ["modules", "模块"],
+  ["keyStrings", "Key 字符串"],
+  ["memoryReads", "内存读取"],
+  ["memoryWrites", "内存写入"],
+  ["addresses", "地址"],
+  ["operations", "操作"],
+  ["warnings", "警告"],
 ];
 
 function EvidenceView({ evidence }: { evidence: AnalysisEvidence }) {
@@ -139,7 +139,7 @@ function DetailView({ sessionId, id, onDeleted }: { sessionId: string; id: strin
         <span
           onClick={() => setShowJson(s => !s)}
           style={{ cursor: "pointer", color: "var(--text-tertiary)", fontSize: 10 }}
-        >{showJson ? "▼" : "▶"} raw request / result JSON</span>
+        >{showJson ? "▼" : "▶"} 原始请求 / 结果 JSON</span>
         {showJson && (
           <pre style={{
             marginTop: 4, maxHeight: 320, overflow: "auto", fontSize: 10, lineHeight: 1.45,
@@ -224,7 +224,7 @@ export default function AnalysisHistoryPanel({ sessionId }: Props) {
             background: "var(--bg-input)", color: "var(--text-primary)",
             border: "1px solid var(--border-color)", borderRadius: 3, opacity: loading ? 0.6 : 1,
           }}
-        >{loading ? "..." : "Refresh"}</button>
+        >{loading ? "…" : "刷新"}</button>
         <button
           type="button"
           onClick={doCompare}
@@ -238,7 +238,7 @@ export default function AnalysisHistoryPanel({ sessionId }: Props) {
           }}
         >比较（{selected.size}）</button>
         <span style={{ flex: 1 }} />
-        <span style={{ color: "var(--text-tertiary)", fontSize: 11 }}>{list.length} saved</span>
+        <span style={{ color: "var(--text-tertiary)", fontSize: 11 }}>{list.length} 条记录</span>
       </div>
 
       <div style={{ flex: 1, overflow: "auto" }}>
@@ -248,7 +248,7 @@ export default function AnalysisHistoryPanel({ sessionId }: Props) {
           <div style={{ padding: 12, borderBottom: "2px solid var(--border-color)", background: "var(--bg-secondary)" }}>
             <div style={{ display: "flex", alignItems: "center", marginBottom: 6 }}>
               <span style={{ fontSize: 12, color: "var(--text-primary)" }}>
-                Comparison of {comparison.analysisIds.length} · kinds: {comparison.kinds.join(", ")}
+                比较 {comparison.analysisIds.length} 条记录 · 类型：{comparison.kinds.join(", ")}
               </span>
               <span style={{ flex: 1 }} />
               <span
@@ -271,8 +271,7 @@ export default function AnalysisHistoryPanel({ sessionId }: Props) {
 
         {!loading && !error && list.length === 0 && (
           <div style={{ padding: 16, color: "var(--text-secondary)", fontSize: 12, lineHeight: 1.6 }}>
-            No saved analyses. Run analyses via the AI/MCP tools (crypto, taint, digest, auto-investigate);
-            they persist with the trace and appear here.
+            暂无保存的分析记录。可通过 AI/MCP 工具运行密码、污点、摘要或自动调查；记录会随 trace 保存并显示在这里。
           </div>
         )}
 

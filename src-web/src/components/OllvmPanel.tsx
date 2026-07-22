@@ -729,30 +729,34 @@ export default function OllvmPanel({ sessionId, onJumpToSeq, onPrepareFridaHook 
         fontSize: 11, overflowX: "auto", overflowY: "hidden", flexShrink: 0,
       }}>
         <label htmlFor="ollvm-node">节点 ID</label>
-        <input id="ollvm-node" style={inputStyle} value={nodeId} onChange={event => setNodeId(event.target.value)} placeholder="optional" />
+        <input id="ollvm-node" style={inputStyle} value={nodeId} onChange={event => setNodeId(event.target.value)} placeholder="可选" />
         <label htmlFor="ollvm-start">起始序号</label>
-        <input id="ollvm-start" style={inputStyle} value={startSeq} onChange={event => setStartSeq(event.target.value)} placeholder="auto" />
+        <input id="ollvm-start" style={inputStyle} value={startSeq} onChange={event => setStartSeq(event.target.value)} placeholder="自动" />
         <label htmlFor="ollvm-end">结束序号</label>
-        <input id="ollvm-end" style={inputStyle} value={endSeq} onChange={event => setEndSeq(event.target.value)} placeholder="auto" />
+        <input id="ollvm-end" style={inputStyle} value={endSeq} onChange={event => setEndSeq(event.target.value)} placeholder="自动" />
         <label htmlFor="ollvm-module">模块</label>
-        <input id="ollvm-module" style={inputStyle} value={moduleName} onChange={event => setModuleName(event.target.value)} placeholder="infer from trace" />
+        <input id="ollvm-module" style={inputStyle} value={moduleName} onChange={event => setModuleName(event.target.value)} placeholder="从 trace 推断" />
         <button type="button" style={{ ...buttonStyle, opacity: sessionId && selectedSeq != null ? 1 : 0.5 }} disabled={!sessionId || selectedSeq == null} onClick={useSelectedFunction}>使用选中函数</button>
         <button type="button" style={{ ...buttonStyle, background: "var(--btn-primary)", color: "#fff", border: "none", opacity: !sessionId || loading ? 0.6 : 1 }} disabled={!sessionId || loading} onClick={analyze}>{loading ? "分析中…" : "分析 OLLVM"}</button>
+      </div>
+      <div style={{ padding: "6px 10px", borderBottom: "1px solid var(--border-color)", background: "var(--bg-secondary)", color: "var(--text-secondary)", fontSize: 11, lineHeight: 1.5 }}>
+        <strong style={{ color: "var(--text-primary)" }}>手动工作流：</strong>
+        分析候选 → 生成 Frida/IDA/angr 脚本 → 用户在目标环境中手动运行 → 导入结果。OLLVM 结构结论始终保持 Candidate/Related，需要人工复核。
       </div>
       <div style={{
         display: "flex", alignItems: "center", minHeight: 30, borderBottom: "1px solid var(--border-color)",
         overflowX: "auto", overflowY: "hidden", flexShrink: 0,
       }}>
         {sectionButton("dispatchers", `Dispatchers${report ? ` (${report.dispatcherCandidates.length})` : ""}`)}
-        {sectionButton("state", "State machine")}
-        {sectionButton("opaque", `Opaque branches${report ? ` (${report.opaqueBranchCandidates.length})` : ""}`)}
-        {sectionButton("blocks", `Dynamic blocks${report ? ` (${report.blockCount})` : ""}`)}
-        {sectionButton("edges", `Edges${report ? ` (${report.edgeCount})` : ""}`)}
-        {sectionButton("compare", "Multi-run")}
-        {sectionButton("versions", "Cross-version")}
-        {sectionButton("atlas", "Frida atlas")}
-        {sectionButton("ida", "IDA bridge")}
-        {sectionButton("angr", "angr bridge")}
+        {sectionButton("state", "状态机")}
+        {sectionButton("opaque", `Opaque 分支${report ? ` (${report.opaqueBranchCandidates.length})` : ""}`)}
+        {sectionButton("blocks", `动态块${report ? ` (${report.blockCount})` : ""}`)}
+        {sectionButton("edges", `边${report ? ` (${report.edgeCount})` : ""}`)}
+        {sectionButton("compare", "多运行比较")}
+        {sectionButton("versions", "跨版本")}
+        {sectionButton("atlas", "Frida Atlas")}
+        {sectionButton("ida", "IDA 桥接")}
+        {sectionButton("angr", "angr 桥接")}
         <label style={{ display: "flex", alignItems: "center", gap: 4, marginLeft: 10, color: "var(--text-secondary)", fontSize: 10, flexShrink: 0, whiteSpace: "nowrap" }}>
           <input type="checkbox" checked={includeChildCalls} onChange={event => setIncludeChildCalls(event.target.checked)} />
           包含子调用
@@ -793,7 +797,7 @@ export default function OllvmPanel({ sessionId, onJumpToSeq, onPrepareFridaHook 
       {report && section === "state" && (
         <div style={{ flex: 1, overflow: "auto", fontSize: 11 }}>
           <div style={{ padding: "8px 10px", borderBottom: "1px solid var(--border-color)", color: "var(--text-secondary)" }}>
-            Values are reconstructed at dispatcher block entry from trace register checkpoints. They reveal an observed state trajectory, not the complete flattened state machine.
+            状态值由 dispatcher 块入口处的 trace 寄存器检查点重建，只表示已观察到的状态轨迹，不代表完整的控制流平坦化状态机。
           </div>
           {report.dispatcherCandidates.map(candidate => (
             <div key={candidate.blockId} style={{ borderBottom: "1px solid var(--border-color)", padding: "8px 10px" }}>

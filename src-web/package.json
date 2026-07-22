@@ -6,6 +6,7 @@
   "scripts": {
     "dev": "vite",
     "build": "tsc && vite build",
+    "check:ui-guards": "node scripts/check-ui-guards.mjs",
     "preview": "vite preview"
   },
   "dependencies": {

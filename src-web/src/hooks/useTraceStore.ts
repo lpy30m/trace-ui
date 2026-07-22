@@ -319,7 +319,7 @@ export function useTraceStore(skipStrings: boolean = false) {
     }
     setIsSearching(true);
     setSearchQuery(origQuery);
-    setSearchStatus("Searching...");
+    setSearchStatus("搜索中…");
     try {
       const result = await invoke<SearchResult>("search_trace", {
         sessionId: sid,
@@ -328,8 +328,8 @@ export function useTraceStore(skipStrings: boolean = false) {
       setMatchSeqs(result.match_seqs);
       setSearchTotalMatches(result.total_matches);
       const statusText = result.total_matches === 0
-          ? `No results found for "${origQuery}"`
-          : `${result.total_matches.toLocaleString()} results`;
+          ? `未找到“${origQuery}”的结果`
+          : `${result.total_matches.toLocaleString()} 个结果`;
       setSearchStatus(statusText);
       return result.total_matches;
     } catch (e) {

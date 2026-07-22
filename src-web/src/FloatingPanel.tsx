@@ -17,15 +17,15 @@ import { useSearchPages } from "./hooks/useSearchPages";
 import { findNearestSeqIndex } from "./utils/binarySearch";
 
 const PANEL_TITLES: Record<string, string> = {
-  memory: "Memory",
-  accesses: "Accesses",
-  "taint-state": "Taint State",
-  search: "Search",
-  strings: "Strings",
-  "string-detail": "String Detail",
+  memory: "内存",
+  accesses: "访问记录",
+  "taint-state": "污点状态",
+  search: "搜索",
+  strings: "字符串",
+  "string-detail": "字符串详情",
   "string-xrefs": "XRefs",
-  "call-info": "Call Info",
-  "dep-tree": "Dependency Tree",
+  "call-info": "调用信息",
+  "dep-tree": "依赖树",
 };
 
 interface SyncState {
@@ -102,7 +102,7 @@ export default function FloatingPanel({ panel }: { panel: string }) {
     setIsSearching(true);
     setMatchSeqs([]);
     setSearchTotalMatches(0);
-    setSearchStatus("Searching...");
+    setSearchStatus("搜索中…");
     try {
       let finalQuery = query;
       let finalUseRegex = options?.useRegex ?? false;
@@ -123,8 +123,8 @@ export default function FloatingPanel({ panel }: { panel: string }) {
       setMatchSeqs(result.match_seqs);
       setSearchTotalMatches(result.total_matches);
       const statusText = result.total_matches === 0
-        ? `No results found for "${query}"`
-        : `${result.total_matches.toLocaleString()} results`;
+        ? `未找到“${query}”的结果`
+        : `${result.total_matches.toLocaleString()} 个结果`;
       setSearchStatus(statusText);
       emit("sync:search-results-back", {
         matchSeqs: result.match_seqs,
@@ -133,7 +133,7 @@ export default function FloatingPanel({ panel }: { panel: string }) {
         totalMatches: result.total_matches,
       });
     } catch (e) {
-      setSearchStatus(`Search failed: ${e}`);
+      setSearchStatus(`搜索失败：${e}`);
       setMatchSeqs([]);
     } finally {
       setIsSearching(false);
@@ -220,7 +220,7 @@ export default function FloatingPanel({ panel }: { panel: string }) {
             justifyContent: "center",
           }}>
             <span style={{ color: "var(--text-secondary)", fontSize: 12 }}>
-              {title} — Panel not yet implemented
+              {title} — 该面板暂不支持独立窗口
             </span>
           </div>
         );
@@ -352,11 +352,11 @@ function FloatingSearchContent({
   }, []);
 
   const matchInfo = isSearching
-    ? "Searching..."
+    ? "搜索中…"
     : searchPages.totalCount === 0
-      ? (searchQuery ? "No results" : "")
+      ? (searchQuery ? "无结果" : "")
       : selectedIdx < 0
-        ? `${searchTotalMatches.toLocaleString()} results`
+        ? `${searchTotalMatches.toLocaleString()} 个结果`
         : `${selectedIdx + 1}/${searchTotalMatches.toLocaleString()}`;
 
   return (
@@ -378,7 +378,7 @@ function FloatingSearchContent({
       ) : searchPages.totalCount === 0 ? (
         <div style={{ flex: 1, display: "flex", alignItems: "center", justifyContent: "center" }}>
           <span style={{ color: "var(--text-secondary)", fontSize: 12 }}>
-            {searchQuery ? `No results found for "${searchQuery}"` : "Enter search query and press Enter"}
+            {searchQuery ? `未找到“${searchQuery}”的结果` : "请输入搜索内容并按 Enter"}
           </span>
         </div>
       ) : (

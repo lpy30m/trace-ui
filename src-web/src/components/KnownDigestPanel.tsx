@@ -225,7 +225,7 @@ export default function KnownDigestPanel({
                 void runMatch();
               }
             }}
-            placeholder={"One digest per line\n5d41402abc4b2a76b9719d911017c592"}
+            placeholder={"每行一个摘要\n5d41402abc4b2a76b9719d911017c592"}
             spellCheck={false}
             style={{
               flex: 1, minWidth: 180, height: 68, resize: "vertical", padding: "6px 8px",
@@ -261,7 +261,7 @@ export default function KnownDigestPanel({
                 opacity: state.loading || !sessionId ? 0.55 : 1,
               }}
             >
-              {state.loading ? "Matching..." : "Match Digests"}
+              {state.loading ? "匹配中…" : "匹配摘要"}
             </button>
           </div>
         </div>
@@ -366,7 +366,7 @@ export default function KnownDigestPanel({
           </div>
           {state.memoryResponse.matches.length === 0 ? (
             <div style={{ padding: "12px", color: "var(--text-secondary)", fontSize: 11, textAlign: "center" }}>
-              No binary memory buffer matched after {state.memoryResponse.writesScanned.toLocaleString()} writes.
+              扫描 {state.memoryResponse.writesScanned.toLocaleString()} 次写入后，未找到匹配的二进制内存缓冲区。
             </div>
           ) : state.memoryResponse.matches.map((match, index) => (
             <div key={`${match.queryIndex}-${match.addr}-${match.lastWriteSeq}-${index}`} style={{
@@ -400,7 +400,7 @@ export default function KnownDigestPanel({
       <div style={{ flex: 1, minHeight: 0, overflow: "auto" }}>
         {!state.response && !state.memoryResponse && !state.loading ? (
           <div style={{ height: "100%", display: "flex", alignItems: "center", justifyContent: "center", color: "var(--text-secondary)", fontSize: 12 }}>
-            Enter a known CRC32, MD5, SHA-1, SHA-256, SHA-384, or SHA-512 digest.
+            请输入 CRC32、MD5、SHA-1、SHA-256、SHA-384 或 SHA-512 摘要。
           </div>
         ) : state.loading ? (
           <div style={{ height: "100%", display: "flex", alignItems: "center", justifyContent: "center", gap: 8, color: "var(--text-secondary)", fontSize: 12 }}>
@@ -408,12 +408,12 @@ export default function KnownDigestPanel({
               display: "inline-block", width: 14, height: 14, border: "2px solid var(--border-color)",
               borderTopColor: "var(--btn-primary)", borderRadius: "50%", animation: "spin 1s linear infinite",
             }} />
-            {state.searchMemory ? "Matching strings and memory writes..." : "Matching extracted strings..."}
+            {state.searchMemory ? "正在匹配字符串与内存写入…" : "正在匹配已提取字符串…"}
           </div>
         ) : state.response && state.response.matches.length === 0 ? (
           <div style={{ height: "100%", display: "flex", alignItems: "center", justifyContent: "center", padding: 20 }}>
             <div style={{ maxWidth: 620, color: "var(--text-secondary)", fontSize: 12, lineHeight: 1.7, textAlign: "center" }}>
-              No extracted string matched. Check the byte transform or enable Binary memory writes for non-text output buffers.
+              未找到匹配的字符串。请检查字节变换，或为非文本输出缓冲区启用“二进制内存写入”。
             </div>
           </div>
         ) : state.response ? (

@@ -1,5 +1,6 @@
 import React, { useCallback, useEffect, useMemo, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
+import { maskSensitiveHex } from "../utils/sensitiveMaterial";
 import type {
   AngrStateSeed,
   CryptoMaterialReport,
@@ -91,6 +92,7 @@ export default function FridaHookPanel({ seed }: Props) {
   const [angrSeed, setAngrSeed] = useState<AngrStateSeed | null>(null);
   const [fridaMaterials, setFridaMaterials] = useState<CryptoMaterialReport | null>(null);
   const [includeUnknownMaterials, setIncludeUnknownMaterials] = useState(false);
+  const [showFullMaterials, setShowFullMaterials] = useState(false);
   const [includeSp, setIncludeSp] = useState(false);
   const [includeLr, setIncludeLr] = useState(true);
   const [seedSavedPath, setSeedSavedPath] = useState<string | null>(null);
@@ -336,6 +338,10 @@ export default function FridaHookPanel({ seed }: Props) {
   return (
     <div style={{ flex: 1, minWidth: 0, minHeight: 0, display: "flex", overflow: "hidden" }}>
       <div style={{ width: "min(580px, 48%)", minWidth: 430, display: "flex", flexDirection: "column", borderRight: "1px solid var(--border-color)", overflow: "auto" }}>
+        <div style={{ padding: "8px 10px", borderBottom: "1px solid var(--border-color)", background: "var(--bg-secondary)", color: "var(--text-secondary)", fontSize: 11, lineHeight: 1.55 }}>
+          <strong style={{ color: "var(--text-primary)" }}>手动工作流：</strong>
+          配置目标与捕获内容 → 生成脚本 → 在终端或设备环境中手动运行 → 导入 JSON/NDJSON → 索引材料或生成 angr 种子。Trace UI 不会自动连接目标、启动进程或执行 Frida/angr。
+        </div>
         <div style={{ display: "grid", gridTemplateColumns: "105px minmax(0, 1fr)", gap: 7, alignItems: "center", padding: 10, borderBottom: "1px solid var(--border-color)", fontSize: 11 }}>
           <label htmlFor="frida-recipe">API 配方</label>
           <div style={{ display: "flex", gap: 5, minWidth: 0 }}>
@@ -570,6 +576,10 @@ export default function FridaHookPanel({ seed }: Props) {
                 <span>{fridaMaterials.formulas.length} formulas / {fridaMaterials.verifiedFormulas} verified</span>
                 {fridaMaterials.materialsTruncated && <span style={{ color: "#d29922" }}>已截断</span>}
                 <button type="button" style={buttonStyle} onClick={analyzeCaptureMaterials}>重新索引</button>
+                <label style={{ display: "flex", alignItems: "center", gap: 4 }}>
+                  <input type="checkbox" checked={showFullMaterials} onChange={event => setShowFullMaterials(event.target.checked)} />
+                  显示完整材料
+                </label>
               </div>
               <div style={{ marginTop: 4, color: "var(--text-secondary)" }}>除非通过精确的 MD5/SHA/HMAC/PBKDF2 复算验证，标签/阶段分类仍只表示“相关”。</div>
             </div>
@@ -585,7 +595,9 @@ export default function FridaHookPanel({ seed }: Props) {
                     <span>{material.functionName || "unknown function"}</span>
                     <code>{material.register || ""}</code>
                   </div>
-                  <div title={material.bytesHex || ""} style={{ marginTop: 4, overflowWrap: "anywhere", color: "var(--text-secondary)", fontFamily: "monospace" }}>{material.bytesHex || "no bytes"}</div>
+                  <div title={material.bytesHex ? (showFullMaterials ? "完整材料已显示" : "敏感材料已遮罩") : undefined} style={{ marginTop: 4, overflowWrap: "anywhere", color: "var(--text-secondary)", fontFamily: "monospace" }}>
+                    {showFullMaterials ? (material.bytesHex || "未捕获字节") : maskSensitiveHex(material.bytesHex)}
+                  </div>
                   <div style={{ marginTop: 3, color: "var(--text-tertiary)" }}>{material.evidence.join(" · ")}</div>
                 </div>
               ))}

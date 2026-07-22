@@ -6,6 +6,19 @@
 
 这份文档是后续 Codex/开发者进入项目时的快速入口。它记录当前已经实现的 Frida 16、OLLVM、IDA、angr 和密码材料分析能力，以及每项能力对应的代码位置和边界。
 
+## 本轮工作流与敏感材料防护
+
+2026-07-22 完成了一轮轻量前端收尾，未修改后端 DTO、Frida/angr/IDA 脚本协议或执行边界：
+
+- `Crypto > 材料` 与 Frida 捕获材料索引默认遮罩完整十六进制值；用户勾选“显示完整材料”后才在界面展示原值，默认 tooltip 不再携带完整材料。
+- 完整材料仍保留在分析结果和导出协议中；“复制完整十六进制”是明确的用户操作，不改变原始数据。
+- Frida 与 OLLVM 页面新增手动工作流提示，明确 Trace UI 只生成脚本、导入结果，不自动连接目标、启动进程或执行 Frida/angr。
+- 主页签仅允许 `Memory`、`Search`、`Strings` 拖出为独立窗口；未实现浮动版本的面板不再打开空白 placeholder 窗口。
+- 清理 Crypto、Known Digest、Analysis History、浮动搜索与 OLLVM 入口的剩余英文操作文案。
+- 新增 `npm run check:ui-guards`，检查自动 Frida 边界、浮动面板白名单、敏感材料遮罩和关键旧文案回归。
+
+验证：`npm run check:ui-guards`、`npm run build`、`git diff --check` 均通过。
+
 ## 本轮界面中文化
 
 2026-07-22 对桌面前端进行了面向中文使用者的系统化文案调整，目标是“专业中文为主，必要英文术语保留”，没有修改后端协议字段、事件名、导入导出格式或脚本 API。

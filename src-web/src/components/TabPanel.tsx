@@ -59,6 +59,8 @@ const TAB_TO_PANEL: Record<string, string> = {
   "Function": "function",
 };
 
+const FLOATABLE_PANELS = new Set(["memory", "search", "strings"]);
+
 interface Props {
   matchSeqs: number[];
   searchQuery: string;
@@ -299,22 +301,28 @@ export default function TabPanel({
         display: "flex", alignItems: "center", borderBottom: "1px solid var(--border-color)",
         flexShrink: 0, overflowX: "auto", overflowY: "hidden",
       }}>
-        {visibleTabs.map(tab => (
+        {visibleTabs.map(tab => {
+          const panel = TAB_TO_PANEL[tab];
+          const canFloat = FLOATABLE_PANELS.has(panel);
+          return (
           <div key={tab} style={{ display: "flex", alignItems: "center", flexShrink: 0 }}>
             <button
-              onMouseDown={(e) => startDrag(TAB_TO_PANEL[tab], tab === "Search" ? `搜索${searchBadge}` : TAB_LABELS[tab], e)}
+              onMouseDown={canFloat ? (e) => startDrag(panel, tab === "Search" ? `搜索${searchBadge}` : TAB_LABELS[tab], e) : undefined}
+              onClick={canFloat ? undefined : () => setActive(tab)}
               onDoubleClick={() => { if (tab === "Memory") setMemResetKey(k => k + 1); }}
+              title={canFloat ? "可拖动为独立窗口" : "该面板暂不支持独立窗口"}
               style={{
                 padding: "6px 14px", fontSize: "var(--font-size-sm)",
                 background: active === tab ? "var(--bg-secondary)" : "transparent",
                 color: active === tab ? "var(--text-primary)" : "var(--text-secondary)",
-                cursor: "grab",
+                cursor: canFloat ? "grab" : "default",
                 border: "none",
                 borderBottom: active === tab ? "2px solid var(--btn-primary)" : "2px solid transparent",
               }}
             >{tab === "Search" ? `搜索${searchBadge}` : TAB_LABELS[tab]}</button>
           </div>
-        ))}
+          );
+        })}
         <div style={{ marginLeft: "auto", paddingRight: 8, flexShrink: 0 }} />
       </div>
 
