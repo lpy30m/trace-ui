@@ -2,7 +2,7 @@
 
 ## 2026-07-22 当前增量
 
-- 前端安全与工作流收尾：Crypto Materials 和 Frida 材料索引默认遮罩 key/salt/digest 等完整字节，改为每条材料独立显示/隐藏；Frida 捕获列表支持元数据搜索、事件类型和 payload 筛选；Crypto 子页面按首次访问懒加载并保持已访问页签状态；Frida/OLLVM 页面提示所有脚本由用户手动执行；不支持独立窗口的页签已禁用拖出；`npm run check:ui-guards` 防止自动 Frida 行为、空浮动面板和关键旧文案回归。
+- 前端安全与工作流收尾：Crypto Materials 和 Frida 材料索引默认遮罩 key/salt/digest 等完整字节，改为每条材料独立显示/隐藏；Frida 捕获列表支持元数据搜索、事件类型和 payload 筛选，并使用 `useVirtualizerNoSync` 虚拟滚动；Crypto 子页面按首次访问懒加载并保持已访问页签状态；Frida/OLLVM 页面提示所有脚本由用户手动执行；不支持独立窗口的页签已禁用拖出；`npm run check:ui-guards` 与 `npm run test:ui` 防止自动 Frida 行为、空浮动面板、关键旧文案和核心交互回归。
 
 - 新增 **Crypto Material Explorer**：统一索引 raw/derived key、password、salt、IV、nonce、counter、plaintext/ciphertext、digest/MAC、AAD、tag；支持 AES、MD5/SHA、HMAC、PBKDF2 确定性复算和跨 trace salt/nonce 候选隔离。
 - 新增 **Frida 16 Hook Generator**：按 module export 或 module-relative offset 生成 X0-X7、SP/LR/PC、buffer/string、return、backtrace、Stalker 脚本，事件协议为 `trace-ui/frida-hook-v1`。产品边界固定为“只生成/保存脚本”，用户自行 attach、spawn、load 和执行 hook。

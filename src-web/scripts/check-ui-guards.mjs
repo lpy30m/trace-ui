@@ -8,6 +8,8 @@ const requiredChecks = [
   ["utils/sensitiveMaterial.ts", "maskSensitiveHex"],
   ["components/FridaHookPanel.tsx", "手动工作流"],
   ["components/FridaHookPanel.tsx", "filteredCaptureEvents"],
+  ["components/FridaHookPanel.tsx", "useVirtualizerNoSync"],
+  ["utils/fridaCaptureFilter.ts", "filterFridaCaptureEvents"],
   ["components/OllvmPanel.tsx", "手动工作流"],
   ["components/CryptoPanel.tsx", "mountedViews"],
 ];

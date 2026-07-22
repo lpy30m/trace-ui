@@ -13,11 +13,13 @@
 - `Crypto > 材料` 与 Frida 捕获材料索引默认遮罩完整十六进制值；改为每条记录独立“显示完整材料/隐藏完整材料”，默认 tooltip 不再携带完整材料。
 - 完整材料仍保留在分析结果和导出协议中；“复制完整十六进制”是明确的用户操作，不改变原始数据。
 - Frida 与 OLLVM 页面新增手动工作流提示，明确 Trace UI 只生成脚本、导入结果，不自动连接目标、启动进程或执行 Frida/angr。
-- Frida 捕获结果支持按事件、函数、模块、callId 等元数据搜索，按 `hook-enter`/`hook-leave`/dispatcher/Stalker 类型筛选，并可只看含寄存器或 buffer 的事件；仍对列表显示数量设有 5000 条上限。
+- Frida 捕获结果支持按事件、函数、模块、callId 等元数据搜索，按 `hook-enter`/`hook-leave`/dispatcher/Stalker 类型筛选，并可只看含寄存器或 buffer 的事件；筛选后的完整结果交给虚拟列表处理。
+- Frida 捕获事件列表改为真正的虚拟滚动：保留完整筛选结果，只渲染视口附近的行，不再因为事件数量增加而创建成千上万个 DOM 节点。
 - 主页签仅允许 `Memory`、`Search`、`Strings` 拖出为独立窗口；未实现浮动版本的面板不再打开空白 placeholder 窗口。
 - Crypto 子页面按首次访问懒加载，已访问页签继续保留状态；本轮构建的入口 chunk 从约 740 KB 降至约 597 KB，OLLVM 等大面板拆为独立 chunk。
 - 清理 Crypto、Known Digest、Analysis History、浮动搜索与 OLLVM 入口的剩余英文操作文案。
 - 新增 `npm run check:ui-guards`，检查自动 Frida 边界、浮动面板白名单、敏感材料遮罩和关键旧文案回归。
+- 新增 `npm run test:ui`（Vitest + Testing Library），覆盖材料默认遮罩/单条展开和 Frida 捕获筛选逻辑；CI 会在前端构建前执行 guard 与交互测试。
 
 验证：`npm run check:ui-guards`、`npm run build`、`git diff --check` 均通过。
 

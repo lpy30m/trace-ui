@@ -1,6 +1,8 @@
 import React, { useCallback, useEffect, useMemo, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { maskSensitiveHex } from "../utils/sensitiveMaterial";
+import { filterFridaCaptureEvents, type CaptureEventType } from "../utils/fridaCaptureFilter";
+import { useVirtualizerNoSync } from "../hooks/useVirtualizerNoSync";
 import type {
   AngrStateSeed,
   CryptoMaterialReport,
@@ -123,7 +125,7 @@ export default function FridaHookPanel({ seed }: Props) {
   const [seedSavedPath, setSeedSavedPath] = useState<string | null>(null);
   const [outputView, setOutputView] = useState<"script" | "capture" | "materials" | "seed">("script");
   const [captureFilter, setCaptureFilter] = useState("");
-  const [captureEventType, setCaptureEventType] = useState<"all" | "hook-enter" | "hook-leave" | "ollvm-dispatcher-hit" | "stalker">("all");
+  const [captureEventType, setCaptureEventType] = useState<CaptureEventType>("all");
   const [captureOnlyPayload, setCaptureOnlyPayload] = useState(false);
 
   useEffect(() => {
@@ -269,33 +271,24 @@ export default function FridaHookPanel({ seed }: Props) {
   ), [captureBundle, selectedEventIndex]);
 
   const filteredCaptureEvents = useMemo(() => {
-    if (!captureBundle) return [];
-    const query = captureFilter.trim().toLowerCase();
-    return captureBundle.events.filter(event => {
-      if (captureEventType !== "all") {
-        const matchesType = captureEventType === "stalker"
-          ? event.event.toLowerCase().includes("stalker")
-          : event.event === captureEventType;
-        if (!matchesType) return false;
-      }
-      if (captureOnlyPayload && Object.keys(event.registers).length === 0 && event.captures.length === 0 && !event.returnValue) {
-        return false;
-      }
-      if (!query) return true;
-      const searchable = [
-        event.event,
-        event.functionName,
-        event.moduleName,
-        event.target,
-        event.callId,
-        event.hookId,
-        event.dispatcherOffset,
-        event.captureSessionId,
-        event.flowId,
-      ].filter(Boolean).join(" ").toLowerCase();
-      return searchable.includes(query);
-    });
+    return captureBundle
+      ? filterFridaCaptureEvents(captureBundle.events, { query: captureFilter, eventType: captureEventType, onlyPayload: captureOnlyPayload })
+      : [];
   }, [captureBundle, captureEventType, captureFilter, captureOnlyPayload]);
+
+  const captureListRef = React.useRef<HTMLDivElement>(null);
+  const captureVirtualizer = useVirtualizerNoSync<HTMLDivElement, HTMLButtonElement>({
+    count: filteredCaptureEvents.length,
+    getScrollElement: () => captureListRef.current,
+    estimateSize: () => 64,
+    overscan: 10,
+  });
+  const virtualCaptureRows = captureVirtualizer.getVirtualItems();
+
+  useEffect(() => {
+    const selectedIndex = filteredCaptureEvents.findIndex(event => event.index === selectedEventIndex);
+    if (selectedIndex >= 0) captureVirtualizer.scrollToIndex(selectedIndex, { align: "auto" });
+  }, [captureVirtualizer, filteredCaptureEvents, selectedEventIndex]);
 
   const importCapture = useCallback(async () => {
     const { open } = await import("@tauri-apps/plugin-dialog");
@@ -590,26 +583,31 @@ export default function FridaHookPanel({ seed }: Props) {
                   只看含寄存器/捕获数据
                 </label>
                 <span style={{ color: "var(--text-tertiary)" }}>
-                  显示 {Math.min(filteredCaptureEvents.length, 5000).toLocaleString()} / {filteredCaptureEvents.length.toLocaleString()}（总计 {captureBundle.events.length.toLocaleString()}）
+                  匹配 {filteredCaptureEvents.length.toLocaleString()} / 总计 {captureBundle.events.length.toLocaleString()}（虚拟渲染）
                 </span>
               </div>
             </div>
             <div style={{ flex: 1, minHeight: 0, display: "flex", overflow: "hidden" }}>
-              <div style={{ width: 330, minWidth: 260, overflow: "auto", borderRight: "1px solid var(--border-color)" }}>
-                {filteredCaptureEvents.slice(0, 5000).map(event => (
+              <div ref={captureListRef} style={{ width: 330, minWidth: 260, overflow: "auto", borderRight: "1px solid var(--border-color)" }}>
+                <div style={{ height: captureVirtualizer.getTotalSize(), width: "100%", position: "relative" }}>
+                {virtualCaptureRows.map(virtualRow => {
+                  const event = filteredCaptureEvents[virtualRow.index];
+                  if (!event) return null;
+                  return (
                   <button
                     type="button"
                     key={event.index}
                     onClick={() => { setSelectedEventIndex(event.index); setAngrSeed(null); setSeedSavedPath(null); }}
-                    style={{ width: "100%", border: "none", borderBottom: "1px solid var(--border-color)", padding: "6px 8px", textAlign: "left", background: selectedEventIndex === event.index ? "var(--bg-selected)" : "transparent", color: "var(--text-primary)", cursor: "pointer", fontFamily: "inherit", fontSize: 10 }}
+                    style={{ position: "absolute", top: 0, left: 0, width: "100%", height: virtualRow.size, transform: `translateY(${virtualRow.start}px)`, boxSizing: "border-box", border: "none", borderBottom: "1px solid var(--border-color)", padding: "6px 8px", textAlign: "left", overflow: "hidden", background: selectedEventIndex === event.index ? "var(--bg-selected)" : "transparent", color: "var(--text-primary)", cursor: "pointer", fontFamily: "inherit", fontSize: 10 }}
                   >
                     <div style={{ display: "flex", gap: 6 }}><strong>#{event.index} {event.event}</strong><span style={{ color: "var(--text-tertiary)" }}>T{event.threadId}</span></div>
                     <div style={{ marginTop: 2, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", color: "var(--text-secondary)" }}>{event.functionName} · {event.callId || "无 callId"}</div>
                     <div style={{ marginTop: 2, color: "var(--text-tertiary)" }}>{Object.keys(event.registers).length} 个寄存器 · {event.captures.length} 个捕获{event.stalkerEventCount != null ? ` · ${event.stalkerEventCount} 个 Stalker 事件` : ""}</div>
                   </button>
-                ))}
+                  );
+                })}
+                </div>
                 {filteredCaptureEvents.length === 0 && <div style={{ padding: 12, color: "var(--text-secondary)" }}>没有符合筛选条件的事件。</div>}
-                {filteredCaptureEvents.length > 5000 && <div style={{ padding: 8, color: "#d29922" }}>界面列表仅显示前 5000 个匹配事件。</div>}
               </div>
               <div style={{ flex: 1, minWidth: 0, overflow: "auto", padding: 10 }}>
                 {selectedCaptureEvent ? (

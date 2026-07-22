@@ -84,7 +84,7 @@ function GradeBadge({ grade, score }: { grade: string; score: number }) {
   );
 }
 
-function MaterialRow({ material, onJumpToSeq, onCreateHook }: {
+export function MaterialRow({ material, onJumpToSeq, onCreateHook }: {
   material: CryptoMaterial;
   onJumpToSeq: (seq: number) => void;
   onCreateHook?: (material: CryptoMaterial) => void;
