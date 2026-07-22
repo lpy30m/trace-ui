@@ -85,6 +85,7 @@ fn main() {
             commands::save_angr_state_seed,
             commands::analyze_ollvm,
             commands::compare_ollvm_traces,
+            commands::map_ollvm_versions,
             commands::generate_ida_ollvm_script,
             commands::save_ida_ollvm_script,
             commands::load_ida_annotations,

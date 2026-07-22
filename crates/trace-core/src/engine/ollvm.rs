@@ -6,12 +6,17 @@ use crate::query::evidence_score::{score_evidence, EvidenceScoreSignal};
 use crate::query::ollvm::{
     BranchStateObservation, DispatcherCandidate, DispatcherStateSnapshot,
     DispatcherStateTransition, DynamicBasicBlock, DynamicBlockInstruction, DynamicBranchProfile,
-    DynamicCfgEdge, OllvmAnalysisOptions, OllvmBranchCaseEvidence, OllvmBranchStability,
-    OllvmCaseSummary, OllvmDispatcherCaseEvidence, OllvmDispatcherStability, OllvmMultiTraceReport,
-    OllvmMultiTraceRequest, OllvmReport, OllvmScope, OllvmTraceCase, OpaqueBranchCandidate,
+    DynamicCfgEdge, OllvmAnalysisOptions, OllvmBlockFingerprint, OllvmBranchCaseEvidence,
+    OllvmBranchStability, OllvmCaseSummary, OllvmDispatcherCaseEvidence, OllvmDispatcherStability,
+    OllvmMultiTraceReport, OllvmMultiTraceRequest, OllvmReport, OllvmScope,
+    OllvmStateRegisterFingerprint, OllvmStateRegisterMatch, OllvmTraceCase,
+    OllvmVersionBlockCandidate, OllvmVersionDispatcherMapping, OllvmVersionMapReport,
+    OllvmVersionMapRequest, OllvmVersionSummary, OllvmVersionTargetMapping, OllvmVersionTraceCase,
+    OpaqueBranchCandidate,
 };
 use crate::utils::parse_hex_addr;
 
+use super::trace_diff::{operation_shape, shape_signature};
 use super::TraceEngine;
 
 const CHUNK_SIZE: u32 = 4096;
@@ -518,6 +523,126 @@ impl TraceEngine {
             cases.push((case, report, binary_identity));
         }
         compare_ollvm_reports(cases, require_matching_binary).map_err(TraceError::InvalidArgument)
+    }
+
+    pub fn map_ollvm_versions(
+        &self,
+        request: OllvmVersionMapRequest,
+    ) -> Result<OllvmVersionMapReport> {
+        if !(2..=8).contains(&request.versions.len()) {
+            return Err(TraceError::InvalidArgument(
+                "OLLVM version mapping requires two to eight versions".to_string(),
+            ));
+        }
+        if !(1..=10).contains(&request.max_matches_per_block) {
+            return Err(TraceError::InvalidArgument(
+                "maxMatchesPerBlock must be between 1 and 10".to_string(),
+            ));
+        }
+        if !(1..=100).contains(&request.min_score) {
+            return Err(TraceError::InvalidArgument(
+                "minScore must be between 1 and 100".to_string(),
+            ));
+        }
+
+        let baseline_version_id = request
+            .baseline_version_id
+            .as_deref()
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+            .map(str::to_string);
+        let max_blocks = request.max_blocks;
+        let max_edges = request.max_edges;
+        let max_matches_per_block = request.max_matches_per_block as usize;
+        let min_score = request.min_score;
+        let mut version_ids = HashSet::new();
+        let mut identity_cache: HashMap<String, ElfBinaryIdentity> = HashMap::new();
+        let mut prepared = Vec::with_capacity(request.versions.len());
+
+        for mut version in request.versions {
+            version.version_id = version.version_id.trim().to_string();
+            if version.version_id.is_empty() {
+                return Err(TraceError::InvalidArgument(
+                    "OLLVM version IDs must not be empty".to_string(),
+                ));
+            }
+            if !version_ids.insert(version.version_id.to_ascii_lowercase()) {
+                return Err(TraceError::InvalidArgument(format!(
+                    "Duplicate OLLVM version ID: {}",
+                    version.version_id
+                )));
+            }
+            version.static_binary_path = version.static_binary_path.trim().to_string();
+            if version.static_binary_path.is_empty() {
+                return Err(TraceError::InvalidArgument(format!(
+                    "OLLVM version '{}' requires staticBinaryPath",
+                    version.version_id
+                )));
+            }
+            let identity = if let Some(identity) = identity_cache.get(&version.static_binary_path) {
+                identity.clone()
+            } else {
+                let identity =
+                    inspect_elf_binary(&version.static_binary_path).map_err(|error| {
+                        TraceError::InvalidArgument(format!(
+                            "OLLVM version '{}' ELF identity failed: {error}",
+                            version.version_id
+                        ))
+                    })?;
+                identity_cache.insert(version.static_binary_path.clone(), identity.clone());
+                identity
+            };
+            if identity.elf_machine != 183 {
+                return Err(TraceError::InvalidArgument(format!(
+                    "OLLVM version '{}' selected ELF is {}, not AArch64",
+                    version.version_id, identity.architecture
+                )));
+            }
+            prepared.push((version, identity));
+        }
+
+        if let Some(baseline) = baseline_version_id.as_deref() {
+            if !version_ids.contains(&baseline.to_ascii_lowercase()) {
+                return Err(TraceError::InvalidArgument(format!(
+                    "baselineVersionId does not match a supplied version: {baseline}"
+                )));
+            }
+        }
+        let distinct_hashes = prepared
+            .iter()
+            .map(|(_, identity)| identity.binary_sha256.to_ascii_lowercase())
+            .collect::<HashSet<_>>();
+        if distinct_hashes.len() != prepared.len() {
+            return Err(TraceError::InvalidArgument(
+                "OLLVM version mapping requires a different SHA-256 for every version; use compare_ollvm_traces for repeated runs of the same ELF"
+                    .to_string(),
+            ));
+        }
+
+        let mut versions = Vec::with_capacity(prepared.len());
+        for (version, identity) in prepared {
+            let report = self.analyze_ollvm(
+                &version.session_id,
+                OllvmAnalysisOptions {
+                    node_id: version.node_id,
+                    module_name: version.module_name.clone(),
+                    start_seq: version.start_seq,
+                    end_seq: version.end_seq,
+                    include_child_calls: version.include_child_calls,
+                    max_blocks,
+                    max_edges,
+                },
+            )?;
+            versions.push((version, report, identity));
+        }
+
+        map_ollvm_version_reports(
+            versions,
+            baseline_version_id.as_deref(),
+            max_matches_per_block,
+            min_score,
+        )
+        .map_err(TraceError::InvalidArgument)
     }
 
     fn infer_ollvm_module(
@@ -1736,6 +1861,547 @@ fn compare_ollvm_reports(
     })
 }
 
+fn map_ollvm_version_reports(
+    versions: Vec<(OllvmVersionTraceCase, OllvmReport, ElfBinaryIdentity)>,
+    baseline_version_id: Option<&str>,
+    max_matches_per_block: usize,
+    min_score: u8,
+) -> std::result::Result<OllvmVersionMapReport, String> {
+    if versions.len() < 2 {
+        return Err("OLLVM version mapping requires at least two versions".to_string());
+    }
+    let distinct_hashes = versions
+        .iter()
+        .map(|(_, _, identity)| identity.binary_sha256.to_ascii_lowercase())
+        .collect::<HashSet<_>>();
+    if distinct_hashes.len() != versions.len() {
+        return Err("OLLVM version mapping requires distinct ELF SHA-256 values; use compare_ollvm_traces for the same ELF".to_string());
+    }
+    let baseline_index = match baseline_version_id {
+        Some(requested) => versions
+            .iter()
+            .position(|(version, _, _)| version.version_id.eq_ignore_ascii_case(requested))
+            .ok_or_else(|| {
+                format!("baselineVersionId does not match a supplied version: {requested}")
+            })?,
+        None => 0,
+    };
+    let baseline_id = versions[baseline_index].0.version_id.clone();
+    let summaries = versions
+        .iter()
+        .map(|(version, report, identity)| OllvmVersionSummary {
+            version_id: version.version_id.clone(),
+            session_id: version.session_id.clone(),
+            module_name: report.scope.module_name.clone(),
+            block_count: report.block_count,
+            edge_count: report.edge_count,
+            dispatcher_candidate_count: report.dispatcher_candidates.len() as u32,
+            binary_identity: identity.clone(),
+        })
+        .collect();
+
+    let (_, baseline_report, _) = &versions[baseline_index];
+    let mut dispatcher_mappings = Vec::new();
+    for dispatcher in &baseline_report.dispatcher_candidates {
+        let Some(source_block) = baseline_report
+            .blocks
+            .iter()
+            .find(|block| block.block_id == dispatcher.block_id)
+        else {
+            continue;
+        };
+        let source_fingerprint = block_fingerprint(
+            &baseline_id,
+            baseline_report,
+            source_block,
+            Some(dispatcher),
+        );
+        let mut targets = Vec::new();
+        for (target_index, (target_version, target_report, _)) in versions.iter().enumerate() {
+            if target_index == baseline_index {
+                continue;
+            }
+            let mut candidates = target_report
+                .blocks
+                .iter()
+                .filter_map(|target_block| {
+                    let target_dispatcher = target_report
+                        .dispatcher_candidates
+                        .iter()
+                        .find(|candidate| candidate.block_id == target_block.block_id);
+                    let target_fingerprint = block_fingerprint(
+                        &target_version.version_id,
+                        target_report,
+                        target_block,
+                        target_dispatcher,
+                    );
+                    let candidate =
+                        compare_block_fingerprints(&source_fingerprint, target_fingerprint);
+                    (candidate.score >= min_score).then_some(candidate)
+                })
+                .collect::<Vec<_>>();
+            candidates.sort_by(|left, right| {
+                right.score.cmp(&left.score).then_with(|| {
+                    parse_hex_addr(&left.target_block.start_offset)
+                        .unwrap_or(0)
+                        .cmp(&parse_hex_addr(&right.target_block.start_offset).unwrap_or(0))
+                })
+            });
+            let ambiguous = candidates
+                .get(0)
+                .zip(candidates.get(1))
+                .is_some_and(|(first, second)| first.score.saturating_sub(second.score) <= 5);
+            candidates.truncate(max_matches_per_block);
+            targets.push(OllvmVersionTargetMapping {
+                target_version_id: target_version.version_id.clone(),
+                ambiguous,
+                candidates,
+            });
+        }
+        dispatcher_mappings.push(OllvmVersionDispatcherMapping {
+            source_block: source_fingerprint,
+            targets,
+        });
+    }
+
+    Ok(OllvmVersionMapReport {
+        schema_version: "trace-ui/ollvm-version-map-v1".to_string(),
+        baseline_version_id: baseline_id,
+        versions: summaries,
+        dispatcher_mappings,
+        verification_gate_met: false,
+        limitations: vec![
+            "Every version uses a user-selected exact ELF with a distinct SHA-256, but the trace format does not cryptographically attest which image was mapped at runtime."
+                .to_string(),
+            "Mappings compare normalized dynamic block and state-role shapes only. They are structural candidates, never Verified proof of equivalent functions or recovered control flow."
+                .to_string(),
+            "Dynamic coverage is incomplete; unexecuted blocks, edges, state values, and alternate paths are absent. Small or template-like dispatcher blocks can collide and are marked ambiguous when top scores are close."
+                .to_string(),
+            "Source offsets, concrete dispatcher values, heap/stack addresses, Frida captures, and angr seeds must not be copied to another version."
+                .to_string(),
+        ],
+        next_steps: vec![
+            "Review strong non-ambiguous candidates in each exact IDA database and compare surrounding static def-use, dominators, and successor structure."
+                .to_string(),
+            "Generate a new exact-offset Frida 16.x Hook for each target version and let the user execute it manually; do not reuse a baseline capture at a relocated candidate."
+                .to_string(),
+            "Generate and run a separate angr bridge manually for each exact ELF, then compare bounded seeded-flow outcomes as Candidate/Related evidence."
+                .to_string(),
+            "Collect controlled traces with wider coverage when a mapping is missing or ambiguous."
+                .to_string(),
+        ],
+    })
+}
+
+fn block_fingerprint(
+    version_id: &str,
+    report: &OllvmReport,
+    block: &DynamicBasicBlock,
+    dispatcher: Option<&DispatcherCandidate>,
+) -> OllvmBlockFingerprint {
+    let normalized_operations = block
+        .instructions
+        .iter()
+        .take(64)
+        .map(|instruction| operation_shape(&operation_name(&instruction.disasm)))
+        .collect::<Vec<_>>();
+    let operation_signature = shape_signature(&normalized_operations.join(","));
+    let mut outgoing_edge_kinds = report
+        .edges
+        .iter()
+        .filter(|edge| edge.source_block_id == block.block_id)
+        .map(|edge| edge.kind.to_ascii_lowercase())
+        .collect::<HashSet<_>>()
+        .into_iter()
+        .collect::<Vec<_>>();
+    outgoing_edge_kinds.sort();
+    let backward_edge_count = report
+        .edges
+        .iter()
+        .filter(|edge| edge.source_block_id == block.block_id && edge.backward)
+        .count() as u32;
+    OllvmBlockFingerprint {
+        version_id: version_id.to_string(),
+        block_id: block.block_id.clone(),
+        module_name: block.module_name.clone(),
+        start_offset: block.start_offset.clone(),
+        end_offset: block.end_offset.clone(),
+        sample_seq: block.sample_seqs.first().copied(),
+        operation_signature,
+        instruction_count: block.instructions.len() as u32,
+        terminal_shape: operation_shape(&block.terminal_operation.to_ascii_lowercase()),
+        normalized_operations,
+        predecessor_count: block.predecessor_count,
+        successor_count: block.successor_count,
+        outgoing_edge_kinds,
+        dispatcher_candidate: dispatcher.is_some(),
+        indirect_branch_count: dispatcher
+            .map(|candidate| candidate.indirect_branch_count)
+            .unwrap_or_default(),
+        backward_edge_count: dispatcher
+            .map(|candidate| candidate.backward_edge_count)
+            .unwrap_or(backward_edge_count),
+        state_registers: dispatcher
+            .map(state_register_fingerprints)
+            .unwrap_or_default(),
+    }
+}
+
+fn state_register_fingerprints(
+    candidate: &DispatcherCandidate,
+) -> Vec<OllvmStateRegisterFingerprint> {
+    let mut registers = candidate
+        .state_registers
+        .iter()
+        .filter_map(|register| canonical_register_name(register))
+        .collect::<HashSet<_>>();
+    for snapshot in &candidate.state_snapshots {
+        registers.extend(
+            snapshot
+                .values
+                .keys()
+                .filter_map(|register| canonical_register_name(register)),
+        );
+    }
+    registers.extend(
+        candidate
+            .state_transitions
+            .iter()
+            .filter_map(|transition| canonical_register_name(&transition.register)),
+    );
+    let mut fingerprints = registers
+        .into_iter()
+        .map(|register| {
+            let values = candidate
+                .state_snapshots
+                .iter()
+                .filter_map(|snapshot| {
+                    snapshot.values.iter().find_map(|(name, value)| {
+                        (canonical_register_name(name).as_deref() == Some(register.as_str()))
+                            .then(|| value.to_ascii_lowercase())
+                    })
+                })
+                .collect::<Vec<_>>();
+            let transitions = candidate
+                .state_transitions
+                .iter()
+                .filter(|transition| {
+                    canonical_register_name(&transition.register).as_deref()
+                        == Some(register.as_str())
+                })
+                .collect::<Vec<_>>();
+            let transition_count = transitions.iter().fold(0u32, |total, transition| {
+                total.saturating_add(transition.execution_count.min(u32::MAX as u64) as u32)
+            });
+            let self_transition_count = transitions
+                .iter()
+                .filter(|transition| {
+                    transition
+                        .from_value
+                        .eq_ignore_ascii_case(&transition.to_value)
+                })
+                .fold(0u32, |total, transition| {
+                    total.saturating_add(transition.execution_count.min(u32::MAX as u64) as u32)
+                });
+            let distinct_transitions = transitions
+                .iter()
+                .map(|transition| {
+                    format!(
+                        "{}->{}",
+                        transition.from_value.to_ascii_lowercase(),
+                        transition.to_value.to_ascii_lowercase()
+                    )
+                })
+                .collect::<HashSet<_>>();
+            let value_width_bits = values
+                .iter()
+                .chain(
+                    transitions
+                        .iter()
+                        .flat_map(|transition| [&transition.from_value, &transition.to_value]),
+                )
+                .filter_map(|value| hex_value_width(value))
+                .max();
+            OllvmStateRegisterFingerprint {
+                register,
+                snapshot_count: values.len() as u32,
+                distinct_value_count: values.iter().collect::<HashSet<_>>().len() as u32,
+                transition_count,
+                distinct_transition_count: distinct_transitions.len() as u32,
+                self_transition_count,
+                value_width_bits,
+            }
+        })
+        .collect::<Vec<_>>();
+    fingerprints.sort_by(|left, right| left.register.cmp(&right.register));
+    fingerprints
+}
+
+fn hex_value_width(value: &str) -> Option<u32> {
+    let digits = value
+        .trim()
+        .trim_start_matches("0x")
+        .trim_start_matches("0X");
+    (!digits.is_empty()
+        && digits
+            .chars()
+            .all(|character| character.is_ascii_hexdigit()))
+    .then(|| (digits.len() as u32).saturating_mul(4))
+}
+
+fn compare_block_fingerprints(
+    source: &OllvmBlockFingerprint,
+    target: OllvmBlockFingerprint,
+) -> OllvmVersionBlockCandidate {
+    let operation_similarity =
+        sequence_similarity(&source.normalized_operations, &target.normalized_operations);
+    let operation_points = ((operation_similarity as u16 * 50 + 50) / 100) as u8;
+    let terminal_points = if source.terminal_shape == target.terminal_shape {
+        10
+    } else {
+        0
+    };
+    let predecessor_points =
+        scaled_count_similarity(source.predecessor_count, target.predecessor_count, 5);
+    let successor_points =
+        scaled_count_similarity(source.successor_count, target.successor_count, 10);
+    let edge_kind_points =
+        set_similarity_points(&source.outgoing_edge_kinds, &target.outgoing_edge_kinds, 5);
+    let dispatcher_points = if target.dispatcher_candidate { 10 } else { 0 };
+    let state_register_matches =
+        match_state_registers(&source.state_registers, &target.state_registers);
+    let state_points = state_register_matches
+        .first()
+        .map(|matched| ((matched.score as u16 * 10 + 50) / 100) as u8)
+        .unwrap_or_default();
+    let score = operation_points
+        .saturating_add(terminal_points)
+        .saturating_add(predecessor_points)
+        .saturating_add(successor_points)
+        .saturating_add(edge_kind_points)
+        .saturating_add(dispatcher_points)
+        .saturating_add(state_points)
+        .min(100);
+    let classification = if score >= 80 {
+        "strong-structural-candidate"
+    } else if score >= 65 {
+        "related-structural-candidate"
+    } else {
+        "weak-structural-candidate"
+    }
+    .to_string();
+    let assessment = score_evidence(
+        format!(
+            "ollvm_version_block:{}:{}",
+            source.start_offset, target.start_offset
+        ),
+        false,
+        vec![
+            EvidenceScoreSignal::new(
+                "operation_sequence",
+                "Normalized instruction-operation sequence similarity",
+                operation_points as i16,
+                operation_points > 0,
+                Some(format!("{operation_similarity}% LCS similarity")),
+            ),
+            EvidenceScoreSignal::new(
+                "terminal_shape",
+                "Terminal operation family matches",
+                terminal_points as i16,
+                terminal_points > 0,
+                Some(format!("{} vs {}", source.terminal_shape, target.terminal_shape)),
+            ),
+            EvidenceScoreSignal::new(
+                "predecessor_shape",
+                "Dynamic predecessor-count shape",
+                predecessor_points as i16,
+                predecessor_points > 0,
+                Some(format!("{} vs {}", source.predecessor_count, target.predecessor_count)),
+            ),
+            EvidenceScoreSignal::new(
+                "successor_shape",
+                "Dynamic successor-count shape",
+                successor_points as i16,
+                successor_points > 0,
+                Some(format!("{} vs {}", source.successor_count, target.successor_count)),
+            ),
+            EvidenceScoreSignal::new(
+                "edge_kinds",
+                "Outgoing dynamic edge-kind similarity",
+                edge_kind_points as i16,
+                edge_kind_points > 0,
+                Some(format!("{:?} vs {:?}", source.outgoing_edge_kinds, target.outgoing_edge_kinds)),
+            ),
+            EvidenceScoreSignal::new(
+                "dispatcher_role",
+                "Target is independently ranked as a dispatcher candidate",
+                dispatcher_points as i16,
+                dispatcher_points > 0,
+                None,
+            ),
+            EvidenceScoreSignal::new(
+                "state_register_role",
+                "Best state-register behavioral role similarity",
+                state_points as i16,
+                state_points > 0,
+                state_register_matches.first().map(|matched| matched.rationale.clone()),
+            ),
+        ],
+        vec![
+            "Different offsets and concrete state values are intentionally not treated as equivalence evidence."
+                .to_string(),
+            "Dynamic structural similarity can collide and does not prove semantic equivalence or OLLVM provenance."
+                .to_string(),
+        ],
+    );
+    OllvmVersionBlockCandidate {
+        target_block: target,
+        score,
+        classification,
+        operation_similarity,
+        state_register_matches,
+        rationale: format!(
+            "score {score}/100: operations {operation_similarity}%, terminal +{terminal_points}, predecessors +{predecessor_points}, successors +{successor_points}, edge kinds +{edge_kind_points}, dispatcher role +{dispatcher_points}, state role +{state_points}"
+        ),
+        assessment,
+    }
+}
+
+fn sequence_similarity(left: &[String], right: &[String]) -> u8 {
+    if left.is_empty() && right.is_empty() {
+        return 100;
+    }
+    if left.is_empty() || right.is_empty() {
+        return 0;
+    }
+    let mut previous = vec![0u16; right.len() + 1];
+    let mut current = vec![0u16; right.len() + 1];
+    for left_item in left {
+        for (index, right_item) in right.iter().enumerate() {
+            current[index + 1] = if left_item == right_item {
+                previous[index].saturating_add(1)
+            } else {
+                current[index].max(previous[index + 1])
+            };
+        }
+        std::mem::swap(&mut previous, &mut current);
+        current.fill(0);
+    }
+    let denominator = left.len().max(right.len()) as u32;
+    ((previous[right.len()] as u32 * 100 + denominator / 2) / denominator) as u8
+}
+
+fn scaled_count_similarity(left: u32, right: u32, maximum: u8) -> u8 {
+    if left == 0 && right == 0 {
+        return maximum;
+    }
+    let high = left.max(right);
+    let low = left.min(right);
+    ((low as u64 * maximum as u64 + high as u64 / 2) / high as u64) as u8
+}
+
+fn set_similarity_points(left: &[String], right: &[String], maximum: u8) -> u8 {
+    let left = left.iter().collect::<HashSet<_>>();
+    let right = right.iter().collect::<HashSet<_>>();
+    let union = left.union(&right).count();
+    if union == 0 {
+        return maximum;
+    }
+    let intersection = left.intersection(&right).count();
+    ((intersection * maximum as usize + union / 2) / union) as u8
+}
+
+fn match_state_registers(
+    source: &[OllvmStateRegisterFingerprint],
+    target: &[OllvmStateRegisterFingerprint],
+) -> Vec<OllvmStateRegisterMatch> {
+    let mut pairs = source
+        .iter()
+        .flat_map(|source_register| {
+            target.iter().map(move |target_register| {
+                let score = state_register_similarity(source_register, target_register);
+                (source_register, target_register, score)
+            })
+        })
+        .collect::<Vec<_>>();
+    pairs.sort_by(|left, right| right.2.cmp(&left.2));
+    let mut used_source = HashSet::new();
+    let mut used_target = HashSet::new();
+    let mut matches = Vec::new();
+    for (source_register, target_register, score) in pairs {
+        if used_source.contains(&source_register.register)
+            || used_target.contains(&target_register.register)
+        {
+            continue;
+        }
+        used_source.insert(source_register.register.clone());
+        used_target.insert(target_register.register.clone());
+        matches.push(OllvmStateRegisterMatch {
+            source_register: source_register.register.clone(),
+            target_register: target_register.register.clone(),
+            score,
+            rationale: format!(
+                "{} -> {} role score {score}/100 (snapshots {}:{}, distinct values {}:{}, transitions {}:{}, distinct transitions {}:{}, self transitions {}:{})",
+                source_register.register,
+                target_register.register,
+                source_register.snapshot_count,
+                target_register.snapshot_count,
+                source_register.distinct_value_count,
+                target_register.distinct_value_count,
+                source_register.transition_count,
+                target_register.transition_count,
+                source_register.distinct_transition_count,
+                target_register.distinct_transition_count,
+                source_register.self_transition_count,
+                target_register.self_transition_count,
+            ),
+        });
+    }
+    matches.sort_by(|left, right| right.score.cmp(&left.score));
+    matches
+}
+
+fn state_register_similarity(
+    source: &OllvmStateRegisterFingerprint,
+    target: &OllvmStateRegisterFingerprint,
+) -> u8 {
+    scaled_count_similarity(source.snapshot_count, target.snapshot_count, 25)
+        .saturating_add(scaled_count_similarity(
+            source.distinct_value_count,
+            target.distinct_value_count,
+            20,
+        ))
+        .saturating_add(scaled_count_similarity(
+            source.transition_count,
+            target.transition_count,
+            25,
+        ))
+        .saturating_add(scaled_count_similarity(
+            source.distinct_transition_count,
+            target.distinct_transition_count,
+            15,
+        ))
+        .saturating_add(scaled_count_similarity(
+            source.self_transition_count,
+            target.self_transition_count,
+            10,
+        ))
+        .saturating_add(
+            (source.value_width_bits == target.value_width_bits
+                && source.value_width_bits.is_some())
+            .then_some(2)
+            .unwrap_or_default(),
+        )
+        .saturating_add(
+            source
+                .register
+                .eq_ignore_ascii_case(&target.register)
+                .then_some(3)
+                .unwrap_or_default(),
+        )
+        .min(100)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1869,6 +2535,203 @@ mod tests {
             elf_machine: 183,
             build_id: build_id.map(str::to_string),
         }
+    }
+
+    fn version_case(
+        session_id: &str,
+        version_id: &str,
+        binary_path: &str,
+    ) -> OllvmVersionTraceCase {
+        OllvmVersionTraceCase {
+            version_id: version_id.to_string(),
+            session_id: session_id.to_string(),
+            node_id: None,
+            module_name: None,
+            start_seq: None,
+            end_seq: None,
+            include_child_calls: false,
+            static_binary_path: binary_path.to_string(),
+        }
+    }
+
+    fn dispatcher_report(session_id: &str, module_name: &str, offsets: &[u64]) -> OllvmReport {
+        let blocks = offsets
+            .iter()
+            .map(|offset| DynamicBasicBlock {
+                block_id: format!("{module_name}+0x{offset:x}"),
+                module_name: module_name.to_string(),
+                start_offset: format!("0x{offset:x}"),
+                end_offset: format!("0x{:x}", offset + 8),
+                start_address: format!("0x{:x}", 0x100000 + offset),
+                end_address: format!("0x{:x}", 0x100008 + offset),
+                visit_count: 12,
+                predecessor_count: 3,
+                successor_count: 2,
+                terminal_operation: "br".to_string(),
+                sample_seqs: vec![10],
+                instructions: vec![
+                    DynamicBlockInstruction {
+                        offset: format!("0x{offset:x}"),
+                        address: format!("0x{:x}", 0x100000 + offset),
+                        disasm: "ldr w8, [x20]".to_string(),
+                        execution_count: 12,
+                        sample_seq: 10,
+                    },
+                    DynamicBlockInstruction {
+                        offset: format!("0x{:x}", offset + 4),
+                        address: format!("0x{:x}", 0x100004 + offset),
+                        disasm: "eor w9, w8, w10".to_string(),
+                        execution_count: 12,
+                        sample_seq: 11,
+                    },
+                    DynamicBlockInstruction {
+                        offset: format!("0x{:x}", offset + 8),
+                        address: format!("0x{:x}", 0x100008 + offset),
+                        disasm: "br x11".to_string(),
+                        execution_count: 12,
+                        sample_seq: 12,
+                    },
+                ],
+            })
+            .collect::<Vec<_>>();
+        let dispatcher_candidates = blocks
+            .iter()
+            .map(|block| DispatcherCandidate {
+                block_id: block.block_id.clone(),
+                start_offset: block.start_offset.clone(),
+                end_offset: block.end_offset.clone(),
+                visit_count: 12,
+                predecessor_count: 3,
+                successor_count: 2,
+                indirect_branch_count: 12,
+                backward_edge_count: 1,
+                state_registers: vec!["X8".to_string()],
+                state_snapshots: vec![
+                    DispatcherStateSnapshot {
+                        seq: 10,
+                        values: BTreeMap::from([("X8".to_string(), "0x1".to_string())]),
+                    },
+                    DispatcherStateSnapshot {
+                        seq: 20,
+                        values: BTreeMap::from([("X8".to_string(), "0x2".to_string())]),
+                    },
+                ],
+                state_transitions: vec![DispatcherStateTransition {
+                    register: "X8".to_string(),
+                    from_value: "0x1".to_string(),
+                    to_value: "0x2".to_string(),
+                    execution_count: 1,
+                    sample_seq: 20,
+                }],
+                state_snapshots_truncated: false,
+                rationale: "synthetic dispatcher".to_string(),
+                assessment: score_evidence("synthetic", false, Vec::new(), Vec::new()),
+            })
+            .collect();
+        OllvmReport {
+            schema_version: "trace-ui/ollvm-v1".to_string(),
+            scope: OllvmScope {
+                session_id: session_id.to_string(),
+                node_id: None,
+                function_name: Some("target".to_string()),
+                module_name: module_name.to_string(),
+                module_base: "0x100000".to_string(),
+                start_seq: 0,
+                end_seq: 30,
+                child_calls_excluded: 0,
+            },
+            executed_instruction_count: blocks.len() as u64 * 36,
+            unique_instruction_count: blocks.len() as u32 * 3,
+            block_count: blocks.len() as u32,
+            edge_count: 0,
+            blocks,
+            edges: Vec::new(),
+            branch_profiles: Vec::new(),
+            dispatcher_candidates,
+            opaque_branch_candidates: Vec::new(),
+            instructions_truncated: false,
+            blocks_truncated: false,
+            edges_truncated: false,
+            limitations: Vec::new(),
+            next_steps: Vec::new(),
+        }
+    }
+
+    #[test]
+    fn cross_version_mapping_matches_relocated_dispatcher_without_verifying_it() {
+        let mapped = map_ollvm_version_reports(
+            vec![
+                (
+                    version_case("a", "v1", "v1.so"),
+                    dispatcher_report("a", "libold.so", &[0x100]),
+                    binary_identity('a', Some("build-a")),
+                ),
+                (
+                    version_case("b", "v2", "v2.so"),
+                    dispatcher_report("b", "librenamed.so", &[0x900]),
+                    binary_identity('b', Some("build-b")),
+                ),
+            ],
+            Some("v1"),
+            3,
+            55,
+        )
+        .unwrap();
+        let candidate = &mapped.dispatcher_mappings[0].targets[0].candidates[0];
+        assert_eq!(candidate.target_block.start_offset, "0x900");
+        assert!(candidate.score >= 80);
+        assert_eq!(candidate.classification, "strong-structural-candidate");
+        assert!(!candidate.assessment.verification_gate_met);
+        assert_ne!(candidate.assessment.grade, "verified");
+        assert!(!mapped.verification_gate_met);
+    }
+
+    #[test]
+    fn cross_version_mapping_rejects_same_elf_hash() {
+        let error = map_ollvm_version_reports(
+            vec![
+                (
+                    version_case("a", "v1", "v1.so"),
+                    dispatcher_report("a", "lib.so", &[0x100]),
+                    binary_identity('a', None),
+                ),
+                (
+                    version_case("b", "v2", "v2.so"),
+                    dispatcher_report("b", "lib.so", &[0x900]),
+                    binary_identity('a', None),
+                ),
+            ],
+            None,
+            3,
+            55,
+        )
+        .unwrap_err();
+        assert!(error.contains("compare_ollvm_traces"));
+    }
+
+    #[test]
+    fn cross_version_mapping_marks_template_collision_ambiguous() {
+        let mapped = map_ollvm_version_reports(
+            vec![
+                (
+                    version_case("a", "v1", "v1.so"),
+                    dispatcher_report("a", "lib.so", &[0x100]),
+                    binary_identity('a', None),
+                ),
+                (
+                    version_case("b", "v2", "v2.so"),
+                    dispatcher_report("b", "lib2.so", &[0x900, 0xa00]),
+                    binary_identity('b', None),
+                ),
+            ],
+            None,
+            3,
+            55,
+        )
+        .unwrap();
+        let target = &mapped.dispatcher_mappings[0].targets[0];
+        assert!(target.ambiguous);
+        assert_eq!(target.candidates.len(), 2);
     }
 
     #[test]

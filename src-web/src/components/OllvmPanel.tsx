@@ -14,6 +14,7 @@ import type {
   OllvmAnalysisOptions,
   OllvmMultiTraceReport,
   OllvmReport,
+  OllvmVersionMapReport,
   TraceSessionInfo,
 } from "../types/trace";
 
@@ -26,6 +27,8 @@ interface Props {
 interface EditableOllvmCase {
   sessionId: string;
   label: string;
+  versionId: string;
+  moduleName: string;
   selected: boolean;
   nodeId: string;
   startSeq: string;
@@ -86,12 +89,15 @@ export default function OllvmPanel({ sessionId, onJumpToSeq, onPrepareFridaHook 
   const [includeChildCalls, setIncludeChildCalls] = useState(false);
   const [report, setReport] = useState<OllvmReport | null>(null);
   const [comparison, setComparison] = useState<OllvmMultiTraceReport | null>(null);
+  const [versionMap, setVersionMap] = useState<OllvmVersionMapReport | null>(null);
   const [compareCases, setCompareCases] = useState<EditableOllvmCase[]>([]);
+  const [baselineVersionId, setBaselineVersionId] = useState("");
   const [requireMatchingBinary, setRequireMatchingBinary] = useState(true);
   const [comparing, setComparing] = useState(false);
+  const [mappingVersions, setMappingVersions] = useState(false);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const [section, setSection] = useState<"dispatchers" | "state" | "opaque" | "blocks" | "edges" | "compare" | "ida" | "angr">("dispatchers");
+  const [section, setSection] = useState<"dispatchers" | "state" | "opaque" | "blocks" | "edges" | "compare" | "versions" | "ida" | "angr">("dispatchers");
   const [openBlock, setOpenBlock] = useState<string | null>(null);
   const [idaImageBase, setIdaImageBase] = useState("");
   const [addUserXrefs, setAddUserXrefs] = useState(false);
@@ -116,6 +122,7 @@ export default function OllvmPanel({ sessionId, onJumpToSeq, onPrepareFridaHook 
   useEffect(() => {
     setReport(null);
     setComparison(null);
+    setVersionMap(null);
     setIdaScript(null);
     setIdaAnnotations(null);
     setSavedPath(null);
@@ -191,6 +198,8 @@ export default function OllvmPanel({ sessionId, onJumpToSeq, onPrepareFridaHook 
         return {
           sessionId: session.sessionId,
           label: fileName,
+          versionId: `version-${index + 1}`,
+          moduleName: current ? moduleName : "",
           selected: current,
           nodeId: current ? nodeId : "",
           startSeq: current ? startSeq : "",
@@ -201,10 +210,10 @@ export default function OllvmPanel({ sessionId, onJumpToSeq, onPrepareFridaHook 
     } catch (reason) {
       setError(String(reason));
     }
-  }, [endSeq, nodeId, sessionId, startSeq]);
+  }, [endSeq, moduleName, nodeId, sessionId, startSeq]);
 
   useEffect(() => {
-    if (section === "compare") void refreshCompareSessions();
+    if (section === "compare" || section === "versions") void refreshCompareSessions();
   }, [refreshCompareSessions, section]);
 
   const selectedCompareCases = useMemo(() => compareCases.filter(item => item.selected), [compareCases]);
@@ -259,6 +268,54 @@ export default function OllvmPanel({ sessionId, onJumpToSeq, onPrepareFridaHook 
   const updateCompareCase = (index: number, patch: Partial<EditableOllvmCase>) => {
     setCompareCases(items => items.map((item, itemIndex) => itemIndex === index ? { ...item, ...patch } : item));
   };
+
+  const versionInputsReady = selectedCompareCases.length >= 2
+    && selectedCompareCases.every(item => item.versionId.trim() && item.staticBinaryPath.trim());
+  const selectVersionElf = useCallback(async (index: number) => {
+    const { open } = await import("@tauri-apps/plugin-dialog");
+    const selected = await open({
+      multiple: false,
+      directory: false,
+      title: "Select exact ELF/shared object for this binary version",
+      filters: [{ name: "ELF/shared object", extensions: ["so", "elf", "bin"] }],
+    });
+    if (typeof selected !== "string") return;
+    updateCompareCase(index, { staticBinaryPath: selected });
+    setVersionMap(null);
+  }, []);
+  const mapVersions = useCallback(async () => {
+    if (!versionInputsReady) return;
+    setMappingVersions(true);
+    setError(null);
+    try {
+      const result = await invoke<OllvmVersionMapReport>("map_ollvm_versions", {
+        request: {
+          versions: selectedCompareCases.map(item => ({
+            versionId: item.versionId.trim(),
+            sessionId: item.sessionId,
+            nodeId: optionalNumber(item.nodeId),
+            moduleName: item.moduleName.trim() || null,
+            startSeq: optionalNumber(item.startSeq),
+            endSeq: optionalNumber(item.endSeq),
+            includeChildCalls,
+            staticBinaryPath: item.staticBinaryPath.trim(),
+          })),
+          baselineVersionId: baselineVersionId.trim() || null,
+          maxBlocks: 1_000,
+          maxEdges: 3_000,
+          maxMatchesPerBlock: 3,
+          minScore: 55,
+        },
+      });
+      setVersionMap(result);
+      if (!baselineVersionId) setBaselineVersionId(result.baselineVersionId);
+    } catch (reason) {
+      setError(String(reason));
+      setVersionMap(null);
+    } finally {
+      setMappingVersions(false);
+    }
+  }, [baselineVersionId, includeChildCalls, selectedCompareCases, versionInputsReady]);
 
   const blockById = useMemo(() => new Map(report?.blocks.map(block => [block.blockId, block]) || []), [report]);
   const annotationByOffset = useMemo(() => new Map(
@@ -487,6 +544,7 @@ export default function OllvmPanel({ sessionId, onJumpToSeq, onPrepareFridaHook 
         {sectionButton("blocks", `Dynamic blocks${report ? ` (${report.blockCount})` : ""}`)}
         {sectionButton("edges", `Edges${report ? ` (${report.edgeCount})` : ""}`)}
         {sectionButton("compare", "Multi-run")}
+        {sectionButton("versions", "Cross-version")}
         {sectionButton("ida", "IDA bridge")}
         {sectionButton("angr", "angr bridge")}
         <label style={{ display: "flex", alignItems: "center", gap: 4, marginLeft: 10, color: "var(--text-secondary)", fontSize: 10, flexShrink: 0, whiteSpace: "nowrap" }}>
@@ -501,7 +559,7 @@ export default function OllvmPanel({ sessionId, onJumpToSeq, onPrepareFridaHook 
       </div>
 
       {error && <div style={{ padding: "7px 10px", color: "#e5484d", borderBottom: "1px solid var(--border-color)", fontSize: 11 }}>{error}</div>}
-      {!report && !loading && section !== "compare" && (
+      {!report && !loading && section !== "compare" && section !== "versions" && (
         <div style={{ flex: 1, display: "flex", alignItems: "center", justifyContent: "center", color: "var(--text-secondary)", fontSize: 12 }}>
           Select a function invocation or provide a trace range.
         </div>
@@ -728,6 +786,98 @@ export default function OllvmPanel({ sessionId, onJumpToSeq, onPrepareFridaHook 
                   <div style={{ marginTop: 4, color: "var(--text-tertiary)" }}>{branch.rationale}</div>
                 </div>
               ))}
+            </div>
+          )}
+        </div>
+      )}
+
+      {section === "versions" && (
+        <div style={{ flex: 1, minHeight: 0, overflow: "auto", padding: 10, fontSize: 11 }}>
+          <div style={{ color: "var(--text-secondary)", marginBottom: 9, lineHeight: 1.5 }}>
+            Map baseline dispatcher/state structure across different binary builds. Every selected version needs its own exact AArch64 ELF and trace scope. SHA-256 values must differ; offsets and concrete state values are never copied across versions. Results remain Candidate/Related.
+          </div>
+          <div style={{ display: "grid", gridTemplateColumns: "26px minmax(130px, 1fr) 120px minmax(110px, 160px) 90px 80px 80px minmax(190px, 1.4fr) 70px", gap: 5, alignItems: "center" }}>
+            <span /><strong>Open trace</strong><strong>Version ID</strong><strong>Module</strong><strong>Node ID</strong><strong>Start</strong><strong>End</strong><strong>Exact ELF</strong><span />
+            {compareCases.map((item, index) => (
+              <React.Fragment key={`version-${item.sessionId}`}>
+                <input type="checkbox" checked={item.selected} onChange={event => { updateCompareCase(index, { selected: event.target.checked }); setVersionMap(null); }} />
+                <span title={item.sessionId} style={{ overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{item.label}</span>
+                <input style={inputStyle} value={item.versionId} onChange={event => { updateCompareCase(index, { versionId: event.target.value }); setVersionMap(null); }} placeholder="unique build" />
+                <input style={inputStyle} value={item.moduleName} onChange={event => { updateCompareCase(index, { moduleName: event.target.value }); setVersionMap(null); }} placeholder="infer" />
+                <input style={inputStyle} value={item.nodeId} onChange={event => { updateCompareCase(index, { nodeId: event.target.value }); setVersionMap(null); }} placeholder="optional" />
+                <input style={inputStyle} value={item.startSeq} onChange={event => { updateCompareCase(index, { startSeq: event.target.value }); setVersionMap(null); }} placeholder="auto" />
+                <input style={inputStyle} value={item.endSeq} onChange={event => { updateCompareCase(index, { endSeq: event.target.value }); setVersionMap(null); }} placeholder="auto" />
+                <input style={inputStyle} value={item.staticBinaryPath} onChange={event => { updateCompareCase(index, { staticBinaryPath: event.target.value }); setVersionMap(null); }} placeholder="required" title={item.staticBinaryPath} />
+                <button type="button" style={buttonStyle} onClick={() => selectVersionElf(index)}>Browse</button>
+              </React.Fragment>
+            ))}
+          </div>
+          <div style={{ display: "flex", gap: 6, alignItems: "center", marginTop: 9 }}>
+            <button type="button" style={buttonStyle} onClick={refreshCompareSessions}>Refresh sessions</button>
+            <label htmlFor="ollvm-baseline-version">Baseline</label>
+            <select id="ollvm-baseline-version" style={{ ...inputStyle, minWidth: 150 }} value={baselineVersionId} onChange={event => { setBaselineVersionId(event.target.value); setVersionMap(null); }}>
+              <option value="">First selected version</option>
+              {selectedCompareCases.filter(item => item.versionId.trim()).map(item => <option key={item.sessionId} value={item.versionId.trim()}>{item.versionId.trim()}</option>)}
+            </select>
+            <button
+              type="button"
+              style={{ ...buttonStyle, background: "var(--btn-primary)", color: "#fff", border: "none", opacity: !versionInputsReady || mappingVersions ? 0.6 : 1 }}
+              disabled={!versionInputsReady || mappingVersions}
+              onClick={mapVersions}
+            >
+              {mappingVersions ? "Mapping..." : `Map ${selectedCompareCases.length} versions`}
+            </button>
+          </div>
+          {!versionInputsReady && <div style={{ marginTop: 7, color: "#d29922" }}>Select at least two traces and provide a unique version ID plus exact ELF path for every selected version.</div>}
+          {versionMap && (
+            <div style={{ marginTop: 12, borderTop: "1px solid var(--border-color)" }}>
+              <div style={{ padding: "8px 0", color: "var(--text-secondary)" }}>
+                Baseline <strong>{versionMap.baselineVersionId}</strong> · {versionMap.versions.length} distinct ELFs · {versionMap.dispatcherMappings.length} baseline dispatcher candidates · verification gate remains closed
+              </div>
+              <div style={{ display: "grid", gridTemplateColumns: "120px minmax(130px, 1fr) 100px minmax(220px, 1.4fr)", gap: 6, marginBottom: 10 }}>
+                <strong>Version</strong><strong>Module</strong><strong>Dynamic CFG</strong><strong>Exact ELF identity</strong>
+                {versionMap.versions.map(version => (
+                  <React.Fragment key={version.versionId}>
+                    <code>{version.versionId}</code>
+                    <span>{version.moduleName}</span>
+                    <span>{version.blockCount} blocks / {version.edgeCount} edges</span>
+                    <code title={version.binaryIdentity.binarySha256} style={{ overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{version.binaryIdentity.binarySha256}</code>
+                  </React.Fragment>
+                ))}
+              </div>
+              {versionMap.dispatcherMappings.map(mapping => (
+                <div key={mapping.sourceBlock.blockId} style={{ padding: 8, border: "1px solid var(--border-color)", borderRadius: 4, marginBottom: 8, background: "var(--bg-secondary)" }}>
+                  <div style={{ display: "flex", gap: 8, alignItems: "center", flexWrap: "wrap" }}>
+                    <strong>Baseline dispatcher</strong>
+                    <code>{mapping.sourceBlock.moduleName}+{mapping.sourceBlock.startOffset}</code>
+                    <span>{mapping.sourceBlock.instructionCount} instructions</span>
+                    <code>{mapping.sourceBlock.normalizedOperations.join(" · ")}</code>
+                  </div>
+                  {mapping.targets.map(target => (
+                    <div key={target.targetVersionId} style={{ marginTop: 7, paddingTop: 7, borderTop: "1px solid var(--border-color)" }}>
+                      <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
+                        <strong>{target.targetVersionId}</strong>
+                        {target.ambiguous && <span style={{ color: "#d29922" }}>ambiguous top candidates</span>}
+                        <span>{target.candidates.length} retained</span>
+                      </div>
+                      {target.candidates.map(candidate => (
+                        <div key={candidate.targetBlock.blockId} style={{ display: "grid", gridTemplateColumns: "82px 150px 100px 120px minmax(200px, 1fr)", gap: 7, alignItems: "center", marginTop: 5 }}>
+                          <Score score={candidate.score} grade={candidate.assessment.grade} />
+                          <code>{candidate.targetBlock.moduleName}+{candidate.targetBlock.startOffset}</code>
+                          <span>{candidate.operationSimilarity}% operations</span>
+                          <strong style={{ color: candidate.score >= 80 && !target.ambiguous ? "#3fb950" : "#d29922" }}>{candidate.classification}</strong>
+                          <span title={candidate.rationale} style={{ color: "var(--text-tertiary)", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+                            {candidate.stateRegisterMatches.map(item => `${item.sourceRegister}→${item.targetRegister} ${item.score}`).join(", ") || "no state-register role match"}
+                          </span>
+                        </div>
+                      ))}
+                      {target.candidates.length === 0 && <div style={{ marginTop: 5, color: "var(--text-tertiary)" }}>No block reached the bounded score threshold; collect wider coverage or inspect manually.</div>}
+                    </div>
+                  ))}
+                </div>
+              ))}
+              {versionMap.dispatcherMappings.length === 0 && <div style={{ color: "var(--text-tertiary)" }}>The baseline trace has no dispatcher candidate to map.</div>}
+              {versionMap.limitations.map((limitation, index) => <div key={index} style={{ marginTop: 5, color: "#d29922" }}>{limitation}</div>)}
             </div>
           )}
         </div>

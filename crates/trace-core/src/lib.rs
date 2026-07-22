@@ -77,9 +77,12 @@ pub use query::ollvm::{
     generate_ida_ollvm_script, parse_ida_annotation_bundle, BranchStateObservation,
     DispatcherCandidate, DispatcherStateSnapshot, DispatcherStateTransition, DynamicBasicBlock,
     DynamicBlockInstruction, DynamicBranchProfile, DynamicCfgEdge, IdaAnnotation,
-    IdaAnnotationBundle, IdaOllvmScript, OllvmAnalysisOptions, OllvmBranchCaseEvidence,
-    OllvmBranchStability, OllvmCaseSummary, OllvmDispatcherCaseEvidence, OllvmDispatcherStability,
-    OllvmMultiTraceReport, OllvmMultiTraceRequest, OllvmReport, OllvmScope, OllvmTraceCase,
+    IdaAnnotationBundle, IdaOllvmScript, OllvmAnalysisOptions, OllvmBlockFingerprint,
+    OllvmBranchCaseEvidence, OllvmBranchStability, OllvmCaseSummary, OllvmDispatcherCaseEvidence,
+    OllvmDispatcherStability, OllvmMultiTraceReport, OllvmMultiTraceRequest, OllvmReport,
+    OllvmScope, OllvmStateRegisterFingerprint, OllvmStateRegisterMatch, OllvmTraceCase,
+    OllvmVersionBlockCandidate, OllvmVersionDispatcherMapping, OllvmVersionMapReport,
+    OllvmVersionMapRequest, OllvmVersionSummary, OllvmVersionTargetMapping, OllvmVersionTraceCase,
     OpaqueBranchCandidate,
 };
 pub use query::source_sink::{

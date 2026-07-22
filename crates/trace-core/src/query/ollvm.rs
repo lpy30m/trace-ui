@@ -320,6 +320,142 @@ pub struct OllvmMultiTraceReport {
     pub next_steps: Vec<String>,
 }
 
+#[derive(Clone, Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct OllvmVersionTraceCase {
+    pub version_id: String,
+    pub session_id: String,
+    #[serde(default)]
+    pub node_id: Option<u32>,
+    #[serde(default)]
+    pub module_name: Option<String>,
+    #[serde(default)]
+    pub start_seq: Option<u32>,
+    #[serde(default)]
+    pub end_seq: Option<u32>,
+    #[serde(default)]
+    pub include_child_calls: bool,
+    pub static_binary_path: String,
+}
+
+#[derive(Clone, Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct OllvmVersionMapRequest {
+    pub versions: Vec<OllvmVersionTraceCase>,
+    #[serde(default)]
+    pub baseline_version_id: Option<String>,
+    #[serde(default = "default_max_blocks")]
+    pub max_blocks: u32,
+    #[serde(default = "default_max_edges")]
+    pub max_edges: u32,
+    #[serde(default = "default_version_matches")]
+    pub max_matches_per_block: u32,
+    #[serde(default = "default_version_min_score")]
+    pub min_score: u8,
+}
+
+fn default_version_matches() -> u32 {
+    3
+}
+
+fn default_version_min_score() -> u8 {
+    55
+}
+
+#[derive(Clone, Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct OllvmVersionSummary {
+    pub version_id: String,
+    pub session_id: String,
+    pub module_name: String,
+    pub block_count: u32,
+    pub edge_count: u32,
+    pub dispatcher_candidate_count: u32,
+    pub binary_identity: ElfBinaryIdentity,
+}
+
+#[derive(Clone, Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct OllvmStateRegisterFingerprint {
+    pub register: String,
+    pub snapshot_count: u32,
+    pub distinct_value_count: u32,
+    pub transition_count: u32,
+    pub distinct_transition_count: u32,
+    pub self_transition_count: u32,
+    pub value_width_bits: Option<u32>,
+}
+
+#[derive(Clone, Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct OllvmBlockFingerprint {
+    pub version_id: String,
+    pub block_id: String,
+    pub module_name: String,
+    pub start_offset: String,
+    pub end_offset: String,
+    pub sample_seq: Option<u32>,
+    pub operation_signature: String,
+    pub normalized_operations: Vec<String>,
+    pub instruction_count: u32,
+    pub terminal_shape: String,
+    pub predecessor_count: u32,
+    pub successor_count: u32,
+    pub outgoing_edge_kinds: Vec<String>,
+    pub dispatcher_candidate: bool,
+    pub indirect_branch_count: u64,
+    pub backward_edge_count: u32,
+    pub state_registers: Vec<OllvmStateRegisterFingerprint>,
+}
+
+#[derive(Clone, Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct OllvmStateRegisterMatch {
+    pub source_register: String,
+    pub target_register: String,
+    pub score: u8,
+    pub rationale: String,
+}
+
+#[derive(Clone, Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct OllvmVersionBlockCandidate {
+    pub target_block: OllvmBlockFingerprint,
+    pub score: u8,
+    pub classification: String,
+    pub operation_similarity: u8,
+    pub state_register_matches: Vec<OllvmStateRegisterMatch>,
+    pub rationale: String,
+    pub assessment: EvidenceAssessment,
+}
+
+#[derive(Clone, Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct OllvmVersionTargetMapping {
+    pub target_version_id: String,
+    pub ambiguous: bool,
+    pub candidates: Vec<OllvmVersionBlockCandidate>,
+}
+
+#[derive(Clone, Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct OllvmVersionDispatcherMapping {
+    pub source_block: OllvmBlockFingerprint,
+    pub targets: Vec<OllvmVersionTargetMapping>,
+}
+
+#[derive(Clone, Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct OllvmVersionMapReport {
+    pub schema_version: String,
+    pub baseline_version_id: String,
+    pub versions: Vec<OllvmVersionSummary>,
+    pub dispatcher_mappings: Vec<OllvmVersionDispatcherMapping>,
+    pub verification_gate_met: bool,
+    pub limitations: Vec<String>,
+    pub next_steps: Vec<String>,
+}
+
 #[derive(Clone, Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct IdaOllvmScript {

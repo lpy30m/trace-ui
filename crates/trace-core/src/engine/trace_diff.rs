@@ -313,7 +313,7 @@ fn parse_hex_number(value: &str) -> Option<u64> {
     .ok()
 }
 
-fn operation_shape(operation: &str) -> String {
+pub(super) fn operation_shape(operation: &str) -> String {
     let shape = if matches!(operation, "bl" | "blr") {
         "call"
     } else if operation == "ret" {
@@ -364,7 +364,7 @@ fn operation_shape(operation: &str) -> String {
     shape.to_string()
 }
 
-fn shape_signature(shape: &str) -> String {
+pub(super) fn shape_signature(shape: &str) -> String {
     let digest = Sha256::digest(shape.as_bytes());
     digest[..12]
         .iter()

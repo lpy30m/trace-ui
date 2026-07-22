@@ -23,9 +23,9 @@ use trace_core::{
     DepTreeOptions, EvidenceScoreSignal, ForwardSliceOptions, FridaArgumentKind, FridaArgumentSpec,
     FridaCaptureDirection, FridaHookRequest, FridaStalkerMode, HashAlgorithm, HashMatchRequest,
     HashTransformOptions, OllvmAnalysisOptions, OllvmMultiTraceRequest, OllvmTraceCase,
-    SearchOptions, SliceOptions, StringQueryOptions, TraceDiffOptions, TraceEngine, ValueEndian,
-    ValueSearchKind, ValueSearchRequest, WhiteBoxMultiTraceRequest, WhiteBoxOptions,
-    WhiteBoxTraceCaseRequest,
+    OllvmVersionMapRequest, OllvmVersionTraceCase, SearchOptions, SliceOptions, StringQueryOptions,
+    TraceDiffOptions, TraceEngine, ValueEndian, ValueSearchKind, ValueSearchRequest,
+    WhiteBoxMultiTraceRequest, WhiteBoxOptions, WhiteBoxTraceCaseRequest,
 };
 
 fn decode_hex_bytes(value: &str) -> Result<Vec<u8>, String> {
@@ -4306,6 +4306,102 @@ impl TraceToolHandler {
                     &first_session,
                     "ollvm_multitrace",
                     "Multi-trace OLLVM stability comparison",
+                    request_record,
+                    result.clone(),
+                    evidence,
+                )
+                .map_err(|error| error.to_string())?;
+            result["analysisId"] = serde_json::json!(record.analysis_id);
+            result["saved"] = serde_json::json!(true);
+            Ok(json(&result))
+        })
+        .await
+    }
+
+    #[tool(
+        name = "map_ollvm_versions",
+        description = "Map baseline OLLVM dispatcher/state structural candidates across two to eight distinct AArch64 binary versions. Every version requires its own trace scope and exact ELF; duplicate SHA-256 values are rejected and should use compare_ollvm_traces instead. Module basenames and offsets may differ. Matching uses bounded normalized operation sequences, dynamic graph shape, dispatcher role, and state-register behavior. Results are Candidate/Related only, never Verified, and are saved to the baseline session."
+    )]
+    async fn map_ollvm_versions(
+        &self,
+        Parameters(req): Parameters<MapOllvmVersionsRequest>,
+    ) -> Result<String, String> {
+        let first_session = req
+            .baseline_version_id
+            .as_deref()
+            .and_then(|baseline| {
+                req.versions
+                    .iter()
+                    .find(|version| version.version_id.eq_ignore_ascii_case(baseline))
+            })
+            .or_else(|| req.versions.first())
+            .map(|version| version.session_id.clone())
+            .ok_or_else(|| "OLLVM version mapping requires at least two versions".to_string())?;
+        let request_record = serde_json::to_value(&req)
+            .map_err(|error| format!("serialize request failed: {error}"))?;
+        let engine = self.engine.clone();
+        blocking(move || {
+            let request = OllvmVersionMapRequest {
+                versions: req
+                    .versions
+                    .into_iter()
+                    .map(|version| OllvmVersionTraceCase {
+                        version_id: version.version_id,
+                        session_id: version.session_id,
+                        node_id: version.node_id,
+                        module_name: version.module_name,
+                        start_seq: version.start_seq,
+                        end_seq: version.end_seq,
+                        include_child_calls: version.include_child_calls,
+                        static_binary_path: version.static_binary_path,
+                    })
+                    .collect(),
+                baseline_version_id: req.baseline_version_id,
+                max_blocks: req.max_blocks,
+                max_edges: req.max_edges,
+                max_matches_per_block: req.max_matches_per_block,
+                min_score: req.min_score,
+            };
+            let report = engine
+                .map_ollvm_versions(request)
+                .map_err(|error| error.to_string())?;
+            let mut evidence = AnalysisEvidence::default();
+            for version in &report.versions {
+                push_unique(&mut evidence.modules, version.module_name.clone());
+                push_unique(
+                    &mut evidence.digests,
+                    version.binary_identity.binary_sha256.clone(),
+                );
+            }
+            for mapping in &report.dispatcher_mappings {
+                push_unique(
+                    &mut evidence.addresses,
+                    mapping.source_block.start_offset.clone(),
+                );
+                for target in &mapping.targets {
+                    for candidate in &target.candidates {
+                        push_unique(
+                            &mut evidence.addresses,
+                            candidate.target_block.start_offset.clone(),
+                        );
+                        push_unique(
+                            &mut evidence.operations,
+                            format!(
+                                "ollvm_version_map:{}:{}:{}",
+                                target.target_version_id, candidate.classification, candidate.score
+                            ),
+                        );
+                    }
+                }
+            }
+            evidence.warnings.extend(report.limitations.clone());
+            let mut result = serde_json::to_value(&report)
+                .map_err(|error| format!("serialize report failed: {error}"))?;
+            let record = engine
+                .save_analysis(
+                    &first_session,
+                    "ollvm_version_map",
+                    "Cross-version OLLVM structural candidate map",
                     request_record,
                     result.clone(),
                     evidence,

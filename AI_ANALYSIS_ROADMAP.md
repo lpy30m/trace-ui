@@ -43,7 +43,7 @@
 ## 3. 当前限制
 
 - [x] 已支持从 Frida 捕获导出 X0-X7、可选 SP/LR 与 memory state seed；capture point 与 symbolic address 是否语义一致仍需人工核验。
-- [ ] 增加显式的跨版本 dispatcher state mapping；不同 ELF 版本必须作为独立版本变量，不能直接复用同一 offset 矩阵。
+- [x] 跨版本 dispatcher/state 结构映射：每个版本提供独立 trace scope、version ID 与 exact ELF；要求 SHA-256 两两不同，允许模块重命名/offset 变化，并按归一化指令形状、动态 CFG 形状与 state-register 行为返回有界候选。结果始终为 Candidate/Related，不复用 offset、concrete state、Frida capture 或 angr seed。
 
 - [x] 分析记录已随 Trace 内容校验持久化，应用重启后可以恢复。
 - [x] Crypto、正向污点和自动调查支持统一后台任务、进度与取消。

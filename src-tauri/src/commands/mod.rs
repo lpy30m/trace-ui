@@ -815,6 +815,21 @@ pub async fn compare_ollvm_traces(
 }
 
 #[tauri::command]
+pub async fn map_ollvm_versions(
+    request: trace_core::OllvmVersionMapRequest,
+    engine: State<'_, Arc<TraceEngine>>,
+) -> Result<trace_core::OllvmVersionMapReport, String> {
+    let engine = engine.inner().clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        engine
+            .map_ollvm_versions(request)
+            .map_err(|error| error.to_string())
+    })
+    .await
+    .map_err(|error| format!("Task execution failed: {error}"))?
+}
+
+#[tauri::command]
 pub fn generate_ida_ollvm_script(
     report: trace_core::OllvmReport,
     ida_image_base: Option<String>,

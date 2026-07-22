@@ -1047,6 +1047,54 @@ pub struct CompareOllvmTracesRequest {
     pub max_edges: u32,
 }
 
+#[derive(Debug, Deserialize, Serialize, JsonSchema)]
+pub struct MapOllvmVersionCaseRequest {
+    #[schemars(
+        description = "Unique version/build identifier, for example 1.4.2 or build-2026-07"
+    )]
+    pub version_id: String,
+    #[schemars(description = "Open trace session ID for this version")]
+    pub session_id: String,
+    #[schemars(description = "Optional call-tree node ID for this version")]
+    pub node_id: Option<u32>,
+    #[schemars(description = "Optional module basename; version basenames may differ")]
+    pub module_name: Option<String>,
+    #[schemars(description = "Optional 0-based first trace sequence")]
+    pub start_seq: Option<u32>,
+    #[schemars(description = "Optional 0-based last trace sequence")]
+    pub end_seq: Option<u32>,
+    #[serde(default)]
+    pub include_child_calls: bool,
+    #[schemars(
+        description = "Required path to the exact AArch64 ELF/shared object for this version"
+    )]
+    pub static_binary_path: String,
+}
+
+#[derive(Debug, Deserialize, Serialize, JsonSchema)]
+pub struct MapOllvmVersionsRequest {
+    #[schemars(
+        description = "Two to eight distinct binary versions with independent trace scopes and exact ELFs"
+    )]
+    pub versions: Vec<MapOllvmVersionCaseRequest>,
+    #[schemars(
+        description = "Optional version ID used as the dispatcher-source baseline; defaults to the first version"
+    )]
+    pub baseline_version_id: Option<String>,
+    #[serde(default = "default_ollvm_blocks")]
+    pub max_blocks: u32,
+    #[serde(default = "default_ollvm_edges")]
+    pub max_edges: u32,
+    #[schemars(
+        description = "Maximum candidates retained per baseline dispatcher and target version (1-10, default: 3)"
+    )]
+    #[serde(default = "default_ollvm_version_matches")]
+    pub max_matches_per_block: u32,
+    #[schemars(description = "Minimum structural score retained (1-100, default: 55)")]
+    #[serde(default = "default_ollvm_version_score")]
+    pub min_score: u8,
+}
+
 #[derive(Debug, Deserialize, JsonSchema)]
 pub struct GenerateIdaOllvmScriptRequest {
     #[schemars(description = "Session ID (optional if only one session is open)")]
@@ -1145,6 +1193,14 @@ fn default_ollvm_blocks() -> u32 {
 
 fn default_ollvm_edges() -> u32 {
     3_000
+}
+
+fn default_ollvm_version_matches() -> u32 {
+    3
+}
+
+fn default_ollvm_version_score() -> u8 {
+    55
 }
 
 fn default_angr_flow_depth() -> u32 {
@@ -1423,5 +1479,22 @@ mod tests {
         assert!(!request.cases[0].include_child_calls);
         assert!(request.cases[0].static_binary_path.is_none());
         assert!(!request.require_matching_binary);
+    }
+
+    #[test]
+    fn ollvm_version_map_request_uses_bounded_defaults() {
+        let request: MapOllvmVersionsRequest = serde_json::from_value(serde_json::json!({
+            "versions": [
+                {"version_id":"v1","session_id":"a","static_binary_path":"v1.so"},
+                {"version_id":"v2","session_id":"b","static_binary_path":"v2.so"}
+            ]
+        }))
+        .unwrap();
+        assert_eq!(request.max_blocks, 1_000);
+        assert_eq!(request.max_edges, 3_000);
+        assert_eq!(request.max_matches_per_block, 3);
+        assert_eq!(request.min_score, 55);
+        assert!(request.baseline_version_id.is_none());
+        assert!(!request.versions[0].include_child_calls);
     }
 }

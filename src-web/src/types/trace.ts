@@ -796,6 +796,91 @@ export interface OllvmMultiTraceReport {
   nextSteps: string[];
 }
 
+export interface OllvmVersionTraceCase {
+  versionId: string;
+  sessionId: string;
+  nodeId: number | null;
+  moduleName: string | null;
+  startSeq: number | null;
+  endSeq: number | null;
+  includeChildCalls: boolean;
+  staticBinaryPath: string;
+}
+
+export interface OllvmStateRegisterFingerprint {
+  register: string;
+  snapshotCount: number;
+  distinctValueCount: number;
+  transitionCount: number;
+  distinctTransitionCount: number;
+  selfTransitionCount: number;
+  valueWidthBits: number | null;
+}
+
+export interface OllvmBlockFingerprint {
+  versionId: string;
+  blockId: string;
+  moduleName: string;
+  startOffset: string;
+  endOffset: string;
+  sampleSeq: number | null;
+  operationSignature: string;
+  normalizedOperations: string[];
+  instructionCount: number;
+  terminalShape: string;
+  predecessorCount: number;
+  successorCount: number;
+  outgoingEdgeKinds: string[];
+  dispatcherCandidate: boolean;
+  indirectBranchCount: number;
+  backwardEdgeCount: number;
+  stateRegisters: OllvmStateRegisterFingerprint[];
+}
+
+export interface OllvmStateRegisterMatch {
+  sourceRegister: string;
+  targetRegister: string;
+  score: number;
+  rationale: string;
+}
+
+export interface OllvmVersionBlockCandidate {
+  targetBlock: OllvmBlockFingerprint;
+  score: number;
+  classification: string;
+  operationSimilarity: number;
+  stateRegisterMatches: OllvmStateRegisterMatch[];
+  rationale: string;
+  assessment: EvidenceAssessment;
+}
+
+export interface OllvmVersionTargetMapping {
+  targetVersionId: string;
+  ambiguous: boolean;
+  candidates: OllvmVersionBlockCandidate[];
+}
+
+export interface OllvmVersionMapReport {
+  schemaVersion: string;
+  baselineVersionId: string;
+  versions: Array<{
+    versionId: string;
+    sessionId: string;
+    moduleName: string;
+    blockCount: number;
+    edgeCount: number;
+    dispatcherCandidateCount: number;
+    binaryIdentity: ElfBinaryIdentity;
+  }>;
+  dispatcherMappings: Array<{
+    sourceBlock: OllvmBlockFingerprint;
+    targets: OllvmVersionTargetMapping[];
+  }>;
+  verificationGateMet: boolean;
+  limitations: string[];
+  nextSteps: string[];
+}
+
 export interface IdaOllvmScript {
   fileName: string;
   script: string;
