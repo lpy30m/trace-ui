@@ -114,7 +114,7 @@ function MaterialRow({ material, onJumpToSeq, onCreateHook }: {
             style={buttonStyle}
             onClick={event => { event.stopPropagation(); onJumpToSeq(material.observationSeq!); }}
           >
-            Line {material.observationSeq + 1}
+            第 {material.observationSeq + 1} 行
           </button>
         )}
       </div>
@@ -122,7 +122,7 @@ function MaterialRow({ material, onJumpToSeq, onCreateHook }: {
         <div style={{ padding: "7px 12px 10px 87px", background: "var(--bg-secondary)", color: "var(--text-secondary)", fontSize: 11 }}>
           <div style={{ display: "flex", gap: 6, flexWrap: "wrap", marginBottom: 6 }}>
             {material.bytesHex && (
-              <button type="button" style={buttonStyle} onClick={() => navigator.clipboard.writeText(material.bytesHex!)}>Copy hex</button>
+              <button type="button" style={buttonStyle} onClick={() => navigator.clipboard.writeText(material.bytesHex!)}>复制十六进制</button>
             )}
             {material.address && material.observationSeq != null && (
               <button
@@ -130,17 +130,17 @@ function MaterialRow({ material, onJumpToSeq, onCreateHook }: {
                 style={buttonStyle}
                 onClick={() => emit("action:view-in-memory", { addr: material.address, seq: material.observationSeq })}
               >
-                View memory
+                查看内存
               </button>
             )}
             {onCreateHook && (
-              <button type="button" style={buttonStyle} onClick={() => onCreateHook(material)}>Hook capture</button>
+              <button type="button" style={buttonStyle} onClick={() => onCreateHook(material)}>生成 Hook 捕获</button>
             )}
-            <span>{material.address || "no address"}</span>
+            <span>{material.address || "无地址"}</span>
             <span>{material.functionName || material.source}</span>
             {material.register && <span>{material.register}</span>}
           </div>
-          {material.asciiPreview && <div style={{ marginBottom: 5 }}>ASCII: <code>{material.asciiPreview}</code></div>}
+          {material.asciiPreview && <div style={{ marginBottom: 5 }}>ASCII：<code>{material.asciiPreview}</code></div>}
           {material.evidence.map((item, index) => <div key={index}>• {item}</div>)}
           {material.assessment.limitations.map((item, index) => (
             <div key={`limit-${index}`} style={{ color: "var(--text-tertiary)" }}>△ {item}</div>
@@ -158,7 +158,7 @@ function FormulaRow({ formula, onJumpToSeq }: { formula: CryptoFormula; onJumpTo
       <span style={{ width: 62, color: "var(--syntax-keyword)" }}>{formula.operation}</span>
       <code style={{ flex: 1, color: "var(--text-primary)", overflowWrap: "anywhere" }}>{formula.expression}</code>
       {formula.callSeq != null && (
-        <button type="button" style={buttonStyle} onClick={() => onJumpToSeq(formula.callSeq!)}>Jump</button>
+        <button type="button" style={buttonStyle} onClick={() => onJumpToSeq(formula.callSeq!)}>跳转</button>
       )}
     </div>
   );
@@ -309,25 +309,25 @@ export default function CryptoMaterialsPanel({ sessionId, onJumpToSeq, onCreateH
         ))}
         {section === "materials" && report && report.materials.length === 0 && (
           <div style={{ padding: 16, color: "var(--text-secondary)", fontSize: 12 }}>
-            No material-bearing crypto calls or semantically verified cipher buffers were observed in this trace.
+            本次 trace 未观察到携带材料的加密调用或通过语义验证的密文缓冲区。
           </div>
         )}
         {section === "formulas" && report?.formulas.map(formula => (
           <FormulaRow key={formula.formulaId} formula={formula} onJumpToSeq={onJumpToSeq} />
         ))}
         {section === "formulas" && report && report.formulas.length === 0 && (
-          <div style={{ padding: 16, color: "var(--text-secondary)", fontSize: 12 }}>No complete crypto formulas reconstructed.</div>
+          <div style={{ padding: 16, color: "var(--text-secondary)", fontSize: 12 }}>尚未重建出完整的加密公式。</div>
         )}
         {section === "compare" && (
           <div style={{ padding: 8, fontSize: 11 }}>
             <div style={{ color: "var(--text-secondary)", marginBottom: 8 }}>
-              Label traces with the same primary input group. A changing digest-input range is reported as a salt/nonce candidate, never as proof by itself.
+              请为相同的主要输入分组标注 trace。变化的摘要输入范围只会报告为 salt/nonce 候选，不能单独视为证明。
             </div>
             <div style={{ display: "grid", gridTemplateColumns: "26px minmax(160px, 1fr) minmax(120px, 220px) minmax(120px, 220px)", gap: 5, alignItems: "center" }}>
               <span />
-              <strong>Open trace</strong>
-              <strong>Case label</strong>
-              <strong>Primary input group</strong>
+              <strong>打开的 trace</strong>
+              <strong>案例标签</strong>
+              <strong>主要输入分组</strong>
               {cases.map((item, index) => (
                 <React.Fragment key={item.sessionId}>
                   <input type="checkbox" checked={item.selected} onChange={event => updateCase(index, { selected: event.target.checked })} />
@@ -338,20 +338,20 @@ export default function CryptoMaterialsPanel({ sessionId, onJumpToSeq, onCreateH
               ))}
             </div>
             <div style={{ display: "flex", gap: 6, marginTop: 9 }}>
-              <button type="button" style={buttonStyle} onClick={refreshSessions}>Refresh sessions</button>
+              <button type="button" style={buttonStyle} onClick={refreshSessions}>刷新会话</button>
               <button
                 type="button"
                 style={{ ...buttonStyle, background: "var(--btn-primary)", color: "#fff", border: "none", opacity: selectedCases.length < 2 || comparing ? 0.6 : 1 }}
                 disabled={selectedCases.length < 2 || comparing}
                 onClick={compare}
               >
-                {comparing ? "Comparing…" : `Compare ${selectedCases.length} traces`}
+                {comparing ? "比较中…" : `比较 ${selectedCases.length} 个 trace`}
               </button>
             </div>
             {comparison && (
               <div style={{ marginTop: 12, borderTop: "1px solid var(--border-color)" }}>
                 <div style={{ padding: "8px 0", color: "var(--text-secondary)" }}>
-                  {comparison.dynamicParameterCandidates.length} dynamic parameter candidates · verification gate remains closed
+                  {comparison.dynamicParameterCandidates.length} 个动态参数候选 · 验证门槛仍未通过
                 </div>
                 {comparison.dynamicParameterCandidates.map((candidate, index) => (
                   <div key={`${candidate.leftLabel}-${candidate.rightLabel}-${index}`} style={{ padding: "7px 8px", border: "1px solid var(--border-color)", borderRadius: 4, marginBottom: 6, background: "var(--bg-secondary)" }}>
@@ -362,8 +362,8 @@ export default function CryptoMaterialsPanel({ sessionId, onJumpToSeq, onCreateH
                       <span>{candidate.leftLabel} ↔ {candidate.rightLabel}</span>
                       <span>offset +{candidate.byteOffset}</span>
                     </div>
-                    <div style={{ marginTop: 5 }}>left: <code>{candidate.leftVariableHex || "∅"}</code></div>
-                    <div>right: <code>{candidate.rightVariableHex || "∅"}</code></div>
+                    <div style={{ marginTop: 5 }}>左值：<code>{candidate.leftVariableHex || "∅"}</code></div>
+                    <div>右值：<code>{candidate.rightVariableHex || "∅"}</code></div>
                     <div style={{ color: "var(--text-tertiary)", marginTop: 4 }}>{candidate.rationale}</div>
                   </div>
                 ))}

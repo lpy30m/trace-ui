@@ -20,6 +20,7 @@ import { explainTaintError } from "../utils/taintError";
 
 const TABS = ["Memory", "Accesses", "Taint State", "Search", "Strings", "Crypto", "Analyses", "Function"] as const;
 type TabName = typeof TABS[number];
+const TAB_LABELS: Record<TabName, string> = { Memory: "内存", Accesses: "访问记录", "Taint State": "污点状态", Search: "搜索", Strings: "字符串", Crypto: "加密分析", Analyses: "分析历史", Function: "函数" };
 
 function DepTreeFromSliceButton({ sessionId }: { sessionId: string | null }) {
   const handleClick = useCallback(() => {
@@ -41,7 +42,7 @@ function DepTreeFromSliceButton({ sessionId }: { sessionId: string | null }) {
           cursor: "pointer",
         }}
       >
-        View as Dependency Tree
+       以依赖树查看
       </button>
     </div>
   );
@@ -258,11 +259,11 @@ export default function TabPanel({
   }, [searchPages.totalCount]);
 
   const searchMatchInfo = isSearching
-    ? "Searching..."
+    ? "搜索中…"
     : searchPages.totalCount === 0
-      ? (searchQuery ? "No results" : "")
+      ? (searchQuery ? "无结果" : "")
       : selectedSearchIdx < 0
-        ? `${searchTotalMatches.toLocaleString()} results`
+        ? `${searchTotalMatches.toLocaleString()} 个结果`
         : `${selectedSearchIdx + 1}/${searchTotalMatches.toLocaleString()}`;
 
   // ── 拖拽浮出逻辑 ──
@@ -287,7 +288,7 @@ export default function TabPanel({
   if (visibleTabs.length === 0) {
     return (
       <div style={{ height: "100%", display: "flex", alignItems: "center", justifyContent: "center", background: "var(--bg-primary)" }}>
-        <span style={{ color: "var(--text-secondary)", fontSize: 12 }}>All panels are floating</span>
+        <span style={{ color: "var(--text-secondary)", fontSize: 12 }}>所有面板都已浮动</span>
       </div>
     );
   }
@@ -301,7 +302,7 @@ export default function TabPanel({
         {visibleTabs.map(tab => (
           <div key={tab} style={{ display: "flex", alignItems: "center", flexShrink: 0 }}>
             <button
-              onMouseDown={(e) => startDrag(TAB_TO_PANEL[tab], tab === "Search" ? `Search${searchBadge}` : tab, e)}
+              onMouseDown={(e) => startDrag(TAB_TO_PANEL[tab], tab === "Search" ? `搜索${searchBadge}` : TAB_LABELS[tab], e)}
               onDoubleClick={() => { if (tab === "Memory") setMemResetKey(k => k + 1); }}
               style={{
                 padding: "6px 14px", fontSize: "var(--font-size-sm)",
@@ -311,7 +312,7 @@ export default function TabPanel({
                 border: "none",
                 borderBottom: active === tab ? "2px solid var(--btn-primary)" : "2px solid transparent",
               }}
-            >{tab === "Search" ? `Search${searchBadge}` : tab}</button>
+            >{tab === "Search" ? `搜索${searchBadge}` : TAB_LABELS[tab]}</button>
           </div>
         ))}
         <div style={{ marginLeft: "auto", paddingRight: 8, flexShrink: 0 }} />
@@ -343,12 +344,12 @@ export default function TabPanel({
         />
         {isSearching || (searchPages.totalCount > 0 && cache.cacheSize === 0) ? (
           <div style={{ flex: 1, display: "flex", alignItems: "center", justifyContent: "center" }}>
-            <span style={{ color: "var(--text-secondary)", fontSize: 12 }}>Searching...</span>
+            <span style={{ color: "var(--text-secondary)", fontSize: 12 }}>搜索中…</span>
           </div>
         ) : searchPages.totalCount === 0 ? (
           <div style={{ flex: 1, display: "flex", alignItems: "center", justifyContent: "center" }}>
             <span style={{ color: "var(--text-secondary)", fontSize: 12 }}>
-              {searchQuery ? `No results found for "${searchQuery}"` : "Enter search query and press Enter"}
+              {searchQuery ? `未找到“${searchQuery}”的结果` : "请输入搜索内容并按 Enter"}
             </span>
           </div>
         ) : (
@@ -397,7 +398,7 @@ export default function TabPanel({
               borderRadius: "50%",
               animation: "spin 1s linear infinite",
             }} />
-            <span style={{ color: "var(--text-secondary)", fontSize: 12 }}>Analyzing...</span>
+            <span style={{ color: "var(--text-secondary)", fontSize: 12 }}>分析中…</span>
           </div>
         ) : taintErrorInfo ? (
           <div style={{ width: "100%", maxWidth: 760, fontSize: 12, lineHeight: 1.6 }}>
@@ -405,7 +406,7 @@ export default function TabPanel({
             <div style={{ color: "var(--text-primary)", marginTop: 4 }}>{taintErrorInfo.suggestion}</div>
             {taintErrorInfo.detail !== taintErrorInfo.title && (
               <details style={{ color: "var(--text-secondary)", marginTop: 8 }}>
-                <summary style={{ cursor: "pointer" }}>Technical details</summary>
+                <summary style={{ cursor: "pointer" }}>技术详情</summary>
                 <div style={{ marginTop: 4, fontFamily: "monospace", overflowWrap: "anywhere" }}>{taintErrorInfo.detail}</div>
               </details>
             )}
@@ -413,18 +414,18 @@ export default function TabPanel({
         ) : sliceActive && sliceInfo ? (
           <div style={{ width: "100%", minWidth: 0, fontSize: 12, lineHeight: 2, color: "var(--text-secondary)" }}>
             <div>
-              <span style={{ color: "var(--text-secondary)", display: "inline-block", width: 52 }}>Source:</span>
+              <span style={{ color: "var(--text-secondary)", display: "inline-block", width: 52 }}>来源：</span>
               <span style={{ color: "var(--text-primary)" }}>{sliceFromSpecs.join(", ")}</span>
             </div>
             <div>
-              <span style={{ color: "var(--text-secondary)", display: "inline-block", width: 52 }}>Result:</span>
+              <span style={{ color: "var(--text-secondary)", display: "inline-block", width: 52 }}>结果：</span>
               <span style={{ color: "var(--text-primary)" }}>
                 {sliceInfo.markedCount.toLocaleString()} / {sliceInfo.totalLines.toLocaleString()} lines ({sliceInfo.percentage.toFixed(1)}%)
               </span>
             </div>
             {sliceDuration != null && (
               <div>
-                <span style={{ color: "var(--text-secondary)", display: "inline-block", width: 52 }}>Time:</span>
+                <span style={{ color: "var(--text-secondary)", display: "inline-block", width: 52 }}>耗时：</span>
                 <span style={{ color: "var(--text-primary)" }}>{(sliceDuration / 1000).toFixed(2)}s</span>
               </div>
             )}

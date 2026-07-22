@@ -24,7 +24,7 @@
 - `main` push 会触发 `.github/workflows/macos.yml`，构建 macOS arm64 与 x64 DMG artifacts。
 
 > 用途：让 AI（Claude / Codex）快速理解当前项目状态再继续干活，也给作者自己当记忆锚点。
-> 最近更新：2026-07-22。历史设计见 `AI_ANALYSIS_ROADMAP.md` / `OPTIMIZATION_ROADMAP.md`，实施细节见 `CRYPTO_FUNCTIONS_IMPL.md`，macOS 构建见 `MACOS_SOURCE_BUILD.md`。
+> 最近更新：2026-07-22。当前代码变更与交接先读 `CURRENT_CHANGELOG.md`；历史设计见 `AI_ANALYSIS_ROADMAP.md` / `OPTIMIZATION_ROADMAP.md`，实施细节见 `CRYPTO_FUNCTIONS_IMPL.md`，macOS 构建见 `MACOS_SOURCE_BUILD.md`。
 
 ## 1. 这是什么
 
@@ -112,6 +112,7 @@ macOS：见 `MACOS_SOURCE_BUILD.md`（`npm ci --prefix src-web` + `cargo tauri b
 | 文档 | 内容 |
 |------|------|
 | 本文件 | 项目当前状态、最近改动、构建、约定（先读） |
+| `CURRENT_CHANGELOG.md` | 当前实现、最近提交、代码位置、工作流、安全边界与界面中文化记录（交接首选） |
 | `README.md` | 面向用户的功能总览 |
 | `AI_ANALYSIS_ROADMAP.md` | AI 分析能力路线与决策记录 |
 | `OPTIMIZATION_ROADMAP.md` | P0-P3 优化任务、阶段五（密码识别）细节 |

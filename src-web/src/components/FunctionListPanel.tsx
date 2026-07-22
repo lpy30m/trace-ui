@@ -183,11 +183,11 @@ export default function FunctionListPanel({ sessionId, isPhase2Ready, onJumpToSe
   const filteredCalls = useMemo(() => filtered.reduce((sum, f) => sum + f.occurrences.length, 0), [filtered]);
 
   if (!sessionId) {
-    return <div style={{ padding: 12, color: "var(--text-secondary)" }}>No file loaded</div>;
+    return <div style={{ padding: 12, color: "var(--text-secondary)" }}>尚未加载文件</div>;
   }
 
   if (loading) {
-    return <div style={{ padding: 12, color: "var(--text-secondary)" }}>Loading...</div>;
+    return <div style={{ padding: 12, color: "var(--text-secondary)" }}>加载中…</div>;
   }
 
   if (error) {
@@ -195,7 +195,7 @@ export default function FunctionListPanel({ sessionId, isPhase2Ready, onJumpToSe
   }
 
   if (!data || data.functions.length === 0) {
-    return <div style={{ padding: 12, color: "var(--text-secondary)" }}>No function calls found</div>;
+    return <div style={{ padding: 12, color: "var(--text-secondary)" }}>未找到函数调用</div>;
   }
 
   return (
@@ -205,7 +205,7 @@ export default function FunctionListPanel({ sessionId, isPhase2Ready, onJumpToSe
         <div ref={searchWrapperRef} style={{ position: "relative" }}>
           <input
             type="text"
-            placeholder="Search functions..."
+            placeholder="搜索函数…"
             value={searchInput}
             onChange={e => setSearchInput(e.target.value)}
             onFocus={() => setShowHistory(true)}
@@ -310,7 +310,7 @@ export default function FunctionListPanel({ sessionId, isPhase2Ready, onJumpToSe
         display: "flex", alignItems: "center", justifyContent: "space-between",
       }}>
         <span>{filtered.length} functions, {filteredCalls} calls</span>
-        <label title="Auto-follow: automatically locate the corresponding function call when the selected line changes in traceTable" style={{ display: "flex", alignItems: "center", gap: 3, cursor: "pointer", whiteSpace: "nowrap" }}>
+        <label title="自动跟随：选中行在 traceTable 中变化时自动定位对应函数调用" style={{ display: "flex", alignItems: "center", gap: 3, cursor: "pointer", whiteSpace: "nowrap" }}>
           <input
             type="checkbox"
             checked={autoFollow}
@@ -422,7 +422,7 @@ export default function FunctionListPanel({ sessionId, isPhase2Ready, onJumpToSe
       {ctxMenu && (
         <ContextMenu x={ctxMenu.x} y={ctxMenu.y} onClose={() => setCtxMenu(null)}>
           <ContextMenuItem
-            label="Copy Function Name"
+            label="复制函数名"
             onClick={() => { navigator.clipboard.writeText(ctxMenu.funcName); setCtxMenu(null); }}
           />
         </ContextMenu>

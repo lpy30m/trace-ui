@@ -208,7 +208,7 @@ export default function GotoOverlay({ onJumpToSeq, onClose, sessionId, totalLine
             <input
               ref={inputRef}
               type="text"
-              placeholder="Line number (e.g. 12345) or address (e.g. 0x406bd430)"
+              placeholder="行号（如 12345）或地址（如 0x406bd430）"
               value={input}
               onChange={(e) => setInput(e.target.value)}
               onFocus={() => setShowGotoHistory(true)}
@@ -287,7 +287,7 @@ export default function GotoOverlay({ onJumpToSeq, onClose, sessionId, totalLine
                 onMouseEnter={e => { e.currentTarget.style.background = "var(--bg-selected)"; e.currentTarget.style.color = "var(--text-primary)"; }}
                 onMouseLeave={e => { e.currentTarget.style.background = "transparent"; e.currentTarget.style.color = "var(--text-secondary)"; }}
                 onClick={clearAllGotoHistory}
-              >Clear All</div>
+              >清空全部</div>
             </div>
           )}
         </div>
@@ -297,12 +297,12 @@ export default function GotoOverlay({ onJumpToSeq, onClose, sessionId, totalLine
           {isLineNum && trimmed.length > 0 ? (
             <div style={{ padding: "8px 12px", color: lineValid ? "var(--text-primary)" : "var(--reg-changed)" }}>
               {lineValid
-                ? <span>Press Enter to go to line <b>{parsedLine.toLocaleString()}</b></span>
-                : <span>Line number out of range (1 ~ {totalLines.toLocaleString()})</span>
+                ? <span>按 Enter 跳转到第 <b>{parsedLine.toLocaleString()}</b> 行</span>
+                : <span>行号超出范围（1 ~ {totalLines.toLocaleString()}）</span>
               }
             </div>
           ) : searching ? (
-            <div style={{ padding: "8px 12px", color: "var(--text-secondary)" }}>Searching...</div>
+            <div style={{ padding: "8px 12px", color: "var(--text-secondary)" }}>搜索中…</div>
           ) : matches.length > 0 ? (
             <div ref={listRef}>
               {matches.map((m, i) => (
@@ -326,7 +326,7 @@ export default function GotoOverlay({ onJumpToSeq, onClose, sessionId, totalLine
               ))}
             </div>
           ) : input.trim() && isHexAddress(input.trim()) ? (
-            <div style={{ padding: "8px 12px", color: "var(--text-secondary)" }}>No matches found</div>
+            <div style={{ padding: "8px 12px", color: "var(--text-secondary)" }}>未找到匹配项</div>
           ) : null}
         </div>
       </div>

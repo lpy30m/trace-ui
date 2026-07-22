@@ -373,7 +373,7 @@ function FloatingSearchContent({
       />
       {isSearching || (searchPages.totalCount > 0 && cache.cacheSize === 0) ? (
         <div style={{ flex: 1, display: "flex", alignItems: "center", justifyContent: "center" }}>
-          <span style={{ color: "var(--text-secondary)", fontSize: 12 }}>Searching...</span>
+          <span style={{ color: "var(--text-secondary)", fontSize: 12 }}>搜索中…</span>
         </div>
       ) : searchPages.totalCount === 0 ? (
         <div style={{ flex: 1, display: "flex", alignItems: "center", justifyContent: "center" }}>
@@ -447,7 +447,7 @@ function CallInfoContent() {
   if (!info) {
     return (
       <div style={{ flex: 1, display: "flex", alignItems: "center", justifyContent: "center" }}>
-        <span style={{ color: "var(--text-secondary)", fontSize: 12 }}>No data</span>
+        <span style={{ color: "var(--text-secondary)", fontSize: 12 }}>暂无数据</span>
       </div>
     );
   }

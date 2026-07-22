@@ -69,7 +69,7 @@ export default function McpIndicator({ mcpStatus, onStart, onStop, configuredPor
         onMouseEnter={(e) => { e.currentTarget.style.color = "var(--text-primary)"; }}
         onMouseLeave={(e) => { e.currentTarget.style.color = "var(--text-secondary)"; }}
       >
-        <span>MCP</span>
+        <span>MCP 服务</span>
         {mcpStatus.status === "running" && mcpStatus.port && (
           <span>:{mcpStatus.port}</span>
         )}
@@ -167,7 +167,7 @@ export default function McpIndicator({ mcpStatus, onStart, onStop, configuredPor
                   border: "none", borderRadius: 4, cursor: "pointer",
                 }}
               >
-                {copied ? "Copied!" : "Copy URL"}
+                {copied ? "已复制" : "复制 URL"}
               </button>
             )}
 

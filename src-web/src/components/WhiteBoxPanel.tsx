@@ -176,12 +176,12 @@ export default function WhiteBoxPanel({ sessionId, onJumpToSeq }: Props) {
             background: "var(--btn-primary)", color: "#fff", border: "none", borderRadius: 3,
             opacity: !sessionId || loading ? 0.6 : 1,
           }}
-        >{loading ? "Analyzing..." : "Analyze Software/Table Crypto"}</button>
+        >{loading ? "分析中…" : "分析软件/查表型加密"}</button>
         <input
           value={staticBinaryPath}
           onChange={(event) => setStaticBinaryPath(event.target.value)}
-          placeholder="Optional local ELF .so path"
-          aria-label="Optional static ELF shared object path"
+          placeholder="可选：本地 ELF .so 路径"
+          aria-label="可选的静态 ELF 共享对象路径"
           style={{
             height: 22, minWidth: 230, flex: "0 1 360px", padding: "0 7px", fontSize: 11,
             color: "var(--text-secondary)", background: "var(--input-bg)",
@@ -189,10 +189,10 @@ export default function WhiteBoxPanel({ sessionId, onJumpToSeq }: Props) {
           }}
         />
         <button type="button" onClick={chooseStaticBinary} disabled={loading} style={{ height: 24, fontSize: 11 }}>
-          Choose .so
+          选择 .so
         </button>
         <button type="button" onClick={() => void toggleCompare()} disabled={loading || compareLoading} style={{ height: 24, fontSize: 11 }}>
-          {compareOpen ? "Hide trace matrix" : "Compare traces"}
+          {compareOpen ? "隐藏 trace 矩阵" : "比较 trace"}
         </button>
         {report && (
           <span style={{ color: "var(--text-tertiary)", fontSize: 11 }}>
@@ -204,22 +204,22 @@ export default function WhiteBoxPanel({ sessionId, onJumpToSeq }: Props) {
       {compareOpen && (
         <div style={{ padding: 8, borderBottom: "1px solid var(--border-color)", flexShrink: 0, maxHeight: 250, overflow: "auto" }}>
           <div style={{ fontSize: 11, color: "var(--text-secondary)", marginBottom: 6 }}>
-            Label the controlled test matrix explicitly. Strong key-dependent evidence needs at least two inputs for each of at least two keys, with the same SO build and coverage.
+            请明确标注受控测试矩阵。强密钥依赖证据至少需要两个密钥、每个密钥至少两个输入，并保持 SO 构建版本和覆盖范围一致。
           </div>
-          {compareCases.length === 0 && <div style={{ fontSize: 11, color: "var(--text-tertiary)" }}>No open indexed sessions.</div>}
+          {compareCases.length === 0 && <div style={{ fontSize: 11, color: "var(--text-tertiary)" }}>没有已打开且已索引的会话。</div>}
           {compareCases.map((item, index) => (
             <div key={item.sessionId} style={{ display: "grid", gridTemplateColumns: "24px minmax(150px, 1fr) 110px 110px", gap: 6, marginBottom: 4, alignItems: "center" }}>
               <input type="checkbox" checked={item.included} onChange={event => updateCompareCase(index, { included: event.target.checked })} />
               <input value={item.label} onChange={event => updateCompareCase(index, { label: event.target.value })} title={item.sessionId} style={{ minWidth: 0 }} />
-              <input value={item.keyGroup} onChange={event => updateCompareCase(index, { keyGroup: event.target.value })} placeholder="key group" />
-              <input value={item.inputGroup} onChange={event => updateCompareCase(index, { inputGroup: event.target.value })} placeholder="input group" />
+              <input value={item.keyGroup} onChange={event => updateCompareCase(index, { keyGroup: event.target.value })} placeholder="密钥分组" />
+              <input value={item.inputGroup} onChange={event => updateCompareCase(index, { inputGroup: event.target.value })} placeholder="输入分组" />
             </div>
           ))}
           <div style={{ display: "flex", alignItems: "center", gap: 8, marginTop: 6 }}>
             <button type="button" disabled={compareLoading || compareCases.length < 2} onClick={() => void compareTraces()}>
-              {compareLoading ? "Comparing..." : "Classify table dependence"}
+              {compareLoading ? "比较中…" : "判断查表依赖"}
             </button>
-            <span style={{ fontSize: 10, color: "var(--text-tertiary)" }}>Caller labels are assumptions; classification never upgrades the semantic verification gate.</span>
+            <span style={{ fontSize: 10, color: "var(--text-tertiary)" }}>调用方标签只是前提假设；分类不会自动通过语义验证门槛。</span>
           </div>
           {compareError && <div style={{ color: "#e5484d", fontSize: 11, marginTop: 5 }}>{compareError}</div>}
           {compareReport && (
@@ -273,7 +273,7 @@ export default function WhiteBoxPanel({ sessionId, onJumpToSeq }: Props) {
             </div>
 
             {report.softwareCrypto && (
-              <Section title="Verified software crypto">
+              <Section title="已验证的软件加密">
                 <div style={{ fontSize: 13, color: "var(--syntax-keyword)", fontWeight: 600 }}>
                   {report.softwareCrypto.algorithm} · {report.softwareCrypto.direction} · {report.softwareCrypto.mode} · {report.softwareCrypto.verification}
                 </div>
@@ -293,31 +293,31 @@ export default function WhiteBoxPanel({ sessionId, onJumpToSeq }: Props) {
                   {report.softwareCrypto.stateLayoutEvidence}
                 </div>
                 <div style={{ display: "flex", gap: 8, marginTop: 6, fontSize: 11, alignItems: "center" }}>
-                  <button type="button" onClick={() => onJumpToSeq(report.softwareCrypto!.keyObservationSeq)}>Jump to key</button>
-                  <button type="button" onClick={() => onJumpToSeq(report.softwareCrypto!.inputObservationSeq)}>Jump to input</button>
+                  <button type="button" onClick={() => onJumpToSeq(report.softwareCrypto!.keyObservationSeq)}>跳转到密钥</button>
+                  <button type="button" onClick={() => onJumpToSeq(report.softwareCrypto!.inputObservationSeq)}>跳转到输入</button>
                   {report.softwareCrypto.ivObservationSeq != null && (
-                    <button type="button" onClick={() => onJumpToSeq(report.softwareCrypto!.ivObservationSeq!)}>Jump to IV</button>
+                    <button type="button" onClick={() => onJumpToSeq(report.softwareCrypto!.ivObservationSeq!)}>跳转到 IV</button>
                   )}
                   {report.softwareCrypto.authTagObservationSeq != null && (
-                    <button type="button" onClick={() => onJumpToSeq(report.softwareCrypto!.authTagObservationSeq!)}>Jump to tag</button>
+                    <button type="button" onClick={() => onJumpToSeq(report.softwareCrypto!.authTagObservationSeq!)}>跳转到认证标签</button>
                   )}
                   {report.softwareCrypto.aadObservationSeq != null && (
-                    <button type="button" onClick={() => onJumpToSeq(report.softwareCrypto!.aadObservationSeq!)}>Jump to AAD</button>
+                    <button type="button" onClick={() => onJumpToSeq(report.softwareCrypto!.aadObservationSeq!)}>跳转到 AAD</button>
                   )}
-                  <button type="button" onClick={() => onJumpToSeq(report.softwareCrypto!.outputFirstSeq)}>Jump to output</button>
+                  <button type="button" onClick={() => onJumpToSeq(report.softwareCrypto!.outputFirstSeq)}>跳转到输出</button>
                   <span style={{ color: "var(--text-tertiary)" }}>
                     output lines {report.softwareCrypto.outputFirstSeq + 1}–{report.softwareCrypto.outputLastSeq + 1}
                   </span>
                 </div>
-                <details style={{ marginTop: 6 }}><summary style={{ cursor: "pointer", fontSize: 11 }}>Python reproducer</summary>
+                <details style={{ marginTop: 6 }}><summary style={{ cursor: "pointer", fontSize: 11 }}>Python 复现脚本</summary>
                   <pre style={{ whiteSpace: "pre-wrap", fontSize: 10, color: "var(--text-tertiary)" }}>{report.softwareCrypto.reproducer}</pre>
                 </details>
               </Section>
             )}
 
-            <Section title="Neutral I/O candidates">
-              {report.inputCandidates.map((block, i) => <IoRow key={`in-${i}`} label={`Input candidate ${i + 1}`} block={block} onJumpToSeq={onJumpToSeq} />)}
-              {report.outputCandidates.map((block, i) => <IoRow key={`out-${i}`} label={`Output candidate ${i + 1}`} block={block} onJumpToSeq={onJumpToSeq} />)}
+            <Section title="中性 I/O 候选">
+              {report.inputCandidates.map((block, i) => <IoRow key={`in-${i}`} label={`输入候选 ${i + 1}`} block={block} onJumpToSeq={onJumpToSeq} />)}
+              {report.outputCandidates.map((block, i) => <IoRow key={`out-${i}`} label={`输出候选 ${i + 1}`} block={block} onJumpToSeq={onJumpToSeq} />)}
             </Section>
 
             <Section title={`Lookup tables (${report.tables.length})`}>
@@ -327,7 +327,7 @@ export default function WhiteBoxPanel({ sessionId, onJumpToSeq }: Props) {
             </Section>
 
             {report.tableFingerprints.length > 0 && (
-              <Section title="Normalized table fingerprints">
+              <Section title="规范化查表指纹">
                 {report.tableFingerprints.map((fingerprint, i) => (
                   <div key={`${fingerprint.scope}-${i}`} style={{ marginBottom: 8, fontSize: 11 }}>
                     <div style={{ color: fingerprint.algorithmHint ? "var(--syntax-keyword)" : "var(--text-secondary)" }}>
@@ -343,7 +343,7 @@ export default function WhiteBoxPanel({ sessionId, onJumpToSeq }: Props) {
             )}
 
             {report.encodingBoundaries.length > 0 && (
-              <Section title="Dynamic encoding boundaries (candidate)">
+              <Section title="动态编码边界（候选）">
                 {report.encodingBoundaries.map((boundary, i) => (
                   <div key={`${boundary.direction}-${boundary.boundarySite}-${i}`} style={{ marginBottom: 9, fontSize: 11 }}>
                     <div style={{ color: "var(--syntax-keyword)", fontWeight: 600 }}>
@@ -357,7 +357,7 @@ export default function WhiteBoxPanel({ sessionId, onJumpToSeq }: Props) {
                     </div>
                     <div style={{ color: "var(--text-tertiary)", marginTop: 2 }}>{boundary.rationale}</div>
                     <button type="button" onClick={() => onJumpToSeq(boundary.firstSeq)} style={{ marginTop: 4 }}>
-                      Jump to boundary
+                      跳转到边界
                     </button>
                   </div>
                 ))}
@@ -368,7 +368,7 @@ export default function WhiteBoxPanel({ sessionId, onJumpToSeq }: Props) {
             )}
 
             {report.staticBinary && (
-              <Section title="Static ELF ↔ dynamic table join">
+              <Section title="静态 ELF ↔ 动态查表关联">
                 <div style={{ fontSize: 11, color: "var(--text-secondary)", marginBottom: 7 }}>
                   {report.staticBinary.format} · {report.staticBinary.architecture} (e_machine {report.staticBinary.elfMachine}) · {report.staticBinary.loadSegments} PT_LOAD segments · {report.staticBinary.binaryPath}
                 </div>
@@ -405,7 +405,7 @@ export default function WhiteBoxPanel({ sessionId, onJumpToSeq }: Props) {
             )}
 
             {report.rounds && (
-              <Section title="Lookup repetition heuristic">
+              <Section title="查表重复度启发式">
                 <div style={{ fontSize: 12, color: "var(--text-secondary)" }}>
                   ≈ {report.rounds.roundCount} rounds
                 </div>
@@ -415,7 +415,7 @@ export default function WhiteBoxPanel({ sessionId, onJumpToSeq }: Props) {
               </Section>
             )}
 
-            <Section title="Evidence">
+            <Section title="证据">
               {report.assessment.factors.filter(f => f.observed).map(f => (
                 <div key={f.code} style={{ display: "flex", gap: 8, fontSize: 12, marginBottom: 2 }}>
                   <span style={{ width: 34, color: f.awardedPoints >= 0 ? "#3fb950" : "#e5484d" }}>
@@ -426,13 +426,13 @@ export default function WhiteBoxPanel({ sessionId, onJumpToSeq }: Props) {
               ))}
             </Section>
 
-            <Section title="Evidence-driven next steps">
+            <Section title="基于证据的下一步">
               {report.nextSteps.map((s, i) => (
                 <div key={i} style={{ fontSize: 11, color: "var(--text-tertiary)", marginBottom: 3, lineHeight: 1.5 }}>• {s}</div>
               ))}
             </Section>
 
-            <Section title="Limitations">
+            <Section title="限制说明">
               {report.assessment.limitations.map((s, i) => (
                 <div key={i} style={{ fontSize: 11, color: "var(--text-tertiary)", marginBottom: 3, lineHeight: 1.5 }}>• {s}</div>
               ))}

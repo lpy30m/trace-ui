@@ -87,7 +87,7 @@ export default function FloatingWindowFrame({ title, children, onClose, titleBar
         {titleBarExtra}
         <span
           onClick={togglePin}
-          title={isPinned ? "Unpin (disable always on top)" : "Pin (always on top)"}
+          title={isPinned ? "取消置顶" : "窗口置顶"}
           style={{
             cursor: "pointer",
             fontSize: 14,
@@ -105,7 +105,7 @@ export default function FloatingWindowFrame({ title, children, onClose, titleBar
       {ctxMenu && (
         <ContextMenu x={ctxMenu.x} y={ctxMenu.y} onClose={() => setCtxMenu(null)} minWidth={160}>
           <ContextMenuItem
-            label="Always on Top"
+            label="始终置顶"
             checked={isPinned}
             onClick={() => { togglePin(); setCtxMenu(null); }}
           />

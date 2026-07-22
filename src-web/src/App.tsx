@@ -53,12 +53,12 @@ function clampToScreen(w: number, h: number): { width: number; height: number } 
 }
 
 const PANEL_WINDOW_TITLES: Record<string, string> = {
-  memory: "Memory - Trace UI",
-  accesses: "Accesses - Trace UI",
-  "taint-state": "Taint State - Trace UI",
-  search: "Search - Trace UI",
-  strings: "Strings - Trace UI",
-  crypto: "Crypto - Trace UI",
+  memory: "内存 - Trace UI",
+  accesses: "访问记录 - Trace UI",
+  "taint-state": "污点状态 - Trace UI",
+  search: "搜索 - Trace UI",
+  strings: "字符串 - Trace UI",
+  crypto: "加密分析 - Trace UI",
 };
 
 function App() {
@@ -591,7 +591,7 @@ function App() {
       }
       const count = await searchTrace(finalQuery, options?.caseSensitive ?? false, finalUseRegex, options?.fuzzyMatch ?? false, query);
       if (query.trim() && count === 0) {
-        showToast(`No results found for "${query}"`, { type: "info" });
+        showToast(`未找到“${query}”的结果`, { type: "info" });
       }
     }
   }, [searchTrace, floatedPanels, showToast]);
@@ -602,7 +602,7 @@ function App() {
     try {
       await invoke("scan_strings", { sessionId: activeSessionId });
       setHasStringIndexMap(prev => new Map(prev).set(activeSessionId, true));
-      showToast("Scan Strings completed", { type: "success" });
+      showToast("字符串扫描完成", { type: "success" });
     } catch (e) {
       console.warn("scan_strings:", e);
     } finally {
@@ -617,8 +617,8 @@ function App() {
       const warningCount = result?.warnings.length ?? 0;
       showToast(
         warningCount > 0
-          ? `Taint analysis completed with ${warningCount} warning${warningCount === 1 ? "" : "s"}`
-          : "Taint analysis completed",
+          ? `污点分析完成，存在 ${warningCount} 条警告`
+          : "污点分析完成",
         { type: warningCount > 0 ? "info" : "success" },
       );
       handleJumpToSeq(match.seq);
@@ -635,8 +635,8 @@ function App() {
       const warningCount = result?.warnings.length ?? 0;
       showToast(
         warningCount > 0
-          ? `String trace completed with ${warningCount} warning${warningCount === 1 ? "" : "s"}`
-          : "String creation traced",
+          ? `字符串追踪完成，存在 ${warningCount} 条警告`
+          : "字符串创建过程追踪完成",
         { type: warningCount > 0 ? "info" : "success" },
       );
       handleJumpToSeq(record.seq);
@@ -663,8 +663,8 @@ function App() {
       const warningCount = result?.warnings.length ?? 0;
       showToast(
         warningCount > 0
-          ? `Memory trace completed with ${warningCount} warning${warningCount === 1 ? "" : "s"}`
-          : "Memory value traced",
+          ? `内存追踪完成，存在 ${warningCount} 条警告`
+          : "内存值追踪完成",
         { type: warningCount > 0 ? "info" : "success" },
       );
       handleJumpToSeq(request.seq);
@@ -708,7 +708,7 @@ function App() {
     const cached = cryptoCache.current.get(activeSessionId);
     if (cached) {
       setCryptoResults(cached);
-      showToast(`Found ${cached.matches.length} crypto constants (${cached.algorithms_found.length} algorithms) (cached)`, { type: "success" });
+      showToast(`找到 ${cached.matches.length} 个加密常量（${cached.algorithms_found.length} 种算法，来自缓存）`, { type: "success" });
       return;
     }
     setCryptoScanningSessionId(activeSessionId);
@@ -717,7 +717,7 @@ function App() {
       const result = await invoke<CryptoScanResult>("scan_crypto", { sessionId: activeSessionId });
       setCryptoResults(result);
       cryptoCache.current.set(activeSessionId, result);
-      showToast(`Found ${result.matches.length} crypto constants (${result.algorithms_found.length} algorithms)`, { type: "success" });
+      showToast(`找到 ${result.matches.length} 个加密常量（${result.algorithms_found.length} 种算法）`, { type: "success" });
     } catch (e) {
       console.warn("scan_crypto:", e);
     } finally {
@@ -1299,7 +1299,7 @@ function App() {
                 borderRadius: "50%",
                 animation: "spin 1s linear infinite",
               }} />
-              <span>Analyzing...</span>
+              <span>分析中…</span>
             </>
           )}
         </span>
@@ -1323,7 +1323,7 @@ function App() {
             setTaintDialogSeq(null);
             try {
               await slice.runSlice(specs, startSeq, endSeq, sourceSeq, dataOnly);
-              showToast("Taint analysis completed", { type: "success" });
+              showToast("污点分析完成", { type: "success" });
               // 跳转到污点源行
               scrollAlignRef.current = "end";
               setScrollTrigger(c => c + 1);
@@ -1427,7 +1427,7 @@ function App() {
                 {pendingTaintRestore.endSeq != null && (
                   <div>End: {pendingTaintRestore.endSeq}</div>
                 )}
-                {pendingTaintRestore.dataOnly && <div>Data dependencies only</div>}
+                {pendingTaintRestore.dataOnly && <div>仅数据依赖</div>}
               </div>
             </>
           }

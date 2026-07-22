@@ -191,7 +191,7 @@ export default function SearchBar({
           <input
             ref={ref}
             type="text"
-            placeholder="Search text or /regex/"
+            placeholder="搜索文本或 /正则表达式/"
             value={query}
             onChange={(e) => onQueryChange(e.target.value)}
             onKeyDown={handleKeyDown}
@@ -208,14 +208,14 @@ export default function SearchBar({
             <ToggleButton
               active={options.caseSensitive}
               onClick={() => toggle("caseSensitive")}
-              title="Match Case"
+              title="区分大小写"
             >
               <span style={{ fontSize: 13, fontFamily: "serif", fontWeight: 600 }}>Aa</span>
             </ToggleButton>
             <ToggleButton
               active={options.wholeWord}
               onClick={() => toggle("wholeWord")}
-              title="Match Whole Word"
+              title="匹配完整单词"
             >
               <span style={{
                 fontSize: 10, fontWeight: 700,
@@ -226,14 +226,14 @@ export default function SearchBar({
             <ToggleButton
               active={options.useRegex}
               onClick={() => toggle("useRegex")}
-              title="Use Regular Expression"
+              title="使用正则表达式"
             >
               <span style={{ fontSize: 12 }}>.*</span>
             </ToggleButton>
             <ToggleButton
               active={options.fuzzyMatch}
               onClick={() => toggle("fuzzyMatch")}
-              title="Fuzzy Match (split by spaces)"
+              title="模糊匹配（按空格拆分）"
             >
               <span style={{ fontSize: 11, fontWeight: 600, letterSpacing: -0.5 }}>F</span>
             </ToggleButton>
@@ -280,7 +280,7 @@ export default function SearchBar({
               onMouseEnter={e => { e.currentTarget.style.background = "var(--bg-selected)"; e.currentTarget.style.color = "var(--text-primary)"; }}
               onMouseLeave={e => { e.currentTarget.style.background = "transparent"; e.currentTarget.style.color = "var(--text-secondary)"; }}
               onClick={clearAllHistory}
-            >Clear All</div>
+            >清空全部</div>
           </div>
         )}
       </div>
@@ -297,17 +297,17 @@ export default function SearchBar({
 
       {/* 上下导航 + 选项 */}
       <div style={{ display: "flex", gap: 1, alignItems: "center", flexShrink: 0 }}>
-        <IconButton onClick={onPrevMatch} title="Previous Match (Shift+Enter)">
+        <IconButton onClick={onPrevMatch} title="上一个匹配（Shift+Enter）">
           <svg width="14" height="14" viewBox="0 0 16 16" fill="currentColor">
             <path d="M8 3.5L3 8.5h3v4h4v-4h3L8 3.5z" />
           </svg>
         </IconButton>
-        <IconButton onClick={onNextMatch} title="Next Match (Enter)">
+        <IconButton onClick={onNextMatch} title="下一个匹配（Enter）">
           <svg width="14" height="14" viewBox="0 0 16 16" fill="currentColor">
             <path d="M8 12.5L13 7.5h-3v-4H6v4H3L8 12.5z" />
           </svg>
         </IconButton>
-        <IconButton onClick={() => {}} title="Search Options" disabled>
+        <IconButton onClick={() => {}} title="搜索选项" disabled>
           <svg width="14" height="14" viewBox="0 0 16 16" fill="currentColor">
             <path d="M1 3h14v1H1zm2 3h10v1H3zm2 3h6v1H5zm2 3h2v1H7z" />
           </svg>

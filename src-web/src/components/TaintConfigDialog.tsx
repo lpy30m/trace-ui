@@ -146,9 +146,9 @@ export default function TaintConfigDialog({
 
   const sourceSummaries = useMemo(() => sources.map((source) => {
     if (source.type === "register") {
-      return `Register ${source.register.toUpperCase()} at line ${(seq + 1).toLocaleString()}`;
+      return `第 ${(seq + 1).toLocaleString()} 行的寄存器 ${source.register.toUpperCase()}`;
     }
-    return `${formatMemoryRange(source.memAddr, source.memSize)} at line ${(seq + 1).toLocaleString()}`;
+    return `第 ${(seq + 1).toLocaleString()} 行的内存 ${formatMemoryRange(source.memAddr, source.memSize)}`;
   }), [seq, sources]);
 
   const addSource = useCallback(() => {
@@ -185,12 +185,12 @@ export default function TaintConfigDialog({
       } else {
         const addr = src.memAddr.trim();
         if (!addr) {
-          setConfigError("Enter a memory address for every memory source.");
+          setConfigError("每个内存来源都必须填写地址。");
           return;
         }
         const sizeNum = Number.parseInt(src.memSize, 10);
         if (!Number.isInteger(sizeNum) || sizeNum < 1 || sizeNum > 4096) {
-          setConfigError("Memory size must be an integer from 1 to 4096 bytes.");
+          setConfigError("内存大小必须是 1–4096 字节的整数。");
           return;
         }
         specs.push(`mem:${addr}:${sizeNum}@${sourceLineNum}`);
@@ -198,7 +198,7 @@ export default function TaintConfigDialog({
     }
 
     if (specs.length === 0) {
-      setConfigError("Add at least one analysis target.");
+      setConfigError("请至少添加一个分析目标。");
       return;
     }
 
@@ -214,15 +214,15 @@ export default function TaintConfigDialog({
       const parsedStartSeq = startSeq.trim() ? Number.parseInt(startSeq.trim(), 10) : undefined;
       const parsedEndSeq = endSeq.trim() ? Number.parseInt(endSeq.trim(), 10) : undefined;
       if (parsedStartSeq !== undefined && (!Number.isInteger(parsedStartSeq) || parsedStartSeq < 1 || parsedStartSeq > totalLines)) {
-        setConfigError(`Start line must be between 1 and ${totalLines.toLocaleString()}.`);
+        setConfigError(`起始行必须在 1–${totalLines.toLocaleString()} 之间。`);
         return;
       }
       if (parsedEndSeq !== undefined && (!Number.isInteger(parsedEndSeq) || parsedEndSeq < 1 || parsedEndSeq > totalLines)) {
-        setConfigError(`End line must be between 1 and ${totalLines.toLocaleString()}.`);
+        setConfigError(`结束行必须在 1–${totalLines.toLocaleString()} 之间。`);
         return;
       }
       if (parsedStartSeq !== undefined && parsedEndSeq !== undefined && parsedStartSeq > parsedEndSeq) {
-        setConfigError("Start line cannot be after the end line.");
+        setConfigError("起始行不能晚于结束行。");
         return;
       }
       validStartSeq = parsedStartSeq !== undefined ? parsedStartSeq - 1 : undefined;
@@ -273,7 +273,7 @@ export default function TaintConfigDialog({
         {/* ── Title + Close ── */}
         <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 16 }}>
           <div style={{ fontSize: 16, fontWeight: 700, color: "var(--text-primary)" }}>
-            Backward Taint Analysis
+            向后污点分析
           </div>
           <button
             onClick={onClose}
@@ -303,7 +303,7 @@ export default function TaintConfigDialog({
                 cursor: "pointer", fontSize: 12, fontFamily: "inherit", textTransform: "capitalize",
               }}
             >
-              {item}
+              {item === "simple" ? "快速模式" : "高级模式"}
             </button>
           ))}
         </div>
@@ -311,7 +311,7 @@ export default function TaintConfigDialog({
         {mode === "simple" ? (
           <>
             <div style={{ ...cardStyle, marginBottom: 12 }}>
-              <label style={labelStyle}>Target</label>
+              <label style={labelStyle}>分析目标</label>
               <div style={{ display: "flex", flexDirection: "column", gap: 5, color: "var(--text-primary)", fontSize: 13 }}>
                 {sourceSummaries.map((summary, index) => <div key={`${summary}-${index}`}>{summary}</div>)}
               </div>
@@ -320,24 +320,24 @@ export default function TaintConfigDialog({
                 onClick={() => setMode("advanced")}
                 style={{ marginTop: 8, padding: 0, border: "none", background: "transparent", color: "var(--text-address)", cursor: "pointer", fontSize: 11, fontFamily: "inherit" }}
               >
-                Edit target
+                编辑目标
               </button>
             </div>
 
             <div style={{ ...cardStyle, marginBottom: 12 }}>
-              <label style={labelStyle}>History range</label>
+              <label style={labelStyle}>历史范围</label>
               <select
                 value={simpleRange}
                 onChange={(event) => setSimpleRange(event.target.value as "full" | "recent")}
                 style={{ ...fieldSelectStyle, fontSize: 13 }}
               >
-                <option value="full">Trace start to line {(seq + 1).toLocaleString()}</option>
-                <option value="recent">Last {Math.min(100_000, seq + 1).toLocaleString()} lines</option>
+                <option value="full">从 trace 开始到第 {(seq + 1).toLocaleString()} 行</option>
+                <option value="recent">最近 {Math.min(100_000, seq + 1).toLocaleString()} 行</option>
               </select>
             </div>
 
             <div style={{ ...cardStyle, marginBottom: 22 }}>
-              <label style={labelStyle}>Result scope</label>
+              <label style={labelStyle}>结果范围</label>
               <div style={{ display: "flex", border: "1px solid var(--border-color)", borderRadius: 4, overflow: "hidden" }}>
                 {(["focused", "broad"] as const).map((scope) => (
                   <button
@@ -351,9 +351,9 @@ export default function TaintConfigDialog({
                       color: simpleScope === scope ? "var(--text-primary)" : "var(--text-secondary)",
                       cursor: "pointer", fontFamily: "inherit", fontSize: 12, textTransform: "capitalize",
                     }}
-                    title={scope === "focused" ? "Follow data dependencies only" : "Also include branch and control-flow influence"}
+                    title={scope === "focused" ? "仅跟随数据依赖" : "同时包含分支和控制流影响"}
                   >
-                    {scope}
+                    {scope === "focused" ? "聚焦" : "广泛"}
                   </button>
                 ))}
               </div>
@@ -364,7 +364,7 @@ export default function TaintConfigDialog({
         {/* ── Start Seq / End Seq ── */}
         <div style={{ display: "flex", gap: 12, marginBottom: 24 }}>
           <div style={{ ...cardStyle, flex: 1 }}>
-            <label style={labelStyle}>Start Line</label>
+            <label style={labelStyle}>起始行</label>
             <input
               type="text"
               value={startSeq}
@@ -373,12 +373,12 @@ export default function TaintConfigDialog({
             />
           </div>
           <div style={{ ...cardStyle, flex: 1 }}>
-            <label style={labelStyle}>End Line</label>
+            <label style={labelStyle}>结束行</label>
             <input
               type="text"
               value={endSeq}
               onChange={(e) => setEndSeq(e.target.value)}
-              placeholder="to end"
+              placeholder="留空表示到末尾"
               style={fieldInputStyle}
             />
           </div>
@@ -387,7 +387,7 @@ export default function TaintConfigDialog({
         {/* ── Dependency Options ── */}
         <div style={{ ...cardStyle, marginBottom: 24, display: "flex", alignItems: "center", gap: 16 }}>
           <div style={{ fontSize: 14, fontWeight: 600, color: "var(--text-primary)", flexShrink: 0 }}>
-            Dependencies
+            依赖范围
           </div>
           <label
             style={{ display: "flex", alignItems: "center", gap: 6, cursor: "pointer", fontSize: 13, color: "var(--text-primary)" }}
@@ -406,14 +406,14 @@ export default function TaintConfigDialog({
               onChange={(e) => setControlDep(e.target.checked)}
               style={{ accentColor: "var(--btn-primary)" }}
             />
-            Include control flow
+            包含控制流
           </label>
         </div>
 
         {/* ── Taint Sources Header ── */}
         <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 12 }}>
           <div style={{ fontSize: 14, fontWeight: 600, color: "var(--text-primary)" }}>
-            Analysis Sources
+            分析来源
           </div>
           <button
             onClick={addSource}
@@ -429,7 +429,7 @@ export default function TaintConfigDialog({
               cursor: "pointer",
             }}
           >
-            + Add Source
+            + 添加来源
           </button>
         </div>
 
@@ -439,21 +439,21 @@ export default function TaintConfigDialog({
             <div key={src.id} style={{ ...cardStyle, display: "flex", alignItems: "flex-end", gap: 12 }}>
               {/* Type */}
               <div style={{ width: 110, flexShrink: 0 }}>
-                <label style={labelStyle}>Type</label>
+                <label style={labelStyle}>类型</label>
                 <select
                   value={src.type}
                   onChange={(e) => updateSource(src.id, { type: e.target.value as "register" | "memory" })}
                   style={{ ...fieldSelectStyle, fontSize: 14 }}
                 >
-                  <option value="register">Register</option>
-                  <option value="memory">Memory</option>
+                  <option value="register">寄存器</option>
+                  <option value="memory">内存</option>
                 </select>
               </div>
 
               {/* Value field */}
               {src.type === "register" ? (
                 <div style={{ flex: 1 }}>
-                  <label style={labelStyle}>Register</label>
+                  <label style={labelStyle}>寄存器</label>
                   <select
                     value={src.register}
                     onChange={(e) => updateSource(src.id, { register: e.target.value })}
@@ -467,7 +467,7 @@ export default function TaintConfigDialog({
               ) : (
                 <>
                   <div style={{ flex: 1 }}>
-                    <label style={labelStyle}>Address</label>
+                    <label style={labelStyle}>地址</label>
                     <input
                       type="text"
                       value={src.memAddr}
@@ -480,7 +480,7 @@ export default function TaintConfigDialog({
                     </div>
                   </div>
                   <div style={{ width: 76, flexShrink: 0 }}>
-                    <label style={labelStyle}>Bytes</label>
+                    <label style={labelStyle}>字节数</label>
                     <input
                       type="number"
                       min={1}
@@ -543,7 +543,7 @@ export default function TaintConfigDialog({
               fontSize: 13,
             }}
           >
-            Cancel
+            取消
           </button>
           <button
             onClick={handleExecute}
@@ -560,7 +560,7 @@ export default function TaintConfigDialog({
               fontWeight: 600,
             }}
           >
-            Run Analysis
+            执行分析
           </button>
         </div>
       </div>
@@ -574,7 +574,7 @@ export default function TaintConfigDialog({
         pointerEvents: "none", zIndex: 10002,
         boxShadow: "0 2px 8px rgba(0,0,0,0.3)",
       }}>
-        When enabled, taint propagates through control-flow dependencies (e.g. conditional branches), not just data-flow. This may increase the number of tainted instructions.
+        打开后，污点会沿控制流依赖传播（例如条件分支），而不只是数据流；污点指令数量可能增加。
       </div>,
       document.body,
     )}

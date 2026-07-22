@@ -48,7 +48,7 @@ function CandidateRow({ c, onJumpToSeq, onCreateHook }: {
         <span
           onClick={(e) => { e.stopPropagation(); onJumpToSeq(c.entrySeq); }}
           style={{ color: "var(--syntax-literal)", textDecoration: "underline", cursor: "pointer" }}
-          title="Jump to function entry"
+          title="跳转到函数入口"
         >{c.funcName || c.funcAddr}</span>
         <span style={{ flex: 1 }} />
         {onCreateHook && (
@@ -56,7 +56,7 @@ function CandidateRow({ c, onJumpToSeq, onCreateHook }: {
             type="button"
             onClick={event => { event.stopPropagation(); onCreateHook(c); }}
             style={{ height: 23, padding: "0 8px", border: "1px solid var(--border-color)", borderRadius: 3, background: "var(--bg-input)", color: "var(--text-primary)", cursor: "pointer", fontSize: 11 }}
-          >Hook</button>
+          >生成 Hook</button>
         )}
         <span style={{ color: "var(--text-tertiary)", fontSize: 11 }}>
           {c.magicHits > 0 && `${c.distinctMagics} const`}
@@ -146,7 +146,7 @@ export default function CryptoFunctionsPanel({ sessionId, onJumpToSeq, onCreateH
         {report && (
           <span style={{ color: "var(--text-tertiary)", fontSize: 11 }}>
             {report.candidates.length} candidates · {report.magicHitCount} const hits · {report.cryptoInsnCount} crypto insns
-            {report.candidatesTruncated && " (truncated)"}
+            {report.candidatesTruncated && "（已截断）"}
           </span>
         )}
       </div>

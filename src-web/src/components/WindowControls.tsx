@@ -108,7 +108,7 @@ function WinControls({ onMaximize }: { onMaximize?: () => void }) {
         onClick={handleMinimize}
         onMouseEnter={() => setHovered("minimize")}
         onMouseLeave={() => setHovered(null)}
-        aria-label="Minimize"
+        aria-label="最小化"
       >
         <svg width="10" height="1" viewBox="0 0 10 1">
           <rect fill="currentColor" width="10" height="1" />
@@ -119,7 +119,7 @@ function WinControls({ onMaximize }: { onMaximize?: () => void }) {
         onClick={handleToggleMaximize}
         onMouseEnter={() => setHovered("maximize")}
         onMouseLeave={() => setHovered(null)}
-        aria-label="Maximize"
+        aria-label="最大化"
       >
         <svg width="10" height="10" viewBox="0 0 10 10">
           <rect fill="none" stroke="currentColor" strokeWidth="1" x="0.5" y="0.5" width="9" height="9" />
@@ -130,7 +130,7 @@ function WinControls({ onMaximize }: { onMaximize?: () => void }) {
         onClick={handleClose}
         onMouseEnter={() => setHovered("close")}
         onMouseLeave={() => setHovered(null)}
-        aria-label="Close"
+        aria-label="关闭"
       >
         <svg width="10" height="10" viewBox="0 0 10 10">
           <line x1="0" y1="0" x2="10" y2="10" stroke="currentColor" strokeWidth="1.2" />

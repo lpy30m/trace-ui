@@ -264,17 +264,17 @@ export default function SearchResultList({
         flexShrink: 0,
       }}>
         <span style={{ width: 40, flexShrink: 0 }}></span>
-        <span style={{ width: rwCol.width, flexShrink: 0 }}>R/W</span>
+        <span style={{ width: rwCol.width, flexShrink: 0 }}>读/写</span>
         <div onMouseDown={rwCol.onMouseDown} style={HANDLE_STYLE}><div style={{ width: 1, height: "100%", background: "var(--border-color)" }} /></div>
-        <span style={{ width: seqCol.width, flexShrink: 0 }}>Seq</span>
+        <span style={{ width: seqCol.width, flexShrink: 0 }}>序号</span>
         <div onMouseDown={seqCol.onMouseDown} style={HANDLE_STYLE}><div style={{ width: 1, height: "100%", background: "var(--border-color)" }} /></div>
-        <span style={{ width: addrCol.width, flexShrink: 0 }}>Address</span>
+        <span style={{ width: addrCol.width, flexShrink: 0 }}>地址</span>
         <div onMouseDown={addrCol.onMouseDown} style={HANDLE_STYLE}><div style={{ width: 1, height: "100%", background: "var(--border-color)" }} /></div>
-        <span style={{ width: effectiveDisasmWidth, flexShrink: 0 }}>Disassembly</span>
+        <span style={{ width: effectiveDisasmWidth, flexShrink: 0 }}>反汇编</span>
         <div onMouseDown={disasmCol.onMouseDown} style={HANDLE_STYLE}><div style={{ width: 1, height: "100%", background: "var(--border-color)" }} /></div>
-        <span style={{ width: effectiveBeforeWidth, flexShrink: 0 }}>Before</span>
+        <span style={{ width: effectiveBeforeWidth, flexShrink: 0 }}>之前</span>
         <div onMouseDown={beforeCol.onMouseDown} style={HANDLE_STYLE}><div style={{ width: 1, height: "100%", background: "var(--border-color)" }} /></div>
-        <span style={{ flex: 1 }}>Changes</span>
+        <span style={{ flex: 1 }}>变化</span>
         <span style={{ width: MINIMAP_WIDTH + 12, flexShrink: 0 }}></span>
       </div>
 
@@ -338,7 +338,7 @@ export default function SearchResultList({
                       <span style={{ width: effectiveDisasmWidth, flexShrink: 0 }}><span style={{ display: "inline-block", width: "70%", height: 8, borderRadius: 2, background: "var(--border-color)", opacity: 0.3 }} /></span>
                     </>
                   ) : (
-                    <span style={{ color: "var(--text-disabled, #555)", fontSize: "var(--font-size-sm)" }}>Loading...</span>
+                    <span style={{ color: "var(--text-disabled, #555)", fontSize: "var(--font-size-sm)" }}>加载中…</span>
                   )}
                 </div>
               );

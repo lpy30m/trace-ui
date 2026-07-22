@@ -51,7 +51,7 @@ const EVIDENCE_GROUPS: Array<[keyof AnalysisEvidence, string]> = [
 function EvidenceView({ evidence }: { evidence: AnalysisEvidence }) {
   const groups = EVIDENCE_GROUPS.filter(([k]) => (evidence[k]?.length ?? 0) > 0);
   if (groups.length === 0) {
-    return <div style={{ color: "var(--text-tertiary)", fontSize: 11 }}>No evidence recorded.</div>;
+    return <div style={{ color: "var(--text-tertiary)", fontSize: 11 }}>暂无记录证据。</div>;
   }
   return (
     <div style={{ display: "flex", flexDirection: "column", gap: 4 }}>
@@ -118,7 +118,7 @@ function DetailView({ sessionId, id, onDeleted }: { sessionId: string; id: strin
   }, [sessionId, id, onDeleted]);
 
   if (err) return <div style={{ padding: 8, color: "#e5484d", fontSize: 11 }}>{err}</div>;
-  if (!record) return <div style={{ padding: 8, color: "var(--text-secondary)", fontSize: 11 }}>Loading...</div>;
+  if (!record) return <div style={{ padding: 8, color: "var(--text-secondary)", fontSize: 11 }}>加载中…</div>;
 
   const btn: React.CSSProperties = {
     fontSize: 11, padding: "2px 8px", cursor: "pointer",
@@ -129,10 +129,10 @@ function DetailView({ sessionId, id, onDeleted }: { sessionId: string; id: strin
   return (
     <div style={{ padding: "8px 12px 12px 30px", background: "var(--bg-secondary)", fontSize: 11 }}>
       <div style={{ display: "flex", gap: 6, marginBottom: 8 }}>
-        <button style={btn} onClick={() => copyReport("markdown")}>{copied === "markdown" ? "Copied!" : "Copy Markdown"}</button>
-        <button style={btn} onClick={() => copyReport("json")}>{copied === "json" ? "Copied!" : "Copy JSON"}</button>
+        <button style={btn} onClick={() => copyReport("markdown")}>{copied === "markdown" ? "已复制" : "复制 Markdown"}</button>
+        <button style={btn} onClick={() => copyReport("json")}>{copied === "json" ? "已复制" : "复制 JSON"}</button>
         <span style={{ flex: 1 }} />
-        <button style={{ ...btn, color: "#e5484d" }} onClick={del}>Delete</button>
+        <button style={{ ...btn, color: "#e5484d" }} onClick={del}>删除</button>
       </div>
       <EvidenceView evidence={record.evidence} />
       <div style={{ marginTop: 8 }}>
@@ -236,7 +236,7 @@ export default function AnalysisHistoryPanel({ sessionId }: Props) {
             color: selected.size >= 2 ? "#fff" : "var(--text-tertiary)",
             border: "1px solid var(--border-color)", borderRadius: 3,
           }}
-        >Compare ({selected.size})</button>
+        >比较（{selected.size}）</button>
         <span style={{ flex: 1 }} />
         <span style={{ color: "var(--text-tertiary)", fontSize: 11 }}>{list.length} saved</span>
       </div>
@@ -256,7 +256,7 @@ export default function AnalysisHistoryPanel({ sessionId }: Props) {
                 style={{ cursor: "pointer", color: "var(--text-secondary)", fontSize: 14 }}
               >×</span>
             </div>
-            <div style={{ fontSize: 10, color: "var(--text-tertiary)", marginBottom: 3 }}>COMMON EVIDENCE</div>
+            <div style={{ fontSize: 10, color: "var(--text-tertiary)", marginBottom: 3 }}>共同证据</div>
             <EvidenceView evidence={comparison.commonEvidence} />
             {comparison.uniqueEvidence.map(u => (
               <div key={u.analysisId} style={{ marginTop: 8 }}>

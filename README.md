@@ -10,6 +10,8 @@
 
 > 支持 [GumTrace](https://github.com/lidongyooo/GumTrace)（基于 Frida Stalker 的**真机 trace 采集工具**，支持 Android/iOS）和 [unidbg](https://github.com/zhkl0228/unidbg)（Android native 模拟执行框架）两种 ARM64 指令级 trace 日志格式，打开文件时自动检测。
 
+项目开发与交接请优先阅读 [`CURRENT_CHANGELOG.md`](CURRENT_CHANGELOG.md)，其中集中记录当前实现、代码位置、手动工作流、安全边界和最近界面中文化范围；更完整的项目状态见 [`PROJECT_STATE.md`](PROJECT_STATE.md)。
+
 ## 特性亮点
 
 - **大规模 Trace 浏览** — 虚拟滚动 + mmap 零拷贝，千万行 trace 流畅浏览，内存占用恒定。索引构建完成后自动缓存，再次打开同一文件秒级加载
@@ -30,6 +32,7 @@
 - **AI 辅助分析（MCP）** — 内置 MCP Server，可与 Claude Code、Cursor 等 AI 工具集成，覆盖浏览、搜索、污点、密码材料、Frida 脚本、IDA/angr/OLLVM、跨 trace 对比和证据持久化
 - **14 种编辑器主题** — 内置 Monokai、Dracula、Nord、Catppuccin、Gruvbox、Tokyo Night、Solarized、GitHub Light、High Contrast 等主题，一键切换
 - **沉浸式交互体验** — 双击文本全局高亮同名标记、搜索结果关键词高亮、Minimap 缩略导航
+- **专业中文界面** — 菜单、搜索、污点、内存、字符串、加密分析、Frida/OLLVM/angr/IDA 工作流以中文为主；保留 ARM64、Frida、dispatcher、CFG、ELF 等业内标准术语，兼顾准确性与易读性
 - **多窗口浮动面板** — 搜索、内存、字符串、依赖树、密码学扫描等面板可独立浮出，支持多文件并行分析
 - **高亮与注释** — IDA 风格快捷键（`;` 注释、`Alt+1~5` 高亮），5 色高亮、删除线、隐藏行、行内注释，状态持久化到本地
 

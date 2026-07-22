@@ -19,6 +19,7 @@ interface CacheInfo {
 
 const TABS = ["General", "Analysis", "Cache"] as const;
 type Tab = typeof TABS[number];
+const TAB_LABELS: Record<Tab, string> = { General: "常规", Analysis: "分析", Cache: "缓存" };
 
 function formatSize(bytes: number): string {
   if (bytes < 1024) return `${bytes} B`;
@@ -39,8 +40,8 @@ export default function PreferencesDialog({ preferences, onSave, onClose, onClea
 
   const portError = (() => {
     if (local.mcpPort === null) return null;
-    if (!Number.isInteger(local.mcpPort)) return "Port must be an integer";
-    if (local.mcpPort < 1024 || local.mcpPort > 65535) return "Port must be between 1024 and 65535";
+    if (!Number.isInteger(local.mcpPort)) return "端口必须是整数";
+    if (local.mcpPort < 1024 || local.mcpPort > 65535) return "端口范围必须是 1024–65535";
     return null;
   })();
 
@@ -64,7 +65,7 @@ export default function PreferencesDialog({ preferences, onSave, onClose, onClea
 
   const handleBrowse = useCallback(async () => {
     const { open } = await import("@tauri-apps/plugin-dialog");
-    const selected = await open({ directory: true, title: "Select Cache Directory" });
+    const selected = await open({ directory: true, title: "选择缓存目录" });
     if (selected) {
       setLocal(prev => ({ ...prev, cacheDir: selected as string }));
     }
@@ -126,7 +127,7 @@ export default function PreferencesDialog({ preferences, onSave, onClose, onClea
           flexShrink: 0,
         }}>
           <div style={{ fontSize: 14, fontWeight: 600, color: "var(--text-primary)" }}>
-            Preferences
+            偏好设置
           </div>
           <button
             onClick={handleClose}
@@ -172,7 +173,7 @@ export default function PreferencesDialog({ preferences, onSave, onClose, onClea
                     width: "100%",
                   }}
                 >
-                  {t}
+                  {TAB_LABELS[t]}
                 </button>
               );
             })}
@@ -187,14 +188,14 @@ export default function PreferencesDialog({ preferences, onSave, onClose, onClea
                 {/* Theme */}
                 <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
                   <div style={{ fontSize: 11, color: "var(--text-secondary)", fontWeight: 600 }}>
-                    Theme
+                    主题
                   </div>
                   {(["dark", "light"] as const).map(group => {
                     const groupThemes = THEMES.filter(t => t.group === group);
                     return (
                       <div key={group} style={{ display: "flex", flexDirection: "column", gap: 4 }}>
                         <div style={{ fontSize: 10, color: "var(--text-secondary)", textTransform: "uppercase", letterSpacing: 0.5 }}>
-                          {group === "dark" ? "Dark" : "Light"}
+                          {group === "dark" ? "深色" : "浅色"}
                         </div>
                         <div style={{ display: "flex", flexWrap: "wrap", gap: 5 }}>
                           {groupThemes.map(t => {
@@ -233,7 +234,7 @@ export default function PreferencesDialog({ preferences, onSave, onClose, onClea
                 {/* Startup */}
                 <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
                   <div style={{ fontSize: 11, color: "var(--text-secondary)", fontWeight: 600 }}>
-                    Startup
+                    启动
                   </div>
                   <label style={{
                     display: "flex", alignItems: "center", gap: 8,
@@ -245,18 +246,18 @@ export default function PreferencesDialog({ preferences, onSave, onClose, onClea
                       onChange={(e) => setLocal(prev => ({ ...prev, reopenLastFile: e.target.checked }))}
                       style={{ accentColor: "var(--btn-primary)" }}
                     />
-                    Restore previous session on startup
+                    启动时恢复上次会话
                   </label>
                 </div>
 
                 {/* MCP Server */}
                 <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
                   <div style={{ fontSize: 11, color: "var(--text-secondary)", fontWeight: 600 }}>
-                    MCP Server
+                    MCP 服务
                   </div>
                   <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
                     <label style={{ fontSize: 12, color: "var(--text-primary)", whiteSpace: "nowrap" as const }}>
-                      Port:
+                      端口：
                     </label>
                     <input
                       type="number"
@@ -286,7 +287,7 @@ export default function PreferencesDialog({ preferences, onSave, onClose, onClea
                     </div>
                   ) : (
                     <div style={{ fontSize: 10, color: "var(--text-secondary)", lineHeight: 1.4 }}>
-                      Leave empty to use default port (19821). Changes take effect on save.
+                      留空使用默认端口（19821），保存后生效。
                     </div>
                   )}
                   <label style={{
@@ -300,7 +301,7 @@ export default function PreferencesDialog({ preferences, onSave, onClose, onClea
                       onChange={(e) => setLocal(prev => ({ ...prev, autoStartMcp: e.target.checked }))}
                       style={{ accentColor: "var(--btn-primary)" }}
                     />
-                    Auto-start MCP server on launch
+                    启动时自动运行 MCP 服务
                   </label>
                 </div>
               </div>
@@ -310,7 +311,7 @@ export default function PreferencesDialog({ preferences, onSave, onClose, onClea
             {tab === "Analysis" && (
               <div style={{ display: "flex", flexDirection: "column", gap: 14 }}>
                 <div style={{ fontSize: 11, color: "var(--text-secondary)", fontWeight: 600 }}>
-                  Strings
+                  字符串
                 </div>
                 <label style={{
                   display: "flex", alignItems: "center", gap: 8,
@@ -322,14 +323,14 @@ export default function PreferencesDialog({ preferences, onSave, onClose, onClea
                     onChange={(e) => setLocal(prev => ({ ...prev, scanStringsOnBuild: e.target.checked }))}
                     style={{ accentColor: "var(--btn-primary)" }}
                   />
-                  Scan strings during index build
+                  构建索引时扫描字符串
                 </label>
                 <div style={{ fontSize: 10, color: "var(--text-secondary)", lineHeight: 1.4, marginTop: -6 }}>
-                  When disabled, strings are not extracted during startup indexing. You can manually scan from Analysis → Scan Strings.
+                  关闭后，启动索引不会提取字符串；可从“分析 → 扫描字符串”手动执行。
                 </div>
 
                 <div style={{ fontSize: 11, color: "var(--text-secondary)", fontWeight: 600, marginTop: 8 }}>
-                  Taint Analysis
+                  污点分析
                 </div>
                 <label style={{
                   display: "flex", alignItems: "center", gap: 8,
@@ -341,10 +342,10 @@ export default function PreferencesDialog({ preferences, onSave, onClose, onClea
                     onChange={(e) => setLocal(prev => ({ ...prev, confirmTaintRestore: e.target.checked }))}
                     style={{ accentColor: "var(--btn-primary)" }}
                   />
-                  Confirm before restoring taint analysis state
+                  恢复污点分析状态前确认
                 </label>
                 <div style={{ fontSize: 10, color: "var(--text-secondary)", lineHeight: 1.4, marginTop: -6 }}>
-                  When enabled, a confirmation dialog will be shown before restoring the previous taint analysis state on file reopen. Useful for large traces where re-analysis may take a long time.
+                  打开文件时恢复上次污点状态前显示确认框，适合重新分析耗时较长的大型 trace。
                 </div>
               </div>
             )}
@@ -356,14 +357,14 @@ export default function PreferencesDialog({ preferences, onSave, onClose, onClea
                 {/* Cache Directory */}
                 <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
                   <div style={{ fontSize: 11, color: "var(--text-secondary)", fontWeight: 600 }}>
-                    Cache Directory
+                    缓存目录
                   </div>
                   <div style={{ display: "flex", gap: 6, alignItems: "center" }}>
                     <input
                       type="text"
                       value={local.cacheDir}
                       onChange={(e) => setLocal(prev => ({ ...prev, cacheDir: e.target.value }))}
-                      placeholder={cacheInfo?.path ?? "Default"}
+                      placeholder={cacheInfo?.path ?? "默认目录"}
                       style={{
                         flex: 1, padding: "5px 8px", fontSize: 11,
                         background: "var(--bg-input)", border: "1px solid var(--border-color)",
@@ -382,18 +383,18 @@ export default function PreferencesDialog({ preferences, onSave, onClose, onClea
                         whiteSpace: "nowrap" as const,
                       }}
                     >
-                      Browse...
+                      浏览…
                     </button>
                   </div>
                   <div style={{ fontSize: 10, color: "var(--text-secondary)", lineHeight: 1.4 }}>
-                    Leave empty to use default path. Changes take effect on next index build.
+                    留空使用默认路径；下次构建索引时生效。
                   </div>
                 </div>
 
                 {/* Cache Usage */}
                 <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
                   <div style={{ fontSize: 11, color: "var(--text-secondary)", fontWeight: 600 }}>
-                    Cache Usage
+                    缓存占用
                   </div>
                   <div style={{
                     display: "flex", alignItems: "center", justifyContent: "space-between",
@@ -416,7 +417,7 @@ export default function PreferencesDialog({ preferences, onSave, onClose, onClea
                         opacity: clearing ? 0.6 : 1,
                       }}
                     >
-                      {clearing ? "Clearing..." : "Clear Cache"}
+                      {clearing ? "清理中…" : "清理缓存"}
                     </button>
                   </div>
                 </div>
@@ -444,7 +445,7 @@ export default function PreferencesDialog({ preferences, onSave, onClose, onClea
               borderRadius: 4, cursor: "pointer", fontSize: 12,
             }}
           >
-            Cancel
+            取消
           </button>
           <button
             onClick={handleSave}
@@ -462,7 +463,7 @@ export default function PreferencesDialog({ preferences, onSave, onClose, onClea
               opacity: portError ? 0.5 : 1,
             }}
           >
-            Save
+            保存
           </button>
         </div>
       </div>

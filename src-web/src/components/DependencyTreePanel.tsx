@@ -93,7 +93,7 @@ export default function DependencyTreePanel() {
   if (!params) {
     return (
       <div style={{ flex: 1, display: "flex", alignItems: "center", justifyContent: "center" }}>
-        <span style={{ color: "var(--text-secondary)", fontSize: 12 }}>Initializing...</span>
+        <span style={{ color: "var(--text-secondary)", fontSize: 12 }}>正在初始化…</span>
       </div>
     );
   }
@@ -102,7 +102,7 @@ export default function DependencyTreePanel() {
   if (loading) {
     return (
       <div style={{ flex: 1, display: "flex", alignItems: "center", justifyContent: "center" }}>
-        <span style={{ color: "var(--text-secondary)", fontSize: 12 }}>Building dependency tree...</span>
+        <span style={{ color: "var(--text-secondary)", fontSize: 12 }}>正在构建依赖树…</span>
       </div>
     );
   }
@@ -166,7 +166,7 @@ export default function DependencyTreePanel() {
             cursor: "pointer",
             marginLeft: 8,
           }}
-          title={exprMode === "c" ? "Switch to Assembly" : "Switch to C Pseudocode"}
+          title={exprMode === "c" ? "切换到汇编" : "切换到 C 伪代码"}
         >
           {exprMode === "c" ? "C" : "ASM"}
         </button>

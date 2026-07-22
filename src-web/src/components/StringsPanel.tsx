@@ -348,7 +348,7 @@ export default function StringsPanel({ sessionId, isPhase2Ready, onJumpToSeq, st
   if (!isPhase2Ready) {
     return (
       <div style={{ flex: 1, display: "flex", alignItems: "center", justifyContent: "center" }}>
-        <span style={{ color: "var(--text-secondary)", fontSize: 12 }}>Index not ready</span>
+        <span style={{ color: "var(--text-secondary)", fontSize: 12 }}>字符串索引尚未就绪</span>
       </div>
     );
   }
@@ -365,7 +365,7 @@ export default function StringsPanel({ sessionId, isPhase2Ready, onJumpToSeq, st
             value={searchInput}
             onChange={e => setSearchInput(e.target.value)}
             onFocus={() => setShowHistory(true)}
-            placeholder="Search strings..."
+            placeholder="搜索字符串…"
             style={{
               width: "100%", background: "var(--input-bg)", border: "1px solid var(--border-color)",
               color: "var(--text-primary)", padding: "3px 24px 3px 8px", borderRadius: 3, fontSize: 12,
@@ -423,15 +423,15 @@ export default function StringsPanel({ sessionId, isPhase2Ready, onJumpToSeq, st
                 onMouseEnter={e => { e.currentTarget.style.background = "var(--bg-selected)"; e.currentTarget.style.color = "var(--text-primary)"; }}
                 onMouseLeave={e => { e.currentTarget.style.background = "transparent"; e.currentTarget.style.color = "var(--text-secondary)"; }}
                 onClick={clearAllHistory}
-              >Clear All</div>
+              >清空全部</div>
             </div>
           )}
         </div>
         <span style={{ flex: 1 }} />
         <span style={{ color: "var(--text-tertiary)", fontSize: 11, whiteSpace: "nowrap" }}>
-          {total.toLocaleString()} strings
+          {total.toLocaleString()} 个字符串
         </span>
-        <span style={{ color: "var(--text-secondary)", fontSize: 11, whiteSpace: "nowrap" }}>Min len:</span>
+        <span style={{ color: "var(--text-secondary)", fontSize: 11, whiteSpace: "nowrap" }}>最小长度：</span>
         <input
           type="range" min={2} max={32} value={minLenInput}
           onChange={e => setMinLenInput(Number(e.target.value))}
@@ -447,19 +447,19 @@ export default function StringsPanel({ sessionId, isPhase2Ready, onJumpToSeq, st
         borderBottom: "1px solid var(--border-color)",
         fontSize: "var(--font-size-sm)", color: "var(--text-secondary)", flexShrink: 0,
       }}>
-        <span style={{ width: rwCol.width, flexShrink: 0 }}>R/W</span>
+        <span style={{ width: rwCol.width, flexShrink: 0 }}>读/写</span>
         <div onMouseDown={rwCol.onMouseDown} style={HANDLE_STYLE}><div style={{ width: 1, height: "100%", background: "var(--border-color)" }} /></div>
-        <span style={{ width: seqCol.width, flexShrink: 0 }}>Seq</span>
+        <span style={{ width: seqCol.width, flexShrink: 0 }}>序号</span>
         <div onMouseDown={seqCol.onMouseDown} style={HANDLE_STYLE}><div style={{ width: 1, height: "100%", background: "var(--border-color)" }} /></div>
-        <span style={{ width: addrCol.width, flexShrink: 0 }}>Address</span>
+        <span style={{ width: addrCol.width, flexShrink: 0 }}>地址</span>
         <div onMouseDown={addrCol.onMouseDown} style={HANDLE_STYLE}><div style={{ width: 1, height: "100%", background: "var(--border-color)" }} /></div>
-        <span style={{ flex: 1 }}>Content</span>
+        <span style={{ flex: 1 }}>内容</span>
         <div onMouseDown={encCol.onMouseDown} style={HANDLE_STYLE}><div style={{ width: 1, height: "100%", background: "var(--border-color)" }} /></div>
-        <span style={{ width: encCol.width, flexShrink: 0 }}>Enc</span>
+        <span style={{ width: encCol.width, flexShrink: 0 }}>编码</span>
         <div onMouseDown={lenCol.onMouseDown} style={HANDLE_STYLE}><div style={{ width: 1, height: "100%", background: "var(--border-color)" }} /></div>
-        <span style={{ width: lenCol.width, flexShrink: 0 }}>Len</span>
+        <span style={{ width: lenCol.width, flexShrink: 0 }}>长度</span>
         <div onMouseDown={xrefsCol.onMouseDown} style={HANDLE_STYLE}><div style={{ width: 1, height: "100%", background: "var(--border-color)" }} /></div>
-        <span style={{ width: xrefsCol.width, flexShrink: 0 }}>XRefs</span>
+        <span style={{ width: xrefsCol.width, flexShrink: 0 }}>交叉引用</span>
         <span style={{ width: MINIMAP_WIDTH + 12, flexShrink: 0 }}></span>
       </div>
 
@@ -501,7 +501,7 @@ export default function StringsPanel({ sessionId, isPhase2Ready, onJumpToSeq, st
                   background: index % 2 === 0 ? "var(--bg-row-even)" : "var(--bg-row-odd)",
                 }}
               >
-                <span style={{ color: "var(--text-disabled, #555)", fontSize: "var(--font-size-sm)" }}>Loading...</span>
+                <span style={{ color: "var(--text-disabled, #555)", fontSize: "var(--font-size-sm)" }}>加载中…</span>
               </div>
             );
           }
@@ -553,7 +553,7 @@ export default function StringsPanel({ sessionId, isPhase2Ready, onJumpToSeq, st
           background: "var(--bg-secondary)",
           fontSize: 11, color: "var(--text-secondary)",
         }}>
-          Loading...
+          加载中…
         </div>
       )}
 
@@ -565,19 +565,19 @@ export default function StringsPanel({ sessionId, isPhase2Ready, onJumpToSeq, st
           textAlign: "center",
           borderTop: "1px solid var(--border-color)",
         }}>
-          Scanning strings...
+          正在扫描字符串…
         </div>
       )}
 
       {/* 右键菜单 — Portal 到 body，避免祖先 overflow:hidden 裁剪 */}
       {contextMenu && (
         <ContextMenu x={contextMenu.x} y={contextMenu.y} onClose={() => setContextMenu(null)} minWidth={160}>
-          <ContextMenuItem label="View Detail" onClick={handleViewDetail} />
-          <ContextMenuItem label="View in Memory" onClick={handleViewInMemory} />
-          <ContextMenuItem label="Show XRefs" onClick={handleShowXrefs} />
-          <ContextMenuItem label="Trace Creation" onClick={handleTraceCreation} />
-          <ContextMenuItem label="Copy String" onClick={handleCopyString} />
-          <ContextMenuItem label="Copy Address" onClick={handleCopyAddr} />
+          <ContextMenuItem label="查看详情" onClick={handleViewDetail} />
+          <ContextMenuItem label="在内存中查看" onClick={handleViewInMemory} />
+          <ContextMenuItem label="显示交叉引用" onClick={handleShowXrefs} />
+          <ContextMenuItem label="追踪创建过程" onClick={handleTraceCreation} />
+          <ContextMenuItem label="复制字符串" onClick={handleCopyString} />
+          <ContextMenuItem label="复制地址" onClick={handleCopyAddr} />
         </ContextMenu>
       )}
 

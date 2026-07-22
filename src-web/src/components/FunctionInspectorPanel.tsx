@@ -59,7 +59,7 @@ function MemList({ title, items, truncated }: { title: string; items: MemTouch[]
           {m.addr}{m.count > 1 ? ` ×${m.count}` : ""}
         </span>
       ))}
-      {truncated && <span style={{ color: "var(--text-changes)", fontSize: 10 }}>(scan capped)</span>}
+      {truncated && <span style={{ color: "var(--text-changes)", fontSize: 10 }}>（扫描已限制）</span>}
     </Row>
   );
 }
@@ -90,42 +90,42 @@ export default function FunctionInspectorPanel({ sessionId, onJumpToSeq, active 
   }, [sessionId, seq, active]);
 
   if (!sessionId) {
-    return <div style={{ padding: 16, color: "var(--text-secondary)", fontSize: 12 }}>Open a trace.</div>;
+    return <div style={{ padding: 16, color: "var(--text-secondary)", fontSize: 12 }}>请先打开 trace。</div>;
   }
   if (seq == null) {
     return <div style={{ padding: 16, color: "var(--text-secondary)", fontSize: 12 }}>
-      Select a trace line — its enclosing function is inspected here.
+      请选择一行 trace，这里会检查其所属函数。
     </div>;
   }
 
   return (
     <div style={{ flex: 1, overflow: "auto", padding: "8px 10px", fontSize: 12 }}>
       {error && <div style={{ color: "#e5484d", fontSize: 11 }}>{error}</div>}
-      {loading && !insp && <div style={{ color: "var(--text-secondary)", fontSize: 11 }}>Inspecting...</div>}
+      {loading && !insp && <div style={{ color: "var(--text-secondary)", fontSize: 11 }}>检查中…</div>}
       {insp && (
         <>
           <div style={{ display: "flex", alignItems: "baseline", gap: 6, flexWrap: "wrap" }}>
             <span
               onClick={() => onJumpToSeq(insp.entrySeq)}
               style={{ color: "var(--syntax-keyword)", fontWeight: 600, cursor: "pointer", textDecoration: "underline" }}
-              title="Jump to function entry"
+              title="跳转到函数入口"
             >{insp.funcName || insp.funcAddr}</span>
             <span style={{ color: "var(--text-tertiary)", fontSize: 10 }}>{insp.funcAddr}</span>
-            {loading && <span style={{ color: "var(--text-tertiary)", fontSize: 10 }}>· updating…</span>}
+            {loading && <span style={{ color: "var(--text-tertiary)", fontSize: 10 }}>· 更新中…</span>}
           </div>
           <div style={{ color: "var(--text-tertiary)", fontSize: 10, marginTop: 2 }}>
-            entry seq {insp.entrySeq + 1} · exit seq {insp.exitSeq + 1} · {insp.lineCount.toLocaleString()} lines · {insp.childCount} sub-calls
+            入口序号 {insp.entrySeq + 1} · 退出序号 {insp.exitSeq + 1} · {insp.lineCount.toLocaleString()} 行 · {insp.childCount} 个子调用
           </div>
 
           {insp.parent && (
-            <Row label="parent"><FuncLink fn={insp.parent} onJump={onJumpToSeq} /></Row>
+            <Row label="父函数"><FuncLink fn={insp.parent} onJump={onJumpToSeq} /></Row>
           )}
-          <Row label="entry X0-7"><RegList regs={insp.entryArgs} /></Row>
+          <Row label="入口参数 X0–X7"><RegList regs={insp.entryArgs} /></Row>
           {insp.returnValue && (
-            <Row label="return X0"><span style={chip}>{insp.returnValue}</span></Row>
+            <Row label="返回值 X0"><span style={chip}>{insp.returnValue}</span></Row>
           )}
           {insp.callAnnotation && (
-            <Row label="call">
+            <Row label="调用">
               <span style={{ ...chip, color: "var(--syntax-comment)" }}>
                 {insp.callAnnotation.funcName}
                 {insp.callAnnotation.retValue ? ` → ${insp.callAnnotation.retValue}` : ""}
@@ -133,16 +133,16 @@ export default function FunctionInspectorPanel({ sessionId, onJumpToSeq, active 
             </Row>
           )}
           {insp.children.length > 0 && (
-            <Row label="sub-calls">
+            <Row label="子调用">
               {insp.children.slice(0, 40).map(c => <FuncLink key={c.funcId} fn={c} onJump={onJumpToSeq} />)}
               {insp.children.length > 40 && (
-                <span style={{ color: "var(--text-tertiary)", fontSize: 10 }}>+{insp.children.length - 40} more</span>
+                <span style={{ color: "var(--text-tertiary)", fontSize: 10 }}>另有 {insp.children.length - 40} 项</span>
               )}
             </Row>
           )}
 
-          <MemList title="mem reads" items={insp.memoryReads} truncated={insp.ioTruncated} />
-          <MemList title="mem writes" items={insp.memoryWrites} truncated={insp.ioTruncated} />
+          <MemList title="内存读取" items={insp.memoryReads} truncated={insp.ioTruncated} />
+          <MemList title="内存写入" items={insp.memoryWrites} truncated={insp.ioTruncated} />
         </>
       )}
     </div>

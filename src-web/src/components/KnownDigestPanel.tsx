@@ -243,7 +243,7 @@ export default function KnownDigestPanel({
                 border: "1px solid var(--border-color)", borderRadius: 4, fontSize: 11, fontFamily: "inherit",
               }}
             >
-              <option value="auto">Auto detect</option>
+              <option value="auto">自动识别</option>
               <option value="crc32">CRC32</option>
               <option value="md5">MD5</option>
               <option value="sha1">SHA-1</option>
@@ -278,7 +278,7 @@ export default function KnownDigestPanel({
         </button>
         {state.advancedOpen && (
           <div style={{ marginTop: 6, display: "flex", flexWrap: "wrap", gap: "6px 16px", fontSize: 11 }}>
-            <span style={{ color: "var(--text-primary)" }}>UTF-8 bytes (always)</span>
+              <span style={{ color: "var(--text-primary)" }}>UTF-8 字节（始终启用）</span>
             {([
               ["utf8Nul", "UTF-8 + NUL"],
               ["utf16le", "UTF-16LE"],
@@ -337,13 +337,13 @@ export default function KnownDigestPanel({
           <span>{state.response.candidateCount.toLocaleString()} strings checked</span>
           <span>{validQueries.length} valid digests</span>
           {invalidQueries.length > 0 && <span style={{ color: "var(--reg-changed)" }}>{invalidQueries.length} invalid</span>}
-          {state.response.truncated && <span style={{ color: "var(--text-changes)" }}>Showing first 500 results</span>}
+          {state.response.truncated && <span style={{ color: "var(--text-changes)" }}>仅显示前 500 条结果</span>}
         </div>
       )}
 
       {invalidQueries.length > 0 && (
         <details style={{ borderBottom: "1px solid var(--border-color)", padding: "5px 8px", fontSize: 11, flexShrink: 0 }}>
-          <summary style={{ cursor: "pointer", color: "var(--reg-changed)" }}>Invalid digest input</summary>
+          <summary style={{ cursor: "pointer", color: "var(--reg-changed)" }}>无效的摘要输入</summary>
           <div style={{ marginTop: 5, display: "flex", flexDirection: "column", gap: 3 }}>
             {invalidQueries.map((query, index) => (
               <div key={`${query.input}-${index}`} style={{ display: "flex", gap: 8 }}>
@@ -362,7 +362,7 @@ export default function KnownDigestPanel({
             gridTemplateColumns: "76px 112px 95px 74px 110px 1fr 250px", alignItems: "center",
             padding: "0 8px", background: "var(--bg-secondary)", color: "var(--text-secondary)", fontSize: 11,
           }}>
-            <span>Last write</span><span>Address</span><span>Algorithm</span><span>Length</span><span>Writes</span><span>Digest</span><span>Actions</span>
+            <span>最后写入</span><span>地址</span><span>算法</span><span>长度</span><span>写入次数</span><span>摘要</span><span>操作</span>
           </div>
           {state.memoryResponse.matches.length === 0 ? (
             <div style={{ padding: "12px", color: "var(--text-secondary)", fontSize: 11, textAlign: "center" }}>
@@ -384,15 +384,15 @@ export default function KnownDigestPanel({
               <span title={match.writeSeqs.map(seq => `#${seq + 1}`).join(", ")}>{match.writeSeqs.length} instructions</span>
               <span title={match.normalizedDigest} style={{ overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", fontFamily: "monospace" }}>{match.normalizedDigest}</span>
               <div style={{ display: "flex", gap: 5 }}>
-                <button type="button" style={buttonStyle} onClick={() => onJumpToSeq(match.lastWriteSeq)}>Jump</button>
-                <button type="button" style={buttonStyle} onClick={() => emit("action:view-in-memory", { addr: match.addr, seq: match.lastWriteSeq })}>Memory</button>
-                <button type="button" style={buttonStyle} onClick={() => emit("action:trace-memory-value", { addr: match.addr, size: match.byteLen, seq: match.lastWriteSeq })}>Trace Output</button>
+                <button type="button" style={buttonStyle} onClick={() => onJumpToSeq(match.lastWriteSeq)}>跳转</button>
+                <button type="button" style={buttonStyle} onClick={() => emit("action:view-in-memory", { addr: match.addr, seq: match.lastWriteSeq })}>查看内存</button>
+                <button type="button" style={buttonStyle} onClick={() => emit("action:trace-memory-value", { addr: match.addr, size: match.byteLen, seq: match.lastWriteSeq })}>追踪输出</button>
               </div>
             </div>
           ))}
           <div style={{ padding: "4px 8px", background: "var(--bg-secondary)", color: "var(--text-secondary)", fontSize: 10 }}>
             {state.memoryResponse.totalMatches.toLocaleString()} memory matches · {state.memoryResponse.writesScanned.toLocaleString()} writes scanned
-            {state.memoryResponse.truncated ? " · showing first 500" : ""}
+            {state.memoryResponse.truncated ? " · 仅显示前 500 条" : ""}
           </div>
         </div>
       )}
@@ -424,7 +424,7 @@ export default function KnownDigestPanel({
               background: "var(--bg-secondary)", color: "var(--text-secondary)",
               borderBottom: "1px solid var(--border-color)", fontSize: 11,
             }}>
-              <span>Line#</span><span>String / Digest</span><span>Address</span><span>Algorithm</span><span>Bytes</span><span>XRefs</span><span>Actions</span>
+              <span>行号</span><span>字符串 / 摘要</span><span>地址</span><span>算法</span><span>字节数</span><span>交叉引用</span><span>操作</span>
             </div>
             {state.response?.matches.map((match, index) => (
               <div
@@ -461,17 +461,17 @@ export default function KnownDigestPanel({
                 </div>
                 <span>{match.xrefCount}</span>
                 <div style={{ display: "flex", gap: 5, alignItems: "center" }}>
-                  <button type="button" style={buttonStyle} onClick={() => onJumpToSeq(match.seq)}>Jump</button>
-                  <button type="button" style={buttonStyle} onClick={() => emit("action:view-in-memory", { addr: match.addr, seq: match.seq })}>Memory</button>
-                  <button type="button" style={buttonStyle} onClick={() => void showXRefs(match)}>XRefs</button>
+                  <button type="button" style={buttonStyle} onClick={() => onJumpToSeq(match.seq)}>跳转</button>
+                  <button type="button" style={buttonStyle} onClick={() => emit("action:view-in-memory", { addr: match.addr, seq: match.seq })}>查看内存</button>
+                  <button type="button" style={buttonStyle} onClick={() => void showXRefs(match)}>交叉引用</button>
                   <button
                     type="button"
                     style={{ ...buttonStyle, opacity: onTraceInput ? 1 : 0.45, cursor: onTraceInput ? "pointer" : "default" }}
                     disabled={!onTraceInput}
                     onClick={() => onTraceInput && void onTraceInput(match)}
-                    title="Trace the indexed string bytes backward using data dependencies"
+                  title="沿数据依赖向后追踪已索引字符串的字节"
                   >
-                    Trace Input
+                    追踪输入
                   </button>
                 </div>
               </div>

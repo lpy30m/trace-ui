@@ -190,18 +190,18 @@ export default function TaintResultViews({ sessionId, sources, sliceInfo, onJump
         <div style={{ color: "var(--text-error)", lineHeight: 1.5 }}>{error}</div>
       ) : mode === "summary" ? (
         <div style={{ display: "grid", gridTemplateColumns: "minmax(160px, 1fr) minmax(160px, 1fr)", gap: "8px 24px" }}>
-          <div><span style={{ color: "var(--text-secondary)" }}>Sources: </span><span style={{ color: "var(--text-primary)" }}>{sources.map(sourceLabel).join(", ")}</span></div>
-          <div><span style={{ color: "var(--text-secondary)" }}>Matched: </span><span style={{ color: "var(--text-primary)" }}>{sliceInfo.markedCount.toLocaleString()} instructions</span></div>
-          <div><span style={{ color: "var(--text-secondary)" }}>Dependency nodes: </span><span style={{ color: "var(--text-primary)" }}>{graph ? graph.totalReachable.toLocaleString() : "-"}</span></div>
-          <div><span style={{ color: "var(--text-secondary)" }}>Inputs: </span><span style={{ color: "var(--text-primary)" }}>{graph ? graph.nodes.filter(node => node.isLeaf).length.toLocaleString() : "-"} leaf values</span></div>
-          <div><span style={{ color: "var(--text-secondary)" }}>Root: </span><button type="button" onClick={() => graph && onJumpToSeq(graph.rootSeq)} style={{ padding: 0, border: "none", background: "transparent", color: "var(--accent, #61afef)", cursor: graph ? "pointer" : "default" }}>{graph ? `#${graph.rootSeq + 1}` : "-"}</button></div>
-          <div><span style={{ color: "var(--text-secondary)" }}>Operations: </span><span style={{ color: "var(--text-primary)" }}>{operationSummary.map(([name, count]) => `${name} ${count}`).join(" · ") || "-"}</span></div>
-          <div style={{ gridColumn: "1 / -1" }}><span style={{ color: "var(--text-secondary)" }}>Functions: </span><span style={{ color: "var(--text-primary)" }}>{summary.functions.join(", ") || "-"}</span></div>
-          <div style={{ gridColumn: "1 / -1" }}><span style={{ color: "var(--text-secondary)" }}>Modules: </span><span style={{ color: "var(--text-primary)" }}>{summary.modules.join(", ") || "-"}</span></div>
-          <div style={{ gridColumn: "1 / -1" }}><span style={{ color: "var(--text-secondary)" }}>Memory input: </span><span style={{ color: "var(--text-primary)", fontFamily: "monospace" }}>{summary.reads.join(", ") || "-"}</span></div>
-          <div style={{ gridColumn: "1 / -1" }}><span style={{ color: "var(--text-secondary)" }}>Memory output: </span><span style={{ color: "var(--text-primary)", fontFamily: "monospace" }}>{summary.writes.join(", ") || "-"}</span></div>
-          <div style={{ gridColumn: "1 / -1" }}><span style={{ color: "var(--text-secondary)" }}>Key strings: </span><span style={{ color: "var(--syntax-string)" }}>{strings.map(record => `"${record.content}"`).join(", ") || "-"}</span></div>
-          {graph?.truncated && <div style={{ gridColumn: "1 / -1", color: "var(--text-changes)" }}>Dependency preview is limited to 1,000 nodes.</div>}
+          <div><span style={{ color: "var(--text-secondary)" }}>来源：</span><span style={{ color: "var(--text-primary)" }}>{sources.map(sourceLabel).join(", ")}</span></div>
+          <div><span style={{ color: "var(--text-secondary)" }}>匹配：</span><span style={{ color: "var(--text-primary)" }}>{sliceInfo.markedCount.toLocaleString()} 条指令</span></div>
+          <div><span style={{ color: "var(--text-secondary)" }}>依赖节点：</span><span style={{ color: "var(--text-primary)" }}>{graph ? graph.totalReachable.toLocaleString() : "-"}</span></div>
+          <div><span style={{ color: "var(--text-secondary)" }}>输入：</span><span style={{ color: "var(--text-primary)" }}>{graph ? graph.nodes.filter(node => node.isLeaf).length.toLocaleString() : "-"} 个叶值</span></div>
+          <div><span style={{ color: "var(--text-secondary)" }}>根节点：</span><button type="button" onClick={() => graph && onJumpToSeq(graph.rootSeq)} style={{ padding: 0, border: "none", background: "transparent", color: "var(--accent, #61afef)", cursor: graph ? "pointer" : "default" }}>{graph ? `#${graph.rootSeq + 1}` : "-"}</button></div>
+          <div><span style={{ color: "var(--text-secondary)" }}>操作：</span><span style={{ color: "var(--text-primary)" }}>{operationSummary.map(([name, count]) => `${name} ${count}`).join(" · ") || "-"}</span></div>
+          <div style={{ gridColumn: "1 / -1" }}><span style={{ color: "var(--text-secondary)" }}>函数：</span><span style={{ color: "var(--text-primary)" }}>{summary.functions.join(", ") || "-"}</span></div>
+          <div style={{ gridColumn: "1 / -1" }}><span style={{ color: "var(--text-secondary)" }}>模块：</span><span style={{ color: "var(--text-primary)" }}>{summary.modules.join(", ") || "-"}</span></div>
+          <div style={{ gridColumn: "1 / -1" }}><span style={{ color: "var(--text-secondary)" }}>内存输入：</span><span style={{ color: "var(--text-primary)", fontFamily: "monospace" }}>{summary.reads.join(", ") || "-"}</span></div>
+          <div style={{ gridColumn: "1 / -1" }}><span style={{ color: "var(--text-secondary)" }}>内存输出：</span><span style={{ color: "var(--text-primary)", fontFamily: "monospace" }}>{summary.writes.join(", ") || "-"}</span></div>
+          <div style={{ gridColumn: "1 / -1" }}><span style={{ color: "var(--text-secondary)" }}>关键字符串：</span><span style={{ color: "var(--syntax-string)" }}>{strings.map(record => `"${record.content}"`).join(", ") || "-"}</span></div>
+          {graph?.truncated && <div style={{ gridColumn: "1 / -1", color: "var(--text-changes)" }}>依赖预览最多显示 1,000 个节点。</div>}
         </div>
       ) : mode === "steps" ? (
         <div style={{ overflow: "auto", minHeight: 0 }}>

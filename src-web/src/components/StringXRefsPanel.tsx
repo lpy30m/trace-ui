@@ -41,7 +41,7 @@ export default function StringXRefsPanel() {
   if (!data) {
     return (
       <div style={{ flex: 1, display: "flex", alignItems: "center", justifyContent: "center" }}>
-        <span style={{ color: "var(--text-secondary)", fontSize: 12 }}>Loading...</span>
+        <span style={{ color: "var(--text-secondary)", fontSize: 12 }}>加载中…</span>
       </div>
     );
   }
@@ -57,17 +57,17 @@ export default function StringXRefsPanel() {
         display: "flex", gap: 16, flexWrap: "wrap",
       }}>
         <span>
-          <span style={{ color: "var(--text-secondary)" }}>String: </span>
+          <span style={{ color: "var(--text-secondary)" }}>字符串：</span>
           <span style={{ color: "var(--syntax-string)" }}>
             "{record.content.length > 40 ? record.content.slice(0, 40) + "..." : record.content}"
           </span>
         </span>
         <span>
-          <span style={{ color: "var(--text-secondary)" }}>Addr: </span>
+          <span style={{ color: "var(--text-secondary)" }}>地址：</span>
           <span style={{ color: "var(--text-primary)" }}>{record.addr}</span>
         </span>
         <span>
-          <span style={{ color: "var(--text-secondary)" }}>Total: </span>
+          <span style={{ color: "var(--text-secondary)" }}>总数：</span>
           <span style={{ color: "var(--text-primary)" }}>{items.length}</span>
         </span>
       </div>
@@ -80,13 +80,13 @@ export default function StringXRefsPanel() {
         fontSize: 11, color: "var(--text-secondary)", flexShrink: 0,
         fontFamily: "var(--font-mono)",
       }}>
-        <span style={{ width: seqCol.width, flexShrink: 0 }}>Seq</span>
+        <span style={{ width: seqCol.width, flexShrink: 0 }}>序号</span>
         <div onMouseDown={seqCol.onMouseDown} style={HANDLE_STYLE}><div style={{ width: 1, height: "100%", background: "var(--border-color)" }} /></div>
-        <span style={{ width: rwCol.width, flexShrink: 0 }}>R/W</span>
+        <span style={{ width: rwCol.width, flexShrink: 0 }}>读/写</span>
         <div onMouseDown={rwCol.onMouseDown} style={HANDLE_STYLE}><div style={{ width: 1, height: "100%", background: "var(--border-color)" }} /></div>
-        <span style={{ width: addrCol.width, flexShrink: 0 }}>Address</span>
+        <span style={{ width: addrCol.width, flexShrink: 0 }}>地址</span>
         <div onMouseDown={addrCol.onMouseDown} style={HANDLE_STYLE}><div style={{ width: 1, height: "100%", background: "var(--border-color)" }} /></div>
-        <span style={{ flex: 1 }}>Disasm</span>
+        <span style={{ flex: 1 }}>反汇编</span>
       </div>
 
       {/* 列表 */}

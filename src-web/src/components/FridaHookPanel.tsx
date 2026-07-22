@@ -337,23 +337,23 @@ export default function FridaHookPanel({ seed }: Props) {
     <div style={{ flex: 1, minWidth: 0, minHeight: 0, display: "flex", overflow: "hidden" }}>
       <div style={{ width: "min(580px, 48%)", minWidth: 430, display: "flex", flexDirection: "column", borderRight: "1px solid var(--border-color)", overflow: "auto" }}>
         <div style={{ display: "grid", gridTemplateColumns: "105px minmax(0, 1fr)", gap: 7, alignItems: "center", padding: 10, borderBottom: "1px solid var(--border-color)", fontSize: 11 }}>
-          <label htmlFor="frida-recipe">API recipe</label>
+          <label htmlFor="frida-recipe">API 配方</label>
           <div style={{ display: "flex", gap: 5, minWidth: 0 }}>
             <select id="frida-recipe" style={{ ...inputStyle, flex: 1 }} value={selectedRecipeId} onChange={event => setSelectedRecipeId(event.target.value)}>
-              <option value="">Manual configuration</option>
+              <option value="">手动配置</option>
               {recipes.map(recipe => <option key={recipe.recipeId} value={recipe.recipeId}>{recipe.provider} · {recipe.displayName}</option>)}
             </select>
-            <button type="button" style={{ ...buttonStyle, opacity: selectedRecipe ? 1 : 0.5 }} disabled={!selectedRecipe} onClick={applySelectedRecipe}>Apply</button>
+            <button type="button" style={{ ...buttonStyle, opacity: selectedRecipe ? 1 : 0.5 }} disabled={!selectedRecipe} onClick={applySelectedRecipe}>应用</button>
           </div>
           {selectedRecipe && <>
-            <span>Recipe scope</span>
+            <span>配方范围</span>
             <div style={{ color: "var(--text-secondary)" }}>
               <div>{selectedRecipe.description}</div>
-              <div style={{ marginTop: 3 }}>Roles: {selectedRecipe.evidenceRoles.join(", ")}</div>
+              <div style={{ marginTop: 3 }}>证据角色：{selectedRecipe.evidenceRoles.join(", ")}</div>
               {selectedRecipe.warnings.map((warning, index) => <div key={index} style={{ marginTop: 3, color: "#d29922" }}>{warning}</div>)}
             </div>
           </>}
-          <label htmlFor="frida-module">Module</label>
+          <label htmlFor="frida-module">模块</label>
           <input
             id="frida-module"
             style={inputStyle}
@@ -362,13 +362,13 @@ export default function FridaHookPanel({ seed }: Props) {
             onChange={event => setRequest(previous => ({ ...previous, moduleName: event.target.value }))}
           />
 
-          <span>Target</span>
+          <span>目标</span>
           <div style={{ display: "flex", minWidth: 0, border: "1px solid var(--border-color)", borderRadius: 3, overflow: "hidden" }}>
-            <button type="button" style={segmentStyle(targetMode === "symbol")} onClick={() => setTargetMode("symbol")}>Symbol</button>
-            <button type="button" style={{ ...segmentStyle(targetMode === "offset"), borderRight: "none" }} onClick={() => setTargetMode("offset")}>Module offset</button>
+            <button type="button" style={segmentStyle(targetMode === "symbol")} onClick={() => setTargetMode("symbol")}>导出符号</button>
+            <button type="button" style={{ ...segmentStyle(targetMode === "offset"), borderRight: "none" }} onClick={() => setTargetMode("offset")}>模块偏移</button>
           </div>
 
-          <label htmlFor="frida-target">{targetMode === "symbol" ? "Symbol" : "Offset"}</label>
+          <label htmlFor="frida-target">{targetMode === "symbol" ? "符号" : "偏移"}</label>
           <input
             id="frida-target"
             style={inputStyle}
@@ -379,7 +379,7 @@ export default function FridaHookPanel({ seed }: Props) {
               : { ...previous, offset: event.target.value })}
           />
 
-          <label htmlFor="frida-label">Hook label</label>
+          <label htmlFor="frida-label">Hook 标签</label>
           <input
             id="frida-label"
             style={inputStyle}
@@ -397,36 +397,36 @@ export default function FridaHookPanel({ seed }: Props) {
             </label>
             <label style={{ display: "flex", alignItems: "center", gap: 5 }}>
               <input type="checkbox" checked={request.captureReturn} onChange={event => setRequest(previous => ({ ...previous, captureReturn: event.target.checked }))} />
-              Return value
+              返回值
             </label>
             <label style={{ display: "flex", alignItems: "center", gap: 5 }}>
               <input type="checkbox" checked={request.captureBacktrace} onChange={event => setRequest(previous => ({ ...previous, captureBacktrace: event.target.checked }))} />
-              Backtrace
+              回溯
             </label>
           </div>
           <div style={{ display: "grid", gridTemplateColumns: "105px minmax(100px, 1fr) 92px minmax(70px, 1fr)", gap: 7, alignItems: "center", marginTop: 9 }}>
-            <label htmlFor="frida-stalker">Stalker</label>
+            <label htmlFor="frida-stalker">Stalker 跟踪</label>
             <select id="frida-stalker" style={inputStyle} value={request.stalker} onChange={event => setRequest(previous => ({ ...previous, stalker: event.target.value as FridaStalkerMode }))}>
-              <option value="off">Off</option>
-              <option value="calls">Calls</option>
-              <option value="blocks">Blocks</option>
-              <option value="instructions">Instructions</option>
+              <option value="off">关闭</option>
+              <option value="calls">调用</option>
+              <option value="blocks">基本块</option>
+              <option value="instructions">指令</option>
             </select>
-            <label htmlFor="frida-duration">Duration ms</label>
+            <label htmlFor="frida-duration">持续时间（毫秒）</label>
             <input id="frida-duration" type="number" min={100} max={600000} style={inputStyle} value={request.stalkerDurationMs} onChange={event => setRequest(previous => ({ ...previous, stalkerDurationMs: Number(event.target.value) }))} />
-            <label htmlFor="frida-max-bytes">Max bytes</label>
+            <label htmlFor="frida-max-bytes">最大字节数</label>
             <input id="frida-max-bytes" type="number" min={1} max={1048576} style={inputStyle} value={request.maxBytes} onChange={event => setRequest(previous => ({ ...previous, maxBytes: Number(event.target.value) }))} />
           </div>
         </div>
 
         <div style={{ display: "flex", alignItems: "center", padding: "7px 10px", borderBottom: "1px solid var(--border-color)" }}>
-          <strong style={{ fontSize: 11 }}>Argument captures</strong>
+          <strong style={{ fontSize: 11 }}>参数捕获</strong>
           <span style={{ flex: 1 }} />
-          <button type="button" style={{ ...buttonStyle, opacity: request.arguments.length >= 8 ? 0.5 : 1 }} disabled={request.arguments.length >= 8} onClick={addArgument}>Add capture</button>
+          <button type="button" style={{ ...buttonStyle, opacity: request.arguments.length >= 8 ? 0.5 : 1 }} disabled={request.arguments.length >= 8} onClick={addArgument}>添加捕获</button>
         </div>
         <div style={{ padding: "6px 10px 10px" }}>
           <div style={{ display: "grid", gridTemplateColumns: "54px minmax(85px, 1fr) 104px 84px 68px 70px 70px 26px", gap: 5, alignItems: "center", color: "var(--text-tertiary)", fontSize: 10, marginBottom: 4 }}>
-            <span>Register</span><span>Label</span><span>Decoder</span><span>Phase</span><span>Length</span><span>Length reg</span><span>Length *reg</span><span />
+            <span>寄存器</span><span>标签</span><span>解码器</span><span>阶段</span><span>长度</span><span>长度寄存器</span><span>长度指针</span><span />
           </div>
           {request.arguments.map((argument, row) => (
             <div key={`${row}-${argument.index}`} style={{ display: "grid", gridTemplateColumns: "54px minmax(85px, 1fr) 104px 84px 68px 70px 70px 26px", gap: 5, alignItems: "center", marginBottom: 5 }}>
@@ -435,52 +435,52 @@ export default function FridaHookPanel({ seed }: Props) {
               </select>
               <input style={inputStyle} value={argument.label || ""} onChange={event => updateArgument(row, { label: event.target.value })} />
               <select style={inputStyle} value={argument.kind} onChange={event => updateArgument(row, { kind: event.target.value as FridaArgumentKind })}>
-                <option value="integer">Integer</option>
-                <option value="pointer">Pointer</option>
-                <option value="utf8String">UTF-8</option>
-                <option value="utf16String">UTF-16</option>
-                <option value="byteArray">Byte array</option>
+                <option value="integer">整数</option>
+                <option value="pointer">指针</option>
+                <option value="utf8String">UTF-8 字符串</option>
+                <option value="utf16String">UTF-16 字符串</option>
+                <option value="byteArray">字节数组</option>
               </select>
               <select style={inputStyle} value={argument.direction} onChange={event => updateArgument(row, { direction: event.target.value as FridaCaptureDirection })}>
-                <option value="input">Input</option>
-                <option value="output">Output</option>
-                <option value="inOut">In/out</option>
+                <option value="input">输入</option>
+                <option value="output">输出</option>
+                <option value="inOut">输入/输出</option>
               </select>
               <input type="number" min={0} style={inputStyle} value={argument.length ?? ""} onChange={event => updateArgument(row, { length: optionalNumber(event.target.value) })} />
               <select style={inputStyle} value={argument.lengthArg ?? ""} onChange={event => updateArgument(row, { lengthArg: optionalNumber(event.target.value) })}>
-                <option value="">None</option>
+                <option value="">无</option>
                 {Array.from({ length: 8 }, (_, index) => <option key={index} value={index}>X{index}</option>)}
               </select>
               <select style={inputStyle} value={argument.lengthPointerArg ?? ""} onChange={event => updateArgument(row, { lengthPointerArg: optionalNumber(event.target.value) })}>
-                <option value="">None</option>
+                <option value="">无</option>
                 {Array.from({ length: 8 }, (_, index) => <option key={index} value={index}>*X{index}</option>)}
               </select>
-              <button type="button" title="Remove capture" aria-label="Remove capture" onClick={() => removeArgument(row)} style={{ ...buttonStyle, width: 26, padding: 0 }}>x</button>
+              <button type="button" title="移除捕获" aria-label="移除捕获" onClick={() => removeArgument(row)} style={{ ...buttonStyle, width: 26, padding: 0 }}>x</button>
             </div>
           ))}
           {request.arguments.length === 0 && (
-            <div style={{ color: "var(--text-tertiary)", fontSize: 11, padding: "5px 0" }}>No argument captures</div>
+            <div style={{ color: "var(--text-tertiary)", fontSize: 11, padding: "5px 0" }}>尚未添加参数捕获</div>
           )}
         </div>
       </div>
 
       <div style={{ flex: 1, minWidth: 0, display: "flex", flexDirection: "column", overflow: "hidden" }}>
         <div style={{ minHeight: 38, display: "flex", alignItems: "center", gap: 6, padding: "6px 8px", borderBottom: "1px solid var(--border-color)", flexShrink: 0, overflowX: "auto" }}>
-          <button type="button" disabled={generating} onClick={generate} style={{ ...buttonStyle, background: "var(--btn-primary)", color: "#fff", border: "none", opacity: generating ? 0.6 : 1 }}>{generating ? "Generating..." : "Generate"}</button>
-          <button type="button" onClick={save} style={buttonStyle}>Save .js</button>
-          <button type="button" disabled={!generated} onClick={copyScript} style={{ ...buttonStyle, opacity: generated ? 1 : 0.5 }}>Copy script</button>
-          <button type="button" onClick={importCapture} style={buttonStyle}>Import capture</button>
-          <button type="button" onClick={() => setOutputView("script")} style={{ ...buttonStyle, background: outputView === "script" ? "var(--bg-selected)" : "var(--bg-input)" }}>Script</button>
-          <button type="button" disabled={!captureBundle} onClick={() => setOutputView("capture")} style={{ ...buttonStyle, background: outputView === "capture" ? "var(--bg-selected)" : "var(--bg-input)", opacity: captureBundle ? 1 : 0.5 }}>Capture</button>
-          <button type="button" disabled={!fridaMaterials} onClick={() => setOutputView("materials")} style={{ ...buttonStyle, background: outputView === "materials" ? "var(--bg-selected)" : "var(--bg-input)", opacity: fridaMaterials ? 1 : 0.5 }}>Materials</button>
-          <button type="button" disabled={!angrSeed} onClick={() => setOutputView("seed")} style={{ ...buttonStyle, background: outputView === "seed" ? "var(--bg-selected)" : "var(--bg-input)", opacity: angrSeed ? 1 : 0.5 }}>angr seed</button>
+          <button type="button" disabled={generating} onClick={generate} style={{ ...buttonStyle, background: "var(--btn-primary)", color: "#fff", border: "none", opacity: generating ? 0.6 : 1 }}>{generating ? "生成中…" : "生成脚本"}</button>
+          <button type="button" onClick={save} style={buttonStyle}>保存 .js</button>
+          <button type="button" disabled={!generated} onClick={copyScript} style={{ ...buttonStyle, opacity: generated ? 1 : 0.5 }}>复制脚本</button>
+          <button type="button" onClick={importCapture} style={buttonStyle}>导入捕获</button>
+          <button type="button" onClick={() => setOutputView("script")} style={{ ...buttonStyle, background: outputView === "script" ? "var(--bg-selected)" : "var(--bg-input)" }}>脚本</button>
+          <button type="button" disabled={!captureBundle} onClick={() => setOutputView("capture")} style={{ ...buttonStyle, background: outputView === "capture" ? "var(--bg-selected)" : "var(--bg-input)", opacity: captureBundle ? 1 : 0.5 }}>捕获结果</button>
+          <button type="button" disabled={!fridaMaterials} onClick={() => setOutputView("materials")} style={{ ...buttonStyle, background: outputView === "materials" ? "var(--bg-selected)" : "var(--bg-input)", opacity: fridaMaterials ? 1 : 0.5 }}>材料索引</button>
+          <button type="button" disabled={!angrSeed} onClick={() => setOutputView("seed")} style={{ ...buttonStyle, background: outputView === "seed" ? "var(--bg-selected)" : "var(--bg-input)", opacity: angrSeed ? 1 : 0.5 }}>angr 种子</button>
           <span style={{ flex: 1 }} />
           {seedLabel && <span title={seedLabel} style={{ maxWidth: 240, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", color: "var(--text-tertiary)", fontSize: 10 }}>{seedLabel}</span>}
         </div>
         {error && <div style={{ padding: "7px 10px", color: "#e5484d", borderBottom: "1px solid var(--border-color)", fontSize: 11 }}>{error}</div>}
         {outputView === "script" && (
           <>
-            {savedPath && <div title={savedPath} style={{ padding: "6px 10px", color: "#3fb950", borderBottom: "1px solid var(--border-color)", fontSize: 11, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>Saved: {savedPath}</div>}
+            {savedPath && <div title={savedPath} style={{ padding: "6px 10px", color: "#3fb950", borderBottom: "1px solid var(--border-color)", fontSize: 11, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>已保存：{savedPath}</div>}
             {generated && (
               <div style={{ padding: "7px 10px", borderBottom: "1px solid var(--border-color)", fontSize: 11 }}>
                 <div style={{ display: "flex", gap: 10, marginBottom: generated.warnings.length ? 5 : 0 }}>
@@ -523,7 +523,7 @@ export default function FridaHookPanel({ seed }: Props) {
                     <div style={{ marginTop: 2, color: "var(--text-tertiary)" }}>{Object.keys(event.registers).length} regs · {event.captures.length} captures{event.stalkerEventCount != null ? ` · ${event.stalkerEventCount} Stalker events` : ""}</div>
                   </button>
                 ))}
-                {captureBundle.events.length > 5000 && <div style={{ padding: 8, color: "#d29922" }}>UI list limited to the first 5000 events.</div>}
+                {captureBundle.events.length > 5000 && <div style={{ padding: 8, color: "#d29922" }}>界面列表仅显示前 5000 个事件。</div>}
               </div>
               <div style={{ flex: 1, minWidth: 0, overflow: "auto", padding: 10 }}>
                 {selectedCaptureEvent ? (
@@ -544,18 +544,18 @@ export default function FridaHookPanel({ seed }: Props) {
                         <div style={{ marginTop: 3, overflowWrap: "anywhere", color: capture.readError ? "#e5484d" : "var(--text-secondary)" }}>{capture.readError || capture.value || "no value"}</div>
                       </div>
                     ))}
-                    {selectedCaptureEvent.returnValue && <div style={{ marginTop: 8 }}><strong>Return:</strong> <code>{selectedCaptureEvent.returnValue}</code></div>}
+                    {selectedCaptureEvent.returnValue && <div style={{ marginTop: 8 }}><strong>返回值：</strong> <code>{selectedCaptureEvent.returnValue}</code></div>}
                     {selectedCaptureEvent.error && <div style={{ marginTop: 8, color: "#e5484d" }}>{selectedCaptureEvent.error}</div>}
                     {selectedCaptureEvent.backtrace.length > 0 && <pre style={{ marginTop: 8, padding: 7, overflow: "auto", background: "var(--bg-secondary)", fontSize: 10 }}>{selectedCaptureEvent.backtrace.join("\n")}</pre>}
                     <div style={{ display: "flex", gap: 8, alignItems: "center", marginTop: 12, paddingTop: 9, borderTop: "1px solid var(--border-color)" }}>
-                      <label style={{ display: "flex", alignItems: "center", gap: 4 }}><input type="checkbox" checked={includeUnknownMaterials} onChange={event => { setIncludeUnknownMaterials(event.target.checked); setFridaMaterials(null); }} />Include weak material roles</label>
-                      <button type="button" style={buttonStyle} onClick={analyzeCaptureMaterials}>Index crypto materials</button>
-                      <label style={{ display: "flex", alignItems: "center", gap: 4 }}><input type="checkbox" checked={includeSp} onChange={event => { setIncludeSp(event.target.checked); setAngrSeed(null); }} />Seed SP</label>
-                      <label style={{ display: "flex", alignItems: "center", gap: 4 }}><input type="checkbox" checked={includeLr} onChange={event => { setIncludeLr(event.target.checked); setAngrSeed(null); }} />Seed LR/X30</label>
-                      <button type="button" style={{ ...buttonStyle, background: "var(--btn-primary)", color: "#fff", border: "none" }} onClick={generateStateSeed}>Generate angr seed</button>
+                      <label style={{ display: "flex", alignItems: "center", gap: 4 }}><input type="checkbox" checked={includeUnknownMaterials} onChange={event => { setIncludeUnknownMaterials(event.target.checked); setFridaMaterials(null); }} />包含弱证据材料角色</label>
+                      <button type="button" style={buttonStyle} onClick={analyzeCaptureMaterials}>索引加密材料</button>
+                      <label style={{ display: "flex", alignItems: "center", gap: 4 }}><input type="checkbox" checked={includeSp} onChange={event => { setIncludeSp(event.target.checked); setAngrSeed(null); }} />写入 SP 种子</label>
+                      <label style={{ display: "flex", alignItems: "center", gap: 4 }}><input type="checkbox" checked={includeLr} onChange={event => { setIncludeLr(event.target.checked); setAngrSeed(null); }} />写入 LR/X30 种子</label>
+                      <button type="button" style={{ ...buttonStyle, background: "var(--btn-primary)", color: "#fff", border: "none" }} onClick={generateStateSeed}>生成 angr 种子</button>
                     </div>
                   </>
-                ) : <div style={{ color: "var(--text-secondary)" }}>Select a capture event.</div>}
+                ) : <div style={{ color: "var(--text-secondary)" }}>请选择一个捕获事件。</div>}
               </div>
             </div>
           </div>
@@ -568,10 +568,10 @@ export default function FridaHookPanel({ seed }: Props) {
                 <strong>{fridaMaterials.materials.length} materials</strong>
                 <span>{fridaMaterials.verifiedMaterials} verified</span>
                 <span>{fridaMaterials.formulas.length} formulas / {fridaMaterials.verifiedFormulas} verified</span>
-                {fridaMaterials.materialsTruncated && <span style={{ color: "#d29922" }}>truncated</span>}
-                <button type="button" style={buttonStyle} onClick={analyzeCaptureMaterials}>Re-index</button>
+                {fridaMaterials.materialsTruncated && <span style={{ color: "#d29922" }}>已截断</span>}
+                <button type="button" style={buttonStyle} onClick={analyzeCaptureMaterials}>重新索引</button>
               </div>
-              <div style={{ marginTop: 4, color: "var(--text-secondary)" }}>Label/phase classifications remain Related unless exact MD5/SHA/HMAC/PBKDF2 recomputation opens the verification gate.</div>
+              <div style={{ marginTop: 4, color: "var(--text-secondary)" }}>除非通过精确的 MD5/SHA/HMAC/PBKDF2 复算验证，标签/阶段分类仍只表示“相关”。</div>
             </div>
             <div style={{ flex: 1, minHeight: 0, overflow: "auto" }}>
               {fridaMaterials.materials.map(material => (
@@ -589,7 +589,7 @@ export default function FridaHookPanel({ seed }: Props) {
                   <div style={{ marginTop: 3, color: "var(--text-tertiary)" }}>{material.evidence.join(" · ")}</div>
                 </div>
               ))}
-              {fridaMaterials.formulas.length > 0 && <div style={{ padding: "9px", fontWeight: 600, borderBottom: "1px solid var(--border-color)" }}>Verified/reconstructed formulas</div>}
+              {fridaMaterials.formulas.length > 0 && <div style={{ padding: "9px", fontWeight: 600, borderBottom: "1px solid var(--border-color)" }}>已验证/重建公式</div>}
               {fridaMaterials.formulas.map(formula => (
                 <div key={formula.formulaId} style={{ padding: "7px 9px", borderBottom: "1px solid var(--border-color)", background: "var(--bg-secondary)" }}>
                   <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
@@ -598,7 +598,7 @@ export default function FridaHookPanel({ seed }: Props) {
                   <code style={{ display: "block", marginTop: 4, overflowWrap: "anywhere" }}>{formula.expression}</code>
                 </div>
               ))}
-              {fridaMaterials.materials.length === 0 && <div style={{ padding: 14, color: "var(--text-secondary)" }}>No byte-bearing crypto material was classified from this capture.</div>}
+              {fridaMaterials.materials.length === 0 && <div style={{ padding: 14, color: "var(--text-secondary)" }}>本次捕获没有识别出包含字节数据的加密材料。</div>}
             </div>
           </div>
         )}
@@ -610,8 +610,8 @@ export default function FridaHookPanel({ seed }: Props) {
                 <strong>{angrSeed.schemaVersion}</strong>
                 <span>{angrSeed.registersSeeded.length} registers</span>
                 <span>{angrSeed.memoryRegions.length} memory regions</span>
-                <button type="button" style={buttonStyle} onClick={() => navigator.clipboard.writeText(angrSeed.script)}>Copy seed</button>
-                <button type="button" style={buttonStyle} onClick={saveStateSeed}>Save .py</button>
+                <button type="button" style={buttonStyle} onClick={() => navigator.clipboard.writeText(angrSeed.script)}>复制种子</button>
+                <button type="button" style={buttonStyle} onClick={saveStateSeed}>保存 .py</button>
               </div>
               {seedSavedPath && <div title={seedSavedPath} style={{ marginTop: 4, color: "#3fb950", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>Saved: {seedSavedPath}</div>}
               {angrSeed.warnings.map((warning, index) => <div key={index} style={{ marginTop: 3, color: "#d29922" }}>{warning}</div>)}

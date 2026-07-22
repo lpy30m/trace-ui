@@ -653,7 +653,7 @@ export default function MemoryPanel({ selectedSeq: selectedSeqProp, isPhase2Read
       )}
       <span style={{ flex: 1 }} />
       {/* 右侧：Auto + 搜索框 */}
-      <label title="Auto-track memory address accessed by the current instruction; scrolling temporarily disables tracking" style={{ display: "flex", alignItems: "center", gap: 3, color: "var(--text-secondary)", cursor: "pointer", whiteSpace: "nowrap" }}>
+      <label title="自动跟踪当前指令访问的内存地址；滚动时会暂时停用跟踪" style={{ display: "flex", alignItems: "center", gap: 3, color: "var(--text-secondary)", cursor: "pointer", whiteSpace: "nowrap" }}>
         <input
           type="checkbox"
           checked={autoTrack}
@@ -666,7 +666,7 @@ export default function MemoryPanel({ selectedSeq: selectedSeqProp, isPhase2Read
           }}
           style={{ accentColor: "var(--btn-primary)" }}
         />
-        Auto
+        自动跟踪
       </label>
       {/* 长度选择器 */}
       <div style={{ position: "relative", display: "inline-flex", alignItems: "center" }}>
@@ -693,13 +693,13 @@ export default function MemoryPanel({ selectedSeq: selectedSeqProp, isPhase2Read
           {LENGTH_PRESETS.map(v => (
             <option key={v} value={v}>{v}</option>
           ))}
-          <option value="custom">{!LENGTH_PRESETS.includes(hexLength) ? hexLength : "Custom"}</option>
+          <option value="custom">{!LENGTH_PRESETS.includes(hexLength) ? hexLength : "自定义"}</option>
         </select>
         {showLengthInput && (
           <input
             type="text"
             autoFocus
-            placeholder="bytes"
+            placeholder="字节数"
             value={customLengthInput}
             onChange={(e) => setCustomLengthInput(e.target.value.replace(/[^0-9]/g, ""))}
             onKeyDown={(e) => {
@@ -734,7 +734,7 @@ export default function MemoryPanel({ selectedSeq: selectedSeqProp, isPhase2Read
       <div ref={addrInputWrapperRef} style={{ position: "relative", display: "inline-flex", alignItems: "center" }}>
         <input
           type="text"
-          placeholder="Jump to address (hex)"
+          placeholder="跳转到地址（十六进制）"
           value={inputAddr}
           onChange={(e) => setInputAddr(e.target.value)}
           onFocus={() => setShowAddrHistory(true)}
@@ -801,7 +801,7 @@ export default function MemoryPanel({ selectedSeq: selectedSeqProp, isPhase2Read
               onMouseEnter={e => { e.currentTarget.style.background = "var(--bg-selected)"; e.currentTarget.style.color = "var(--text-primary)"; }}
               onMouseLeave={e => { e.currentTarget.style.background = "transparent"; e.currentTarget.style.color = "var(--text-secondary)"; }}
               onClick={clearAllAddrHistory}
-            >Clear All</div>
+            >清空全部</div>
           </div>
         )}
       </div>
@@ -835,7 +835,7 @@ export default function MemoryPanel({ selectedSeq: selectedSeqProp, isPhase2Read
           ) : (<>
             <div style={{ flexShrink: 0, display: "flex", alignItems: "center", padding: "4px 8px", borderBottom: "1px solid var(--border-color)" }}>{toolbar}</div>
             <div style={{ flexShrink: 0, display: "flex", lineHeight: "20px", whiteSpace: "pre", color: "var(--text-secondary)", padding: "0 8px" }}>
-              <span style={{ width: addrColWidth, flexShrink: 0 }}>{"Address"}</span>
+              <span style={{ width: addrColWidth, flexShrink: 0 }}>{"地址"}</span>
               {[0,1,2,3,4,5,6,7].map(i => (
                 <span key={i}>{i.toString(16).toUpperCase().padStart(2, "0")}{" "}</span>
               ))}
@@ -844,7 +844,7 @@ export default function MemoryPanel({ selectedSeq: selectedSeqProp, isPhase2Read
                 <span key={i}>{i.toString(16).toUpperCase().padStart(2, "00")}{" "}</span>
               ))}
               <span style={{ width: 8 }}> </span>
-              <span>{"ASCII"}</span>
+              <span>{"ASCII 字符"}</span>
             </div>
             <div ref={hexWrapperRef} style={{ flex: 1, overflow: "hidden" }}>
             <div onContextMenu={handleHexContextMenu} style={{
@@ -904,13 +904,13 @@ export default function MemoryPanel({ selectedSeq: selectedSeqProp, isPhase2Read
         {/* Hexdump 右键菜单 */}
         {hexContextMenu && (
           <ContextMenu x={hexContextMenu.x} y={hexContextMenu.y} onClose={() => setHexContextMenu(null)}>
-            <ContextMenuItem label="Copy Hexdump" onClick={handleCopyHexdump} disabled={hexLines.length === 0} />
-            <ContextMenuItem label="Copy Hex" onClick={handleCopyHex} disabled={hexLines.length === 0} />
-            <ContextMenuItem label="Copy ASCII" onClick={handleCopyAscii} disabled={hexLines.length === 0} />
+            <ContextMenuItem label="复制十六进制转储" onClick={handleCopyHexdump} disabled={hexLines.length === 0} />
+            <ContextMenuItem label="复制十六进制" onClick={handleCopyHex} disabled={hexLines.length === 0} />
+            <ContextMenuItem label="复制 ASCII" onClick={handleCopyAscii} disabled={hexLines.length === 0} />
             <ContextMenuSeparator />
-            <ContextMenuItem label="Trace Memory Value" onClick={handleTraceMemory} disabled={!traceRange} />
+            <ContextMenuItem label="追踪内存值" onClick={handleTraceMemory} disabled={!traceRange} />
             <ContextMenuSeparator />
-            <ContextMenuItem label="Copy Selected Text" onClick={handleCopySelection} disabled={!hexContextMenu.selText} />
+            <ContextMenuItem label="复制选中文本" onClick={handleCopySelection} disabled={!hexContextMenu.selText} />
           </ContextMenu>
         )}
 
@@ -982,7 +982,7 @@ export default function MemoryPanel({ selectedSeq: selectedSeqProp, isPhase2Read
                             <span style={{ flex: 1, color: "var(--text-secondary)", overflow: "hidden", textOverflow: "ellipsis" }}>{rec.disasm}</span>
                           </>
                         ) : (
-                          <span style={{ color: "var(--text-secondary)", opacity: 0.4 }}>loading...</span>
+                          <span style={{ color: "var(--text-secondary)", opacity: 0.4 }}>加载中…</span>
                         )}
                       </div>
                     );

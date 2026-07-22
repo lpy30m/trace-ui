@@ -182,8 +182,8 @@ export default function TitleBar({ onOpenFile, onCloseFile, onRebuildIndex, onSe
         }}
       >
         {/* File 下拉菜单 */}
-        <MenuDropdown label="File">
-          <MenuItem label="Open File..." shortcut={modKey("O")} onClick={handleOpen} />
+        <MenuDropdown label="文件">
+          <MenuItem label="打开文件…" shortcut={modKey("O")} onClick={handleOpen} />
           {/* Recent Files 子菜单 */}
           <div
             style={{ position: "relative" }}
@@ -199,7 +199,7 @@ export default function TitleBar({ onOpenFile, onCloseFile, onRebuildIndex, onSe
               onMouseEnter={(e) => { e.currentTarget.style.background = "var(--bg-selected)"; }}
               onMouseLeave={(e) => { e.currentTarget.style.background = "transparent"; }}
             >
-              <span style={{ flex: 1 }}>Recent Files</span>
+              <span style={{ flex: 1 }}>最近文件</span>
               <span style={{ marginLeft: 12, fontSize: 10 }}>▶</span>
             </div>
             {recentHover && recentFiles.length > 0 && (
@@ -239,7 +239,7 @@ export default function TitleBar({ onOpenFile, onCloseFile, onRebuildIndex, onSe
                     minWidth={120}
                   >
                     <ContextMenuItem
-                      label="Delete"
+                      label="删除"
                       onClick={() => {
                         onRemoveRecent(recentCtxMenu.path);
                         setRecentCtxMenu(null);
@@ -251,13 +251,13 @@ export default function TitleBar({ onOpenFile, onCloseFile, onRebuildIndex, onSe
             )}
           </div>
           <MenuSeparator />
-          <MenuItem label="Save Taint Results..." disabled={!sliceActive} onClick={onSaveTaintResults} />
+          <MenuItem label="保存污点结果…" disabled={!sliceActive} onClick={onSaveTaintResults} />
           <MenuSeparator />
-          <MenuItem label="Close File" disabled={!isLoaded} onClick={() => setShowCloseConfirm(true)} />
+          <MenuItem label="关闭文件" disabled={!isLoaded} onClick={() => setShowCloseConfirm(true)} />
         </MenuDropdown>
 
         {/* View 下拉菜单 */}
-        <MenuDropdown label="View" minWidth={220}>
+        <MenuDropdown label="视图" minWidth={220}>
           {/* Highlight 子菜单 */}
           <div
             style={{ position: "relative" }}
@@ -274,7 +274,7 @@ export default function TitleBar({ onOpenFile, onCloseFile, onRebuildIndex, onSe
               onMouseEnter={(e) => { if (hasSelectedSeq) e.currentTarget.style.background = "var(--bg-selected)"; }}
               onMouseLeave={(e) => { e.currentTarget.style.background = "transparent"; }}
             >
-              <span style={{ flex: 1 }}>Highlight</span>
+              <span style={{ flex: 1 }}>高亮</span>
               <span style={{ marginLeft: 12, fontSize: 10 }}>▶</span>
             </div>
             {highlightHover && hasSelectedSeq && (
@@ -307,7 +307,7 @@ export default function TitleBar({ onOpenFile, onCloseFile, onRebuildIndex, onSe
                   onMouseLeave={(e) => { (e.currentTarget as HTMLElement).style.background = "transparent"; }}
                   style={{ display: "flex", alignItems: "center", justifyContent: "space-between", padding: "6px 12px", fontSize: 12, color: "var(--text-primary)", cursor: "pointer", whiteSpace: "nowrap" }}
                 >
-                  <span>Strikethrough</span>
+                  <span>删除线</span>
                   <span style={{ color: "var(--text-secondary)", fontSize: 11 }}>{isMac ? "⌥+-" : "Alt+-"}</span>
                 </div>
                 <div
@@ -316,53 +316,53 @@ export default function TitleBar({ onOpenFile, onCloseFile, onRebuildIndex, onSe
                   onMouseLeave={(e) => { (e.currentTarget as HTMLElement).style.background = "transparent"; }}
                   style={{ display: "flex", alignItems: "center", justifyContent: "space-between", padding: "6px 12px", fontSize: 12, color: "var(--text-primary)", cursor: "pointer", whiteSpace: "nowrap" }}
                 >
-                  <span>Reset</span>
+                  <span>重置高亮</span>
                   <span style={{ color: "var(--text-secondary)", fontSize: 11 }}>{isMac ? "⌥+0" : "Alt+0"}</span>
                 </div>
               </div>
             )}
           </div>
-          <MenuItem label="Hide" shortcut={modKey("/")} disabled={!hasSelectedSeq} onClick={onHide} />
+          <MenuItem label="隐藏" shortcut={modKey("/")} disabled={!hasSelectedSeq} onClick={onHide} />
           <MenuSeparator />
           <MenuItem
-            label={preferences.showAllHidden ? "Cancel Show All Hidden" : "Show All Hidden"}
+            label={preferences.showAllHidden ? "取消显示全部隐藏项" : "显示全部隐藏项"}
             onClick={() => onUpdatePreferences({ showAllHidden: !preferences.showAllHidden })}
           />
           <MenuItem
-            label={preferences.showHiddenIndicators ? "Hide Hidden Indicators" : "Show Hidden Indicators"}
+            label={preferences.showHiddenIndicators ? "隐藏隐藏标记" : "显示隐藏标记"}
             disabled={preferences.showAllHidden}
             onClick={() => onUpdatePreferences({ showHiddenIndicators: !preferences.showHiddenIndicators })}
           />
         </MenuDropdown>
 
         {/* Analysis 下拉菜单 */}
-        <MenuDropdown label="Analysis" minWidth={200}>
-          <MenuItem label="Taint Analysis..." disabled={!hasSelectedSeq} onClick={onTaintAnalysis} />
+        <MenuDropdown label="分析" minWidth={200}>
+          <MenuItem label="污点分析…" disabled={!hasSelectedSeq} onClick={onTaintAnalysis} />
           <MenuItem
-              label={hasStringIndex ? "Rescan Strings" : "Scan Strings"}
+              label={hasStringIndex ? "重新扫描字符串" : "扫描字符串"}
               disabled={!isLoaded || !isPhase2Ready || stringsScanning}
               onClick={() => setShowScanStringsConfirm(true)}
           />
           <MenuItem
-              label="Scan Crypto"
+              label="扫描加密常量"
               disabled={!isLoaded || cryptoScanning}
               onClick={() => setShowScanCryptoConfirm(true)}
           />
           <MenuSeparator />
-          <MenuItem label="Rebuild Index" disabled={!isLoaded} onClick={() => setShowRebuildConfirm(true)} />
+          <MenuItem label="重建索引" disabled={!isLoaded} onClick={() => setShowRebuildConfirm(true)} />
         </MenuDropdown>
 
         {/* Settings 下拉菜单 */}
-        <MenuDropdown label="Settings" minWidth={200}>
-          <MenuItem label="Preferences..." shortcut={modKey(",")} onClick={() => setShowPrefs(true)} />
+        <MenuDropdown label="设置" minWidth={200}>
+          <MenuItem label="偏好设置…" shortcut={modKey(",")} onClick={() => setShowPrefs(true)} />
           <MenuSeparator />
-          <MenuItem label="Open Cache Directory" onClick={async () => {
+          <MenuItem label="打开缓存目录" onClick={async () => {
             try {
               const info = await invoke<{ path: string }>("get_cache_dir");
               await openPath(info.path);
             } catch (e) { console.error("open cache dir failed:", e); }
           }} />
-          <MenuItem label="Clear Cache..." onClick={() => setShowClearCacheConfirm(true)} />
+          <MenuItem label="清理缓存…" onClick={() => setShowClearCacheConfirm(true)} />
         </MenuDropdown>
 
         {/* About 按钮 */}
@@ -380,7 +380,7 @@ export default function TitleBar({ onOpenFile, onCloseFile, onRebuildIndex, onSe
             fontSize: "var(--font-size-sm)",
           }}
         >
-          About
+          关于
         </button>
 
         {/* 左侧拖动区域 */}
@@ -389,22 +389,22 @@ export default function TitleBar({ onOpenFile, onCloseFile, onRebuildIndex, onSe
         {/* 中间：导航按钮 + 搜索框 */}
         {/* Taint 按钮/菜单 */}
         {sliceActive ? (
-          <MenuDropdown label="Taint" minWidth={200} labelStyle={{ background: "var(--btn-taint)", color: "#fff" }}>
+          <MenuDropdown label="污点" minWidth={200} labelStyle={{ background: "var(--btn-taint)", color: "#fff" }}>
             <MenuItem
-              label="Tainted Only"
+              label="仅显示污点指令"
               checked={sliceFilterMode === "filter-only"}
               onClick={() => onTaintFilterModeChange("filter-only")}
             />
             <MenuItem
-              label="Show All (Dimmed)"
+              label="显示全部（非污点置灰）"
               checked={sliceFilterMode === "highlight"}
               onClick={() => onTaintFilterModeChange("highlight")}
             />
             <MenuSeparator />
-            <MenuItem label="Go to Source" onClick={onTaintGoToSource} />
-            <MenuItem label="Re-configure..." onClick={onTaintReconfigure} />
+            <MenuItem label="跳转到源头" onClick={onTaintGoToSource} />
+            <MenuItem label="重新配置…" onClick={onTaintReconfigure} />
             <MenuSeparator />
-            <MenuItem label="Clear" onClick={onTaintClear} />
+            <MenuItem label="清除污点" onClick={onTaintClear} />
           </MenuDropdown>
         ) : regSelected ? (
           <button
@@ -419,7 +419,7 @@ export default function TitleBar({ onOpenFile, onCloseFile, onRebuildIndex, onSe
               fontSize: "var(--font-size-sm)",
             }}
           >
-            Taint
+            污点
           </button>
         ) : (
           <button
@@ -436,7 +436,7 @@ export default function TitleBar({ onOpenFile, onCloseFile, onRebuildIndex, onSe
               opacity: hasSelectedSeq ? 1 : 0.5,
             }}
           >
-            Taint
+            污点
           </button>
         )}
         <button
@@ -453,7 +453,7 @@ export default function TitleBar({ onOpenFile, onCloseFile, onRebuildIndex, onSe
         <div ref={searchWrapperRef} style={{ position: "relative", flex: 1, maxWidth: 420, minWidth: 180 }}>
           <input
             type="text"
-            placeholder="Search text or /regex/"
+            placeholder="搜索文本或 /正则表达式/"
             value={searchInput}
             onChange={(e) => setSearchInput(e.target.value)}
             onFocus={() => setShowSearchHistory(true)}
@@ -499,7 +499,7 @@ export default function TitleBar({ onOpenFile, onCloseFile, onRebuildIndex, onSe
               }}
               onMouseEnter={(e) => { (e.currentTarget as HTMLElement).style.color = "var(--text-primary)"; (e.currentTarget as HTMLElement).style.background = "var(--bg-secondary)"; }}
               onMouseLeave={(e) => { (e.currentTarget as HTMLElement).style.color = "var(--text-secondary)"; (e.currentTarget as HTMLElement).style.background = "transparent"; }}
-              title="Clear search"
+              title="清除搜索"
             >✕</button>
           )}
           {showSearchHistory && filteredSearchHistory.length > 0 && (
@@ -545,7 +545,7 @@ export default function TitleBar({ onOpenFile, onCloseFile, onRebuildIndex, onSe
                 onMouseEnter={e => { e.currentTarget.style.background = "var(--bg-selected)"; e.currentTarget.style.color = "var(--text-primary)"; }}
                 onMouseLeave={e => { e.currentTarget.style.background = "transparent"; e.currentTarget.style.color = "var(--text-secondary)"; }}
                 onClick={clearAllSearchHistory}
-              >Clear All</div>
+              >清空全部</div>
             </div>
           )}
         </div>
@@ -555,7 +555,7 @@ export default function TitleBar({ onOpenFile, onCloseFile, onRebuildIndex, onSe
           <>
             <input
               type="text"
-              placeholder="Enter trace file path..."
+              placeholder="输入 trace 文件路径…"
               value={manualPath}
               onChange={(e) => setManualPath(e.target.value)}
               onKeyDown={(e) => e.key === "Enter" && handleManualLoad()}
@@ -581,7 +581,7 @@ export default function TitleBar({ onOpenFile, onCloseFile, onRebuildIndex, onSe
                 cursor: "pointer",
               }}
             >
-              Load
+              加载
             </button>
           </>
         )}
@@ -596,10 +596,10 @@ export default function TitleBar({ onOpenFile, onCloseFile, onRebuildIndex, onSe
       {/* 关闭确认对话框 */}
       {showCloseConfirm && (
         <ConfirmDialog
-          title="Close File"
-          message="Are you sure you want to close the current trace file?"
-          confirmText="Confirm"
-          cancelText="Cancel"
+          title="关闭文件"
+          message="确定要关闭当前 trace 文件吗？"
+          confirmText="确认"
+          cancelText="取消"
           confirmColor="var(--reg-changed)"
           onConfirm={() => { setShowCloseConfirm(false); onCloseFile(); }}
           onCancel={() => setShowCloseConfirm(false)}
@@ -609,10 +609,10 @@ export default function TitleBar({ onOpenFile, onCloseFile, onRebuildIndex, onSe
       {/* Rebuild Index 确认对话框 */}
       {showRebuildConfirm && (
         <ConfirmDialog
-          title="Rebuild Index"
-          message="Rebuilding the index for large trace files may take a while. Continue?"
-          confirmText="Rebuild"
-          cancelText="Cancel"
+          title="重建索引"
+          message="大型 trace 文件重建索引可能需要一些时间，是否继续？"
+          confirmText="重建"
+          cancelText="取消"
           minWidth={360}
           onConfirm={() => { setShowRebuildConfirm(false); onRebuildIndex(); }}
           onCancel={() => setShowRebuildConfirm(false)}
@@ -622,10 +622,10 @@ export default function TitleBar({ onOpenFile, onCloseFile, onRebuildIndex, onSe
       {/* Clear Cache 确认对话框 */}
       {showClearCacheConfirm && (
         <ConfirmDialog
-          title="Clear Cache"
-          message="Are you sure you want to clear all cache? This cannot be undone."
-          confirmText="Clear"
-          cancelText="Cancel"
+          title="清理缓存"
+          message="确定要清理全部缓存吗？此操作无法撤销。"
+          confirmText="清理"
+          cancelText="取消"
           confirmColor="var(--reg-changed)"
           minWidth={360}
           onConfirm={async () => { setShowClearCacheConfirm(false); try { await invoke("clear_all_cache"); onClearCache?.(); } catch (e) { console.error("clear cache failed:", e); } }}
@@ -636,10 +636,10 @@ export default function TitleBar({ onOpenFile, onCloseFile, onRebuildIndex, onSe
       {/* Scan Strings 确认对话框 */}
       {showScanStringsConfirm && (
         <ConfirmDialog
-            title="Scan Strings"
-            message="Scan memory writes to extract strings? This may take a moment for large traces."
-            confirmText="Scan"
-            cancelText="Cancel"
+            title="扫描字符串"
+            message="扫描内存写入并提取字符串？大型 trace 可能需要一些时间。"
+            confirmText="扫描"
+            cancelText="取消"
             minWidth={360}
             onConfirm={() => { setShowScanStringsConfirm(false); onScanStrings(); }}
             onCancel={() => setShowScanStringsConfirm(false)}
@@ -649,10 +649,10 @@ export default function TitleBar({ onOpenFile, onCloseFile, onRebuildIndex, onSe
       {/* Scan Crypto 确认对话框 */}
       {showScanCryptoConfirm && (
         <ConfirmDialog
-            title="Scan Crypto"
-            message="Scan trace for known cryptographic algorithm constants (MD5, SHA, AES, etc.)?"
-            confirmText="Scan"
-            cancelText="Cancel"
+            title="扫描加密常量"
+            message="扫描 trace 中已知的加密算法常量（MD5、SHA、AES 等）？"
+            confirmText="扫描"
+            cancelText="取消"
             minWidth={360}
             onConfirm={() => { setShowScanCryptoConfirm(false); onScanCrypto(); }}
             onCancel={() => setShowScanCryptoConfirm(false)}

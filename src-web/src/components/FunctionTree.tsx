@@ -221,14 +221,14 @@ export default function FunctionTree({
   if (loading) {
     return (
       <div style={{ height: "100%", display: "flex", alignItems: "center", justifyContent: "center", background: "var(--bg-primary)" }}>
-        <div style={{ color: "var(--text-secondary)", fontSize: 12 }}>Loading function call tree...</div>
+        <div style={{ color: "var(--text-secondary)", fontSize: 12 }}>正在加载函数调用树…</div>
       </div>
     );
   }
   if (error) {
     return (
       <div style={{ height: "100%", display: "flex", alignItems: "center", justifyContent: "center", background: "var(--bg-primary)" }}>
-        <div style={{ color: "var(--reg-changed)", fontSize: 12 }}>Failed to load: {error}</div>
+        <div style={{ color: "var(--reg-changed)", fontSize: 12 }}>加载失败：{error}</div>
       </div>
     );
   }
@@ -240,8 +240,8 @@ export default function FunctionTree({
         padding: "6px 8px 4px", borderBottom: "1px solid var(--border-color)", flexShrink: 0,
         display: "flex", alignItems: "center", justifyContent: "space-between",
       }}>
-        <span>Functions ({nodeCount.toLocaleString()})</span>
-        <label title="Auto-follow: automatically locate the corresponding function when the selected line changes in traceTable" style={{ display: "flex", alignItems: "center", gap: 3, cursor: "pointer", whiteSpace: "nowrap" }}>
+        <span>函数（{nodeCount.toLocaleString()}）</span>
+        <label title="自动跟随：选中行在 traceTable 中变化时自动定位对应函数" style={{ display: "flex", alignItems: "center", gap: 3, cursor: "pointer", whiteSpace: "nowrap" }}>
           <input
             type="checkbox"
             checked={autoFollow}
@@ -335,7 +335,7 @@ export default function FunctionTree({
       {ctxMenu && (
         <ContextMenu x={ctxMenu.x} y={ctxMenu.y} onClose={() => setCtxMenu(null)}>
           <ContextMenuItem
-            label="Rename"
+            label="重命名"
             onClick={() => {
               const row = ctxMenu.row;
               setRenameTarget({
@@ -347,7 +347,7 @@ export default function FunctionTree({
           />
           {funcRename.getName(ctxMenu.row.func_addr) && (
             <ContextMenuItem
-              label="Restore Original Address"
+              label="恢复原始地址"
               onClick={() => {
                 funcRename.removeName(ctxMenu.row.func_addr);
                 setCtxMenu(null);
@@ -356,7 +356,7 @@ export default function FunctionTree({
           )}
           <ContextMenuSeparator />
           <ContextMenuItem
-            label="Copy Function Address"
+            label="复制函数地址"
             onClick={() => {
               navigator.clipboard.writeText(ctxMenu.row.func_addr);
               setCtxMenu(null);
@@ -364,7 +364,7 @@ export default function FunctionTree({
           />
           {funcRename.getName(ctxMenu.row.func_addr) && (
             <ContextMenuItem
-              label="Copy Function Name"
+              label="复制函数名"
               onClick={() => {
                 const name = funcRename.getName(ctxMenu.row.func_addr);
                 if (name) navigator.clipboard.writeText(name);
@@ -399,7 +399,7 @@ export default function FunctionTree({
               ref={renameInputRef}
               autoFocus
               defaultValue={renameTarget.currentName}
-              placeholder="Enter function name"
+              placeholder="输入函数名"
               style={{
                 width: "100%", padding: "6px 8px", fontSize: 13,
                 background: "var(--bg-primary)", color: "var(--text-primary)",

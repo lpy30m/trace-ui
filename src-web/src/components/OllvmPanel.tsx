@@ -728,16 +728,16 @@ export default function OllvmPanel({ sessionId, onJumpToSeq, onPrepareFridaHook 
         gap: 6, alignItems: "center", padding: "6px 8px", borderBottom: "1px solid var(--border-color)",
         fontSize: 11, overflowX: "auto", overflowY: "hidden", flexShrink: 0,
       }}>
-        <label htmlFor="ollvm-node">Node ID</label>
+        <label htmlFor="ollvm-node">节点 ID</label>
         <input id="ollvm-node" style={inputStyle} value={nodeId} onChange={event => setNodeId(event.target.value)} placeholder="optional" />
-        <label htmlFor="ollvm-start">Start seq</label>
+        <label htmlFor="ollvm-start">起始序号</label>
         <input id="ollvm-start" style={inputStyle} value={startSeq} onChange={event => setStartSeq(event.target.value)} placeholder="auto" />
-        <label htmlFor="ollvm-end">End seq</label>
+        <label htmlFor="ollvm-end">结束序号</label>
         <input id="ollvm-end" style={inputStyle} value={endSeq} onChange={event => setEndSeq(event.target.value)} placeholder="auto" />
-        <label htmlFor="ollvm-module">Module</label>
+        <label htmlFor="ollvm-module">模块</label>
         <input id="ollvm-module" style={inputStyle} value={moduleName} onChange={event => setModuleName(event.target.value)} placeholder="infer from trace" />
-        <button type="button" style={{ ...buttonStyle, opacity: sessionId && selectedSeq != null ? 1 : 0.5 }} disabled={!sessionId || selectedSeq == null} onClick={useSelectedFunction}>Use selected function</button>
-        <button type="button" style={{ ...buttonStyle, background: "var(--btn-primary)", color: "#fff", border: "none", opacity: !sessionId || loading ? 0.6 : 1 }} disabled={!sessionId || loading} onClick={analyze}>{loading ? "Analyzing..." : "Analyze OLLVM"}</button>
+        <button type="button" style={{ ...buttonStyle, opacity: sessionId && selectedSeq != null ? 1 : 0.5 }} disabled={!sessionId || selectedSeq == null} onClick={useSelectedFunction}>使用选中函数</button>
+        <button type="button" style={{ ...buttonStyle, background: "var(--btn-primary)", color: "#fff", border: "none", opacity: !sessionId || loading ? 0.6 : 1 }} disabled={!sessionId || loading} onClick={analyze}>{loading ? "分析中…" : "分析 OLLVM"}</button>
       </div>
       <div style={{
         display: "flex", alignItems: "center", minHeight: 30, borderBottom: "1px solid var(--border-color)",
@@ -755,7 +755,7 @@ export default function OllvmPanel({ sessionId, onJumpToSeq, onPrepareFridaHook 
         {sectionButton("angr", "angr bridge")}
         <label style={{ display: "flex", alignItems: "center", gap: 4, marginLeft: 10, color: "var(--text-secondary)", fontSize: 10, flexShrink: 0, whiteSpace: "nowrap" }}>
           <input type="checkbox" checked={includeChildCalls} onChange={event => setIncludeChildCalls(event.target.checked)} />
-          Include child calls
+          包含子调用
         </label>
         {report && (
           <span style={{ marginLeft: "auto", paddingRight: 8, color: "var(--text-tertiary)", fontSize: 10, flexShrink: 0, whiteSpace: "nowrap" }}>
@@ -767,7 +767,7 @@ export default function OllvmPanel({ sessionId, onJumpToSeq, onPrepareFridaHook 
       {error && <div style={{ padding: "7px 10px", color: "#e5484d", borderBottom: "1px solid var(--border-color)", fontSize: 11 }}>{error}</div>}
       {!report && !loading && section !== "compare" && section !== "versions" && (
         <div style={{ flex: 1, display: "flex", alignItems: "center", justifyContent: "center", color: "var(--text-secondary)", fontSize: 12 }}>
-          Select a function invocation or provide a trace range.
+          请选择一次函数调用，或提供 trace 范围。
         </div>
       )}
 
@@ -777,16 +777,16 @@ export default function OllvmPanel({ sessionId, onJumpToSeq, onPrepareFridaHook 
             <div key={candidate.blockId} style={{ display: "flex", alignItems: "center", gap: 8, padding: "6px 8px", borderBottom: "1px solid var(--border-color)", fontSize: 11 }}>
               <Score score={candidate.assessment.score} grade={candidate.assessment.grade} />
               <button type="button" style={buttonStyle} onClick={() => jumpBlock(blockById.get(candidate.blockId))}>{candidate.startOffset}</button>
-              <span>{candidate.visitCount} visits</span>
-              <span>{candidate.predecessorCount} in / {candidate.successorCount} out</span>
-              <span>{candidate.indirectBranchCount} indirect</span>
+              <span>{candidate.visitCount} 次访问</span>
+              <span>{candidate.predecessorCount} 个入边 / {candidate.successorCount} 个出边</span>
+              <span>{candidate.indirectBranchCount} 个间接分支</span>
               <code>{candidate.stateRegisters.join(", ") || "no state register"}</code>
-              <span>{candidate.stateSnapshots.length} states / {candidate.stateTransitions.length} transitions</span>
-              <button type="button" style={buttonStyle} onClick={() => prepareFridaOffsetHook(candidate.startOffset, "dispatcher")}>Prepare dispatcher Hook</button>
+              <span>{candidate.stateSnapshots.length} 个状态 / {candidate.stateTransitions.length} 次转换</span>
+              <button type="button" style={buttonStyle} onClick={() => prepareFridaOffsetHook(candidate.startOffset, "dispatcher")}>准备 dispatcher Hook</button>
               <span style={{ flex: 1, color: "var(--text-secondary)" }}>{candidate.rationale}</span>
             </div>
           ))}
-          {report.dispatcherCandidates.length === 0 && <div style={{ padding: 14, color: "var(--text-secondary)", fontSize: 11 }}>No dispatcher candidate crossed the evidence threshold.</div>}
+          {report.dispatcherCandidates.length === 0 && <div style={{ padding: 14, color: "var(--text-secondary)", fontSize: 11 }}>没有 dispatcher 候选达到证据阈值。</div>}
         </div>
       )}
 
@@ -800,13 +800,13 @@ export default function OllvmPanel({ sessionId, onJumpToSeq, onPrepareFridaHook 
               <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
                 <Score score={candidate.assessment.score} grade={candidate.assessment.grade} />
                 <button type="button" style={buttonStyle} onClick={() => jumpBlock(blockById.get(candidate.blockId))}>{candidate.startOffset}</button>
-                <strong>{candidate.stateSnapshots.length} snapshots</strong>
-                <span>{candidate.stateTransitions.length} changing transitions</span>
-                {candidate.stateSnapshotsTruncated && <span style={{ color: "#d29922" }}>snapshot list truncated</span>}
+                <strong>{candidate.stateSnapshots.length} 个快照</strong>
+                <span>{candidate.stateTransitions.length} 次状态变化</span>
+                {candidate.stateSnapshotsTruncated && <span style={{ color: "#d29922" }}>快照列表已截断</span>}
               </div>
               {candidate.stateTransitions.length > 0 && (
                 <div style={{ marginTop: 7, display: "grid", gridTemplateColumns: "70px 170px 22px 170px 70px 80px", gap: 6, alignItems: "center" }}>
-                  <strong>Register</strong><strong>From</strong><span /><strong>To</strong><strong>Count</strong><strong>Trace</strong>
+                  <strong>寄存器</strong><strong>从</strong><span /><strong>到</strong><strong>次数</strong><strong>Trace</strong>
                   {candidate.stateTransitions.map((transition, index) => (
                     <React.Fragment key={`${transition.register}-${transition.fromValue}-${transition.toValue}-${index}`}>
                       <code>{transition.register}</code>
@@ -814,17 +814,17 @@ export default function OllvmPanel({ sessionId, onJumpToSeq, onPrepareFridaHook 
                       <span>→</span>
                       <code>{transition.toValue}</code>
                       <span>x{transition.executionCount}</span>
-                      <button type="button" style={buttonStyle} onClick={() => onJumpToSeq(transition.sampleSeq)}>line {transition.sampleSeq + 1}</button>
+                      <button type="button" style={buttonStyle} onClick={() => onJumpToSeq(transition.sampleSeq)}>第 {transition.sampleSeq + 1} 行</button>
                     </React.Fragment>
                   ))}
                 </div>
               )}
               {candidate.stateTransitions.length === 0 && (
-                <div style={{ marginTop: 6, color: "var(--text-tertiary)" }}>No changing value was reconstructed for the candidate state registers.</div>
+                <div style={{ marginTop: 6, color: "var(--text-tertiary)" }}>未能为候选状态寄存器重建出变化值。</div>
               )}
             </div>
           ))}
-          {report.dispatcherCandidates.length === 0 && <div style={{ padding: 14, color: "var(--text-secondary)" }}>No dispatcher candidate crossed the evidence threshold.</div>}
+          {report.dispatcherCandidates.length === 0 && <div style={{ padding: 14, color: "var(--text-secondary)" }}>没有 dispatcher 候选达到证据阈值。</div>}
         </div>
       )}
 
@@ -836,19 +836,19 @@ export default function OllvmPanel({ sessionId, onJumpToSeq, onPrepareFridaHook 
                 <Score score={candidate.assessment.score} grade={candidate.assessment.grade} />
                 <button type="button" style={buttonStyle} onClick={() => jumpOffset(candidate.branchOffset)}>{candidate.branchOffset}</button>
                 <code style={{ color: "var(--text-primary)" }}>{candidate.disasm}</code>
-                <span>{candidate.executionCount} executions</span>
-                <span>taken {candidate.observedTakenCount} / fallthrough {candidate.observedFallthroughCount}</span>
-                <span>{candidate.observations.filter(item => Object.keys(item.registers).length > 0).length} seeded states</span>
-                <button type="button" style={buttonStyle} onClick={() => prepareFridaOffsetHook(candidate.branchOffset, "branch")}>Prepare branch Hook</button>
+                <span>{candidate.executionCount} 次执行</span>
+                <span>命中 {candidate.observedTakenCount} / 顺落 {candidate.observedFallthroughCount}</span>
+                <span>{candidate.observations.filter(item => Object.keys(item.registers).length > 0).length} 个种子状态</span>
+                <button type="button" style={buttonStyle} onClick={() => prepareFridaOffsetHook(candidate.branchOffset, "branch")}>准备分支 Hook</button>
               </div>
               <div style={{ marginTop: 4, paddingLeft: 88, color: "var(--text-secondary)" }}>{candidate.rationale}</div>
               {candidate.conditionStateProfile.sourceRegister && (
                 <div style={{ marginTop: 5, marginLeft: 88, padding: "5px 7px", border: "1px solid var(--border-color)", borderRadius: 3, background: "var(--bg-secondary)" }}>
                   <div style={{ display: "flex", gap: 8, alignItems: "center", flexWrap: "wrap" }}>
-                    <strong>Condition state {candidate.conditionStateProfile.sourceRegister}</strong>
-                    <span>{candidate.conditionStateProfile.capturedObservationCount} captured / {candidate.conditionStateProfile.missingObservationCount} missing</span>
-                    <span>{candidate.conditionStateProfile.distinctValueCount} distinct values</span>
-                    {candidate.conditionStateProfile.incomplete && <span style={{ color: "#d29922" }}>incomplete profile</span>}
+                    <strong>条件状态 {candidate.conditionStateProfile.sourceRegister}</strong>
+                    <span>{candidate.conditionStateProfile.capturedObservationCount} 条已捕获 / {candidate.conditionStateProfile.missingObservationCount} 条缺失</span>
+                    <span>{candidate.conditionStateProfile.distinctValueCount} 个不同值</span>
+                    {candidate.conditionStateProfile.incomplete && <span style={{ color: "#d29922" }}>配置不完整</span>}
                     {candidate.conditionStateProfile.flagBits.map(flag => (
                       <code key={`${candidate.branchOffset}-flag-${flag.flag}`}>{flag.flag}=1:{flag.setCount} / 0:{flag.clearCount}</code>
                     ))}
@@ -865,7 +865,7 @@ export default function OllvmPanel({ sessionId, onJumpToSeq, onPrepareFridaHook 
               )}
               {candidate.conditionSourceOffsets.length > 0 && (
                 <div style={{ marginTop: 5, paddingLeft: 88, display: "flex", gap: 6, alignItems: "center", flexWrap: "wrap" }}>
-                  <span style={{ color: "var(--text-tertiary)" }}>Condition sources</span>
+                  <span style={{ color: "var(--text-tertiary)" }}>条件来源</span>
                   {candidate.conditionSourceOffsets.map(offset => (
                     <button key={`${candidate.branchOffset}-condition-${offset}`} type="button" style={buttonStyle} onClick={() => prepareFridaOffsetHook(offset, "condition-source")}>
                       {offset} · Prepare Hook
@@ -884,7 +884,7 @@ export default function OllvmPanel({ sessionId, onJumpToSeq, onPrepareFridaHook 
               )}
             </div>
           ))}
-          {report.opaqueBranchCandidates.length === 0 && <div style={{ padding: 14, color: "var(--text-secondary)", fontSize: 11 }}>No repeated single-outcome conditional branch was observed.</div>}
+          {report.opaqueBranchCandidates.length === 0 && <div style={{ padding: 14, color: "var(--text-secondary)", fontSize: 11 }}>未观察到重复且结果单一的条件分支。</div>}
         </div>
       )}
 
@@ -946,7 +946,7 @@ export default function OllvmPanel({ sessionId, onJumpToSeq, onPrepareFridaHook 
             Compare the same module/function across controlled runs. A branch that shows both outcomes is evidence against treating it as globally opaque; stable single-outcome results remain candidates only.
           </div>
           <div style={{ display: "grid", gridTemplateColumns: "26px minmax(140px, 1fr) minmax(110px, 180px) 80px 80px 80px minmax(190px, 1.4fr)", gap: 5, alignItems: "center" }}>
-            <span /><strong>Open trace</strong><strong>Case label</strong><strong>Node ID</strong><strong>Start seq</strong><strong>End seq</strong><strong>Exact ELF</strong>
+            <span /><strong>打开的 trace</strong><strong>案例标签</strong><strong>节点 ID</strong><strong>起始序号</strong><strong>结束序号</strong><strong>精确 ELF</strong>
             {compareCases.map((item, index) => (
               <React.Fragment key={item.sessionId}>
                 <input type="checkbox" checked={item.selected} onChange={event => updateCompareCase(index, { selected: event.target.checked })} />
@@ -960,8 +960,8 @@ export default function OllvmPanel({ sessionId, onJumpToSeq, onPrepareFridaHook 
             ))}
           </div>
           <div style={{ display: "flex", gap: 6, marginTop: 9 }}>
-            <button type="button" style={buttonStyle} onClick={refreshCompareSessions}>Refresh sessions</button>
-            <button type="button" style={buttonStyle} disabled={selectedCompareCases.length === 0} onClick={selectElfForSelectedCases}>Apply ELF to selected</button>
+            <button type="button" style={buttonStyle} onClick={refreshCompareSessions}>刷新会话</button>
+            <button type="button" style={buttonStyle} disabled={selectedCompareCases.length === 0} onClick={selectElfForSelectedCases}>为选中项设置 ELF</button>
             <label style={{ display: "flex", alignItems: "center", gap: 4 }}>
               <input type="checkbox" checked={requireMatchingBinary} onChange={event => { setRequireMatchingBinary(event.target.checked); setComparison(null); }} />
               Require exact SHA-256 match
@@ -988,7 +988,7 @@ export default function OllvmPanel({ sessionId, onJumpToSeq, onPrepareFridaHook 
                 {comparison.buildId && <code style={{ display: "block", marginTop: 3 }}>Build ID {comparison.buildId}</code>}
                 <div style={{ marginTop: 4, color: "var(--text-tertiary)" }}>Identity confirmation applies to the selected ELF files; OLLVM classifications remain Candidate/Related.</div>
               </div>
-              <h4 style={{ margin: "8px 0" }}>Dispatcher stability</h4>
+              <h4 style={{ margin: "8px 0" }}>Dispatcher 稳定性</h4>
               {comparison.dispatcherStability.map(candidate => (
                 <div key={candidate.startOffset} style={{ padding: 8, border: "1px solid var(--border-color)", borderRadius: 4, marginBottom: 6, background: "var(--bg-secondary)" }}>
                   <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
@@ -1001,7 +1001,7 @@ export default function OllvmPanel({ sessionId, onJumpToSeq, onPrepareFridaHook 
                   <div style={{ marginTop: 4, color: "var(--text-tertiary)" }}>{candidate.rationale}</div>
                 </div>
               ))}
-              <h4 style={{ margin: "12px 0 8px" }}>Branch outcome stability</h4>
+              <h4 style={{ margin: "12px 0 8px" }}>分支结果稳定性</h4>
               {comparison.branchStability.filter(branch => branch.stableSingleOutcome || branch.alternateOutcomesObserved).map(branch => (
                 <div key={branch.branchOffset} style={{ padding: 8, border: `1px solid ${branch.alternateOutcomesObserved ? "#e5484d" : "var(--border-color)"}`, borderRadius: 4, marginBottom: 6, background: "var(--bg-secondary)" }}>
                   <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
@@ -1025,7 +1025,7 @@ export default function OllvmPanel({ sessionId, onJumpToSeq, onPrepareFridaHook 
             Map baseline dispatcher/state structure across different binary builds. Every selected version needs its own exact AArch64 ELF and trace scope. SHA-256 values must differ; offsets and concrete state values are never copied across versions. Results remain Candidate/Related.
           </div>
           <div style={{ display: "grid", gridTemplateColumns: "26px minmax(130px, 1fr) 120px minmax(110px, 160px) 90px 80px 80px minmax(190px, 1.4fr) 70px", gap: 5, alignItems: "center" }}>
-            <span /><strong>Open trace</strong><strong>Version ID</strong><strong>Module</strong><strong>Node ID</strong><strong>Start</strong><strong>End</strong><strong>Exact ELF</strong><span />
+            <span /><strong>打开的 trace</strong><strong>版本 ID</strong><strong>模块</strong><strong>节点 ID</strong><strong>起始</strong><strong>结束</strong><strong>精确 ELF</strong><span />
             {compareCases.map((item, index) => (
               <React.Fragment key={`version-${item.sessionId}`}>
                 <input type="checkbox" checked={item.selected} onChange={event => { updateCompareCase(index, { selected: event.target.checked }); setVersionMap(null); }} />
@@ -1036,15 +1036,15 @@ export default function OllvmPanel({ sessionId, onJumpToSeq, onPrepareFridaHook 
                 <input style={inputStyle} value={item.startSeq} onChange={event => { updateCompareCase(index, { startSeq: event.target.value }); setVersionMap(null); }} placeholder="auto" />
                 <input style={inputStyle} value={item.endSeq} onChange={event => { updateCompareCase(index, { endSeq: event.target.value }); setVersionMap(null); }} placeholder="auto" />
                 <input style={inputStyle} value={item.staticBinaryPath} onChange={event => { updateCompareCase(index, { staticBinaryPath: event.target.value }); setVersionMap(null); }} placeholder="required" title={item.staticBinaryPath} />
-                <button type="button" style={buttonStyle} onClick={() => selectVersionElf(index)}>Browse</button>
+                <button type="button" style={buttonStyle} onClick={() => selectVersionElf(index)}>浏览</button>
               </React.Fragment>
             ))}
           </div>
           <div style={{ display: "flex", gap: 6, alignItems: "center", marginTop: 9 }}>
-            <button type="button" style={buttonStyle} onClick={refreshCompareSessions}>Refresh sessions</button>
-            <label htmlFor="ollvm-baseline-version">Baseline</label>
+            <button type="button" style={buttonStyle} onClick={refreshCompareSessions}>刷新会话</button>
+            <label htmlFor="ollvm-baseline-version">基准版本</label>
             <select id="ollvm-baseline-version" style={{ ...inputStyle, minWidth: 150 }} value={baselineVersionId} onChange={event => { setBaselineVersionId(event.target.value); setVersionMap(null); }}>
-              <option value="">First selected version</option>
+              <option value="">第一个选中版本</option>
               {selectedCompareCases.filter(item => item.versionId.trim()).map(item => <option key={item.sessionId} value={item.versionId.trim()}>{item.versionId.trim()}</option>)}
             </select>
             <button
@@ -1063,7 +1063,7 @@ export default function OllvmPanel({ sessionId, onJumpToSeq, onPrepareFridaHook 
                 Baseline <strong>{versionMap.baselineVersionId}</strong> · {versionMap.versions.length} distinct ELFs · {versionMap.dispatcherMappings.length} baseline dispatcher candidates · verification gate remains closed
               </div>
               <div style={{ display: "grid", gridTemplateColumns: "120px minmax(130px, 1fr) 100px minmax(220px, 1.4fr)", gap: 6, marginBottom: 10 }}>
-                <strong>Version</strong><strong>Module</strong><strong>Dynamic CFG</strong><strong>Exact ELF identity</strong>
+                <strong>版本</strong><strong>模块</strong><strong>动态 CFG</strong><strong>精确 ELF 身份</strong>
                 {versionMap.versions.map(version => (
                   <React.Fragment key={version.versionId}>
                     <code>{version.versionId}</code>
@@ -1076,7 +1076,7 @@ export default function OllvmPanel({ sessionId, onJumpToSeq, onPrepareFridaHook 
               {versionMap.dispatcherMappings.map(mapping => (
                 <div key={mapping.sourceBlock.blockId} style={{ padding: 8, border: "1px solid var(--border-color)", borderRadius: 4, marginBottom: 8, background: "var(--bg-secondary)" }}>
                   <div style={{ display: "flex", gap: 8, alignItems: "center", flexWrap: "wrap" }}>
-                    <strong>Baseline dispatcher</strong>
+                    <strong>基准 dispatcher</strong>
                     <code>{mapping.sourceBlock.moduleName}+{mapping.sourceBlock.startOffset}</code>
                     <span>{mapping.sourceBlock.instructionCount} instructions</span>
                     <code>{mapping.sourceBlock.normalizedOperations.join(" · ")}</code>
@@ -1085,7 +1085,7 @@ export default function OllvmPanel({ sessionId, onJumpToSeq, onPrepareFridaHook 
                     <div key={target.targetVersionId} style={{ marginTop: 7, paddingTop: 7, borderTop: "1px solid var(--border-color)" }}>
                       <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
                         <strong>{target.targetVersionId}</strong>
-                        {target.ambiguous && <span style={{ color: "#d29922" }}>ambiguous top candidates</span>}
+                        {target.ambiguous && <span style={{ color: "#d29922" }}>最高分候选存在歧义</span>}
                         <span>{target.candidates.length} retained</span>
                       </div>
                       {target.candidates.map(candidate => (
@@ -1118,38 +1118,38 @@ export default function OllvmPanel({ sessionId, onJumpToSeq, onPrepareFridaHook 
               Generate one bounded Frida 16 script for several exact dispatcher startOffsets. Run it manually, import the captured JSON/NDJSON, then reconstruct per-thread candidate dispatcher flows and state changes. Trace UI never attaches, spawns, loads, or runs Frida.
             </div>
             <div style={{ display: "grid", gridTemplateColumns: "150px minmax(0, 1fr)", gap: 7, alignItems: "center", marginTop: 10 }}>
-              <label htmlFor="atlas-dispatchers">Dispatcher targets</label>
+              <label htmlFor="atlas-dispatchers">Dispatcher 目标数</label>
               <input id="atlas-dispatchers" style={inputStyle} value={atlasMaxDispatchers} onChange={event => { setAtlasMaxDispatchers(event.target.value); setAtlasScript(null); }} />
-              <label htmlFor="atlas-idle-gap">Flow idle gap (ms)</label>
+              <label htmlFor="atlas-idle-gap">Flow 空闲间隔（毫秒）</label>
               <input id="atlas-idle-gap" style={inputStyle} value={atlasIdleGapMs} onChange={event => { setAtlasIdleGapMs(event.target.value); setAtlasScript(null); setAtlasResult(null); }} />
-              <label htmlFor="atlas-max-events">Maximum hit events</label>
+              <label htmlFor="atlas-max-events">最大命中事件数</label>
               <input id="atlas-max-events" style={inputStyle} value={atlasMaxEvents} onChange={event => { setAtlasMaxEvents(event.target.value); setAtlasScript(null); setAtlasResult(null); }} />
-              <label htmlFor="atlas-pointer-registers">Pointer memory (optional)</label>
+              <label htmlFor="atlas-pointer-registers">指针内存（可选）</label>
               <input id="atlas-pointer-registers" placeholder="X0,X1" style={inputStyle} value={atlasPointerRegisters} onChange={event => { setAtlasPointerRegisters(event.target.value); setAtlasScript(null); }} />
-              <label htmlFor="atlas-pointer-bytes">Bytes per pointer</label>
+              <label htmlFor="atlas-pointer-bytes">每个指针读取字节数</label>
               <input id="atlas-pointer-bytes" type="number" min={1} max={4096} style={inputStyle} value={atlasPointerBytes} onChange={event => { setAtlasPointerBytes(event.target.value); setAtlasScript(null); }} />
             </div>
             <div style={{ marginTop: 6, color: "var(--text-tertiary)", lineHeight: 1.4 }}>
               Optional X0-X7 memory snapshots are bounded and become byteArray regions for later angr seeds. Invalid or unreadable pointers emit readError; no automatic retry or process control is performed.
             </div>
             <div style={{ display: "flex", gap: 6, flexWrap: "wrap", marginTop: 10 }}>
-              <button type="button" style={{ ...buttonStyle, background: "var(--btn-primary)", color: "#fff", border: "none", opacity: atlasBusy ? 0.6 : 1 }} disabled={atlasBusy} onClick={generateAtlasHook}>{atlasBusy ? "Working..." : "Generate Frida 16 script"}</button>
-              <button type="button" style={buttonStyle} onClick={saveAtlasHook}>Save .js</button>
-              <button type="button" style={buttonStyle} onClick={importAtlasCapture}>Import capture</button>
-              <button type="button" style={{ ...buttonStyle, opacity: atlasBundle && !atlasBusy ? 1 : 0.5 }} disabled={!atlasBundle || atlasBusy} onClick={analyzeAtlasCapture}>Build atlas</button>
-              <button type="button" style={{ ...buttonStyle, opacity: atlasBundle ? 1 : 0.5 }} disabled={!atlasBundle} onClick={saveAtlasResult}>Save atlas JSON</button>
+              <button type="button" style={{ ...buttonStyle, background: "var(--btn-primary)", color: "#fff", border: "none", opacity: atlasBusy ? 0.6 : 1 }} disabled={atlasBusy} onClick={generateAtlasHook}>{atlasBusy ? "处理中…" : "生成 Frida 16 脚本"}</button>
+              <button type="button" style={buttonStyle} onClick={saveAtlasHook}>保存 .js</button>
+              <button type="button" style={buttonStyle} onClick={importAtlasCapture}>导入捕获</button>
+              <button type="button" style={{ ...buttonStyle, opacity: atlasBundle && !atlasBusy ? 1 : 0.5 }} disabled={!atlasBundle || atlasBusy} onClick={analyzeAtlasCapture}>构建 Atlas</button>
+              <button type="button" style={{ ...buttonStyle, opacity: atlasBundle ? 1 : 0.5 }} disabled={!atlasBundle} onClick={saveAtlasResult}>保存 Atlas JSON</button>
             </div>
             <div style={{ display: "flex", gap: 6, marginTop: 8 }}>
-              <button type="button" style={{ ...buttonStyle, background: atlasDisplay === "script" ? "var(--bg-selected)" : "var(--bg-input)", opacity: atlasScript ? 1 : 0.5 }} disabled={!atlasScript} onClick={() => setAtlasDisplay("script")}>Generated script</button>
-              <button type="button" style={{ ...buttonStyle, background: atlasDisplay === "result" ? "var(--bg-selected)" : "var(--bg-input)", opacity: atlasResult ? 1 : 0.5 }} disabled={!atlasResult} onClick={() => setAtlasDisplay("result")}>Capture atlas</button>
+              <button type="button" style={{ ...buttonStyle, background: atlasDisplay === "script" ? "var(--bg-selected)" : "var(--bg-input)", opacity: atlasScript ? 1 : 0.5 }} disabled={!atlasScript} onClick={() => setAtlasDisplay("script")}>生成脚本</button>
+              <button type="button" style={{ ...buttonStyle, background: atlasDisplay === "result" ? "var(--bg-selected)" : "var(--bg-input)", opacity: atlasResult ? 1 : 0.5 }} disabled={!atlasResult} onClick={() => setAtlasDisplay("result")}>捕获 Atlas</button>
               <span style={{ flex: 1 }} />
-              <button type="button" style={{ ...buttonStyle, opacity: atlasBundle ? 1 : 0.5 }} disabled={!atlasBundle} onClick={clearAtlasCapture}>Clear capture</button>
+              <button type="button" style={{ ...buttonStyle, opacity: atlasBundle ? 1 : 0.5 }} disabled={!atlasBundle} onClick={clearAtlasCapture}>清除捕获</button>
             </div>
             {atlasSavedPath && <div title={atlasSavedPath} style={{ marginTop: 8, color: "#3fb950", overflow: "hidden", textOverflow: "ellipsis" }}>Hook saved: {atlasSavedPath}</div>}
             {atlasResultSavedPath && <div title={atlasResultSavedPath} style={{ marginTop: 5, color: "#3fb950", overflow: "hidden", textOverflow: "ellipsis" }}>Atlas saved: {atlasResultSavedPath}</div>}
             {atlasBundle && (
               <div style={{ marginTop: 10, padding: 8, border: "1px solid var(--border-color)", borderRadius: 4, background: "var(--bg-secondary)", lineHeight: 1.5 }}>
-                <strong>User-captured file</strong>
+                <strong>用户捕获文件</strong>
                 <div title={atlasCapturePath || ""} style={{ overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{atlasCapturePath?.split(/[\\/]/).pop()}</div>
                 <div>{atlasBundle.events.filter(event => event.event === "ollvm-dispatcher-hit").length} dedicated hits · {atlasBundle.enterEventCount} hook-enter events · {atlasBundle.hookIds.length} hooks</div>
               </div>
@@ -1196,7 +1196,7 @@ export default function OllvmPanel({ sessionId, onJumpToSeq, onPrepareFridaHook 
                           {change.register}:{change.fromValue}→{change.toValue} ×{change.executionCount}
                         </code>
                       ))}
-                      {(transition.stateChanges.length > 24 || transition.stateChangesTruncated) && <span style={{ color: "#d29922" }}>state changes truncated</span>}
+                      {(transition.stateChanges.length > 24 || transition.stateChangesTruncated) && <span style={{ color: "#d29922" }}>状态变化已截断</span>}
                     </div>
                   )}
                 </div>
@@ -1213,7 +1213,7 @@ export default function OllvmPanel({ sessionId, onJumpToSeq, onPrepareFridaHook 
                       <div key={`${node.offset}-${register.register}`} style={{ marginTop: 4 }}>
                         <code>{register.register}</code> {register.observedCount} observed / {register.missingCount} missing
                         <span style={{ marginLeft: 8 }}>{register.values.slice(0, 16).map(value => `${value.value}×${value.executionCount}`).join(", ") || "no value"}</span>
-                        {(register.values.length > 16 || register.valuesTruncated) && <span style={{ marginLeft: 6, color: "#d29922" }}>truncated</span>}
+                        {(register.values.length > 16 || register.valuesTruncated) && <span style={{ marginLeft: 6, color: "#d29922" }}>已截断</span>}
                       </div>
                     ))}
                   </div>
@@ -1235,21 +1235,21 @@ export default function OllvmPanel({ sessionId, onJumpToSeq, onPrepareFridaHook 
         <div style={{ flex: 1, minHeight: 0, display: "flex", overflow: "hidden" }}>
           <div style={{ width: 360, padding: 10, borderRight: "1px solid var(--border-color)", overflow: "auto", fontSize: 11 }}>
             <div style={{ display: "grid", gridTemplateColumns: "110px minmax(0, 1fr)", gap: 7, alignItems: "center" }}>
-              <label htmlFor="ida-image-base">IDA image base</label>
+              <label htmlFor="ida-image-base">IDA 镜像基址</label>
               <input id="ida-image-base" style={inputStyle} value={idaImageBase} onChange={event => { setIdaImageBase(event.target.value); setIdaScript(null); }} placeholder="use idaapi.get_imagebase()" />
-              <span>User xrefs</span>
+              <span>用户交叉引用</span>
               <label style={{ display: "flex", alignItems: "center", gap: 5 }}>
                 <input type="checkbox" checked={addUserXrefs} onChange={event => { setAddUserXrefs(event.target.checked); setIdaScript(null); }} />
-                Add observed CFG edges
+                添加观测到的 CFG 边
               </label>
             </div>
             <div style={{ display: "flex", gap: 6, flexWrap: "wrap", marginTop: 10 }}>
-              <button type="button" style={{ ...buttonStyle, background: "var(--btn-primary)", color: "#fff", border: "none" }} onClick={generateIdaScript}>Generate IDAPython</button>
-              <button type="button" style={buttonStyle} onClick={saveIdaScript}>Save .py</button>
-              <button type="button" style={buttonStyle} onClick={importIdaAnnotations}>Import IDA JSON</button>
-              <button type="button" style={{ ...buttonStyle, opacity: idaScript ? 1 : 0.5 }} disabled={!idaScript} onClick={() => idaScript && navigator.clipboard.writeText(idaScript.script)}>Copy script</button>
+              <button type="button" style={{ ...buttonStyle, background: "var(--btn-primary)", color: "#fff", border: "none" }} onClick={generateIdaScript}>生成 IDAPython</button>
+              <button type="button" style={buttonStyle} onClick={saveIdaScript}>保存 .py</button>
+              <button type="button" style={buttonStyle} onClick={importIdaAnnotations}>导入 IDA JSON</button>
+              <button type="button" style={{ ...buttonStyle, opacity: idaScript ? 1 : 0.5 }} disabled={!idaScript} onClick={() => idaScript && navigator.clipboard.writeText(idaScript.script)}>复制脚本</button>
             </div>
-            {savedPath && <div title={savedPath} style={{ marginTop: 8, color: "#3fb950", overflow: "hidden", textOverflow: "ellipsis" }}>Saved: {savedPath}</div>}
+            {savedPath && <div title={savedPath} style={{ marginTop: 8, color: "#3fb950", overflow: "hidden", textOverflow: "ellipsis" }}>已保存：{savedPath}</div>}
             {idaAnnotations && (
               <div style={{ marginTop: 10, paddingTop: 8, borderTop: "1px solid var(--border-color)" }}>
                 <strong>{idaAnnotations.annotations.length} imported annotations</strong>
@@ -1269,27 +1269,27 @@ export default function OllvmPanel({ sessionId, onJumpToSeq, onPrepareFridaHook 
               Generates a standalone Python bridge. Trace UI does not install or run angr; execute the saved script manually against the exact ELF/shared object used by this trace.
             </div>
             <div style={{ display: "grid", gridTemplateColumns: "150px minmax(0, 1fr)", gap: 7, alignItems: "center", marginTop: 10 }}>
-              <span>Opaque branch probes</span>
+              <span>Opaque 分支探针</span>
               <label style={{ display: "flex", alignItems: "center", gap: 5 }}>
                 <input type="checkbox" checked={angrProbeOpaque} onChange={event => { setAngrProbeOpaque(event.target.checked); setAngrScript(null); }} />
-                unconstrained candidate probe
+                无约束候选探针
               </label>
-              <span>CFG strategy</span>
+              <span>CFG 策略</span>
               <label style={{ display: "flex", alignItems: "center", gap: 5 }}>
                 <input type="checkbox" checked={angrCfgEmulated} onChange={event => { setAngrCfgEmulated(event.target.checked); setAngrScript(null); }} />
-                prefer CFGEmulated
+                优先使用 CFGEmulated
               </label>
-              <span>Seeded flow</span>
+              <span>种子 Flow</span>
               <label style={{ display: "flex", alignItems: "center", gap: 5 }}>
                 <input type="checkbox" disabled={!angrProbeOpaque} checked={angrExploreFlows && angrProbeOpaque} onChange={event => { setAngrExploreFlows(event.target.checked); setAngrScript(null); }} />
-                bounded continuation
+                有界延续
               </label>
-              <span>Flow bounds</span>
+              <span>Flow 边界</span>
               <div style={{ display: "flex", alignItems: "center", gap: 5 }}>
                 <input aria-label="Seeded flow depth" title="Maximum symbolic flow depth" type="number" min={1} max={64} disabled={!angrProbeOpaque || !angrExploreFlows} style={{ ...inputStyle, width: 58 }} value={angrFlowDepth} onChange={event => { setAngrFlowDepth(event.target.value); setAngrScript(null); }} />
-                <span>depth /</span>
+                <span>深度 /</span>
                 <input aria-label="Seeded flow states" title="Maximum symbolic states per probe" type="number" min={1} max={256} disabled={!angrProbeOpaque || !angrExploreFlows} style={{ ...inputStyle, width: 64 }} value={angrFlowStates} onChange={event => { setAngrFlowStates(event.target.value); setAngrScript(null); }} />
-                <span>states</span>
+                <span>状态数</span>
               </div>
             </div>
             <div style={{ marginTop: 6, color: "var(--text-tertiary)", lineHeight: 1.4 }}>
@@ -1297,10 +1297,10 @@ export default function OllvmPanel({ sessionId, onJumpToSeq, onPrepareFridaHook 
             </div>
             <div style={{ marginTop: 10, paddingTop: 9, borderTop: "1px solid var(--border-color)" }}>
               <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
-                <strong>Exact ELF identity guard</strong>
+                <strong>精确 ELF 身份校验</strong>
                 <span style={{ flex: 1 }} />
-                <button type="button" style={buttonStyle} onClick={selectAngrStaticBinary}>Select ELF</button>
-                <button type="button" style={{ ...buttonStyle, opacity: angrStaticBinaryPath ? 1 : 0.5 }} disabled={!angrStaticBinaryPath} onClick={() => { setAngrStaticBinaryPath(null); setAngrScript(null); }}>Clear</button>
+                <button type="button" style={buttonStyle} onClick={selectAngrStaticBinary}>选择 ELF</button>
+                <button type="button" style={{ ...buttonStyle, opacity: angrStaticBinaryPath ? 1 : 0.5 }} disabled={!angrStaticBinaryPath} onClick={() => { setAngrStaticBinaryPath(null); setAngrScript(null); }}>清除</button>
               </div>
               <div style={{ marginTop: 5, color: "var(--text-tertiary)", lineHeight: 1.4 }}>
                 Trace UI hashes the selected AArch64 ELF and embeds its SHA-256. The manual Python bridge refuses a different file before CFG or symbolic analysis starts.
@@ -1314,10 +1314,10 @@ export default function OllvmPanel({ sessionId, onJumpToSeq, onPrepareFridaHook 
             </div>
             <div style={{ marginTop: 10, paddingTop: 9, borderTop: "1px solid var(--border-color)" }}>
               <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
-                <strong>Exact-offset Frida seed</strong>
+                <strong>精确偏移 Frida 种子</strong>
                 <span style={{ flex: 1 }} />
-                <button type="button" style={buttonStyle} onClick={importAngrFridaCapture}>Import capture</button>
-                <button type="button" style={{ ...buttonStyle, opacity: angrFridaBundle ? 1 : 0.5 }} disabled={!angrFridaBundle} onClick={clearAngrFridaCapture}>Clear</button>
+                <button type="button" style={buttonStyle} onClick={importAngrFridaCapture}>导入捕获</button>
+                <button type="button" style={{ ...buttonStyle, opacity: angrFridaBundle ? 1 : 0.5 }} disabled={!angrFridaBundle} onClick={clearAngrFridaCapture}>清除</button>
               </div>
               <div style={{ marginTop: 5, color: "var(--text-tertiary)", lineHeight: 1.4 }}>
                 Select up to 32 events. Every hook-enter/dispatcher-hit target must exactly match an opaque branch, recorded condition-source, or dispatcher-entry module offset. Trace UI embeds the seeds but never runs Frida or angr.
@@ -1338,8 +1338,8 @@ export default function OllvmPanel({ sessionId, onJumpToSeq, onPrepareFridaHook 
                   </div>
                   <div style={{ marginTop: 5, color: "var(--text-secondary)" }}>{selectedAngrFridaEvents.length} selected / 32 maximum</div>
                   <div style={{ display: "flex", gap: 12, marginTop: 5 }}>
-                    <label style={{ display: "flex", alignItems: "center", gap: 4 }}><input type="checkbox" checked={angrFridaIncludeLr} onChange={event => { setAngrFridaIncludeLr(event.target.checked); setAngrScript(null); }} />Include LR</label>
-                    <label style={{ display: "flex", alignItems: "center", gap: 4 }}><input type="checkbox" checked={angrFridaIncludeSp} onChange={event => { setAngrFridaIncludeSp(event.target.checked); setAngrScript(null); }} />Include SP</label>
+                    <label style={{ display: "flex", alignItems: "center", gap: 4 }}><input type="checkbox" checked={angrFridaIncludeLr} onChange={event => { setAngrFridaIncludeLr(event.target.checked); setAngrScript(null); }} />包含 LR</label>
+                    <label style={{ display: "flex", alignItems: "center", gap: 4 }}><input type="checkbox" checked={angrFridaIncludeSp} onChange={event => { setAngrFridaIncludeSp(event.target.checked); setAngrScript(null); }} />包含 SP</label>
                   </div>
                 </div>
               )}
@@ -1355,16 +1355,16 @@ export default function OllvmPanel({ sessionId, onJumpToSeq, onPrepareFridaHook 
               )}
             </div>
             <div style={{ display: "flex", gap: 6, flexWrap: "wrap", marginTop: 10 }}>
-              <button type="button" style={{ ...buttonStyle, background: "var(--btn-primary)", color: "#fff", border: "none" }} onClick={generateAngrScript}>Generate Python</button>
-              <button type="button" style={buttonStyle} onClick={saveAngrScript}>Save .py</button>
-              <button type="button" style={buttonStyle} onClick={importAngrResults}>Import angr JSON</button>
-              <button type="button" style={{ ...buttonStyle, opacity: angrScript ? 1 : 0.5 }} disabled={!angrScript} onClick={() => angrScript && navigator.clipboard.writeText(angrScript.script)}>Copy script</button>
+              <button type="button" style={{ ...buttonStyle, background: "var(--btn-primary)", color: "#fff", border: "none" }} onClick={generateAngrScript}>生成 Python</button>
+              <button type="button" style={buttonStyle} onClick={saveAngrScript}>保存 .py</button>
+              <button type="button" style={buttonStyle} onClick={importAngrResults}>导入 angr JSON</button>
+              <button type="button" style={{ ...buttonStyle, opacity: angrScript ? 1 : 0.5 }} disabled={!angrScript} onClick={() => angrScript && navigator.clipboard.writeText(angrScript.script)}>复制脚本</button>
             </div>
             <div style={{ display: "flex", gap: 6, marginTop: 8 }}>
-              <button type="button" style={{ ...buttonStyle, background: angrDisplay === "script" ? "var(--bg-selected)" : "var(--bg-input)" }} onClick={() => setAngrDisplay("script")}>Script</button>
-              <button type="button" style={{ ...buttonStyle, background: angrDisplay === "results" ? "var(--bg-selected)" : "var(--bg-input)", opacity: angrResults ? 1 : 0.5 }} disabled={!angrResults} onClick={() => setAngrDisplay("results")}>Imported results</button>
+              <button type="button" style={{ ...buttonStyle, background: angrDisplay === "script" ? "var(--bg-selected)" : "var(--bg-input)" }} onClick={() => setAngrDisplay("script")}>脚本</button>
+              <button type="button" style={{ ...buttonStyle, background: angrDisplay === "results" ? "var(--bg-selected)" : "var(--bg-input)", opacity: angrResults ? 1 : 0.5 }} disabled={!angrResults} onClick={() => setAngrDisplay("results")}>导入结果</button>
             </div>
-            {angrSavedPath && <div title={angrSavedPath} style={{ marginTop: 8, color: "#3fb950", overflow: "hidden", textOverflow: "ellipsis" }}>Saved: {angrSavedPath}</div>}
+            {angrSavedPath && <div title={angrSavedPath} style={{ marginTop: 8, color: "#3fb950", overflow: "hidden", textOverflow: "ellipsis" }}>已保存：{angrSavedPath}</div>}
             {angrResults && (
               <div style={{ marginTop: 10, paddingTop: 8, borderTop: "1px solid var(--border-color)", lineHeight: 1.5 }}>
                 <strong>{angrResults.cfgKind} / angr {angrResults.angrVersion}</strong>
@@ -1403,7 +1403,7 @@ export default function OllvmPanel({ sessionId, onJumpToSeq, onPrepareFridaHook 
                 </div>
               ))}
               {angrResults.dispatcherProbes.length > 0 && (
-                <div style={{ padding: "9px 10px", borderBottom: "1px solid var(--border-color)", fontWeight: 600 }}>Exact dispatcher-entry Frida probes</div>
+                <div style={{ padding: "9px 10px", borderBottom: "1px solid var(--border-color)", fontWeight: 600 }}>精确 dispatcher 入口 Frida 探针</div>
               )}
               {angrResults.dispatcherProbes.map(probe => (
                 <div key={`dispatcher-${probe.offset}-${probe.sourceEventIndex}`} style={{ padding: "7px 8px", borderBottom: "1px solid var(--border-color)" }}>
@@ -1447,7 +1447,7 @@ export default function OllvmPanel({ sessionId, onJumpToSeq, onPrepareFridaHook 
                 </div>
               ))}
               {angrResults.branchProbes.length > 0 && (
-                <div style={{ padding: "9px 10px", borderBottom: "1px solid var(--border-color)", fontWeight: 600 }}>Opaque branch probes</div>
+                <div style={{ padding: "9px 10px", borderBottom: "1px solid var(--border-color)", fontWeight: 600 }}>Opaque 分支探针</div>
               )}
               {angrResults.branchProbes.map((probe, probeIndex) => (
                 <div key={`${probe.offset}-${probe.seedKind || "legacy"}-${probe.sourceSeq ?? probe.sourceEventIndex ?? probeIndex}`} style={{ padding: "7px 8px", borderBottom: "1px solid var(--border-color)" }}>

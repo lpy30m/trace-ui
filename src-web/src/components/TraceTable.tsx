@@ -2681,7 +2681,7 @@ export default function TraceTable({
                 onMouseEnter={(e) => { (e.currentTarget as HTMLElement).style.background = "var(--bg-selected)"; setHighlightSubmenuOpen(false); }}
                 onMouseLeave={(e) => { (e.currentTarget as HTMLElement).style.background = "transparent"; }}
                 style={{ padding: "6px 12px", fontSize: 12, color: "var(--text-primary)", cursor: "pointer", whiteSpace: "nowrap" }}
-              >Copy</div>
+                >复制</div>
             ) : (
               <>
                 <div
@@ -2689,19 +2689,19 @@ export default function TraceTable({
                   onMouseEnter={(e) => { (e.currentTarget as HTMLElement).style.background = "var(--bg-selected)"; setHighlightSubmenuOpen(false); }}
                   onMouseLeave={(e) => { (e.currentTarget as HTMLElement).style.background = "transparent"; }}
                   style={{ padding: "6px 12px", fontSize: 12, color: "var(--text-primary)", cursor: "pointer", whiteSpace: "nowrap" }}
-                >Copy as Original Trace</div>
+                >按原始 Trace 格式复制</div>
                 <div
                   onClick={() => copyAs("tab")}
                   onMouseEnter={(e) => { (e.currentTarget as HTMLElement).style.background = "var(--bg-selected)"; setHighlightSubmenuOpen(false); }}
                   onMouseLeave={(e) => { (e.currentTarget as HTMLElement).style.background = "transparent"; }}
                   style={{ padding: "6px 12px", fontSize: 12, color: "var(--text-primary)", cursor: "pointer", whiteSpace: "nowrap" }}
-                >Copy as Tab-Separated</div>
+                >按制表符分隔复制</div>
                 <div
                   onClick={() => copyAs("disasm")}
                   onMouseEnter={(e) => { (e.currentTarget as HTMLElement).style.background = "var(--bg-selected)"; setHighlightSubmenuOpen(false); }}
                   onMouseLeave={(e) => { (e.currentTarget as HTMLElement).style.background = "transparent"; }}
                   style={{ padding: "6px 12px", fontSize: 12, color: "var(--text-primary)", cursor: "pointer", whiteSpace: "nowrap" }}
-                >Copy as Disasm Only</div>
+                >仅复制反汇编</div>
                 {/* 分隔线 */}
                 <ContextMenuSeparator />
                 {/* Highlight 子菜单 */}
@@ -2710,7 +2710,7 @@ export default function TraceTable({
                   onMouseLeave={(e) => { (e.currentTarget as HTMLElement).style.background = "transparent"; setHighlightSubmenuOpen(false); }}
                   style={{ padding: "6px 12px", fontSize: 12, color: "var(--text-primary)", cursor: "pointer", whiteSpace: "nowrap", position: "relative" }}
                 >
-                  <span>Highlight</span>
+                  <span>高亮</span>
                   <span style={{ float: "right", marginLeft: 16 }}>▸</span>
                   {highlightSubmenuOpen && (
                     <div
@@ -2764,7 +2764,7 @@ export default function TraceTable({
                         onMouseLeave={(e) => { (e.currentTarget as HTMLElement).style.background = "transparent"; }}
                         style={{ padding: "6px 12px", fontSize: 12, color: "var(--text-primary)", cursor: "pointer", whiteSpace: "nowrap", display: "flex", alignItems: "center", justifyContent: "space-between" }}
                       >
-                        <span>Strikethrough</span>
+                        <span>删除线</span>
                         <span style={{ color: "var(--text-secondary)", fontSize: 11 }}>Alt+-</span>
                       </div>
                       <div
@@ -2781,7 +2781,7 @@ export default function TraceTable({
                         onMouseLeave={(e) => { (e.currentTarget as HTMLElement).style.background = "transparent"; }}
                         style={{ padding: "6px 12px", fontSize: 12, color: "var(--text-primary)", cursor: "pointer", whiteSpace: "nowrap", display: "flex", alignItems: "center", justifyContent: "space-between" }}
                       >
-                        <span>Reset</span>
+                        <span>重置</span>
                         <span style={{ color: "var(--text-secondary)", fontSize: 11 }}>Alt+0</span>
                       </div>
                     </div>
@@ -2804,7 +2804,7 @@ export default function TraceTable({
                   onMouseLeave={(e) => { (e.currentTarget as HTMLElement).style.background = "transparent"; }}
                   style={{ padding: "6px 12px", fontSize: 12, color: "var(--text-primary)", cursor: "pointer", whiteSpace: "nowrap", display: "flex", alignItems: "center", justifyContent: "space-between" }}
                 >
-                  <span>Hide</span>
+                  <span>隐藏</span>
                   <span style={{ color: "var(--text-secondary)", fontSize: 11 }}>Ctrl+/</span>
                 </div>
                 {/* 分隔线 */}
@@ -2839,7 +2839,7 @@ export default function TraceTable({
                     onMouseEnter={(e) => { (e.currentTarget as HTMLElement).style.background = "var(--bg-selected)"; setHighlightSubmenuOpen(false); }}
                     onMouseLeave={(e) => { (e.currentTarget as HTMLElement).style.background = "transparent"; }}
                     style={{ padding: "6px 12px", fontSize: 12, color: "var(--text-primary)", cursor: "pointer", whiteSpace: "nowrap" }}
-                  >Delete Comment</div>
+                  >删除注释</div>
                 )}
                 {/* Call Info（仅当前行有 call_info 时显示） */}
                 {ctxCallInfoRef.current && (
@@ -2855,7 +2855,7 @@ export default function TraceTable({
                       onMouseEnter={(e) => { (e.currentTarget as HTMLElement).style.background = "var(--bg-selected)"; setHighlightSubmenuOpen(false); }}
                       onMouseLeave={(e) => { (e.currentTarget as HTMLElement).style.background = "transparent"; }}
                       style={{ padding: "6px 12px", fontSize: 12, color: "var(--text-primary)", cursor: "pointer", whiteSpace: "nowrap" }}
-                    >Call Info</div>
+                    >调用信息</div>
                   </>
                 )}
                 {/* Taint Trace */}
@@ -2873,7 +2873,7 @@ export default function TraceTable({
                       onMouseEnter={(e) => { (e.currentTarget as HTMLElement).style.background = "var(--bg-selected)"; setHighlightSubmenuOpen(false); }}
                       onMouseLeave={(e) => { (e.currentTarget as HTMLElement).style.background = "transparent"; }}
                       style={{ padding: "6px 12px", fontSize: 12, color: "var(--text-primary)", cursor: "pointer", whiteSpace: "nowrap" }}
-                    >Taint Trace</div>
+                    >污点追踪</div>
                   </>
                 )}
                 {/* 查看依赖树 */}
@@ -2888,7 +2888,7 @@ export default function TraceTable({
                       onMouseEnter={(e) => { (e.currentTarget as HTMLElement).style.background = "var(--bg-selected)"; setHighlightSubmenuOpen(false); }}
                       onMouseLeave={(e) => { (e.currentTarget as HTMLElement).style.background = "transparent"; }}
                       style={{ padding: "6px 12px", fontSize: 12, color: "var(--text-primary)", cursor: "pointer", whiteSpace: "nowrap" }}
-                    >Dependency Tree</div>
+                    >依赖树</div>
                   </>
                 )}
               </>
@@ -3045,7 +3045,7 @@ export default function TraceTable({
                   borderRadius: 4,
                   cursor: "pointer",
                 }}
-              >Save</button>
+              >保存</button>
               <button
                 onMouseDown={(e) => { e.preventDefault(); closeCommentEditor(); }}
                 style={{
@@ -3057,7 +3057,7 @@ export default function TraceTable({
                   borderRadius: 4,
                   cursor: "pointer",
                 }}
-              >Cancel</button>
+              >取消</button>
             </div>
           </div>,
           document.body,
@@ -3141,7 +3141,7 @@ function TableHeader({ disasmWidth, regBeforeWidth, seqWidth, addrWidth, onDisas
         onClick={onToggleSortOrder}
         style={{ width: seqWidth, flexShrink: 0, cursor: "pointer", display: "flex", alignItems: "center", gap: 4, userSelect: "none" }}
       >
-        Seq
+        序号
         <span style={{ fontSize: 10, lineHeight: 1 }}>
           {sortOrder === "asc" ? "▲" : "▼"}
         </span>
@@ -3160,35 +3160,35 @@ function TableHeader({ disasmWidth, regBeforeWidth, seqWidth, addrWidth, onDisas
         }}
         customLabel={
           <span style={{ display: "flex", alignItems: "center", gap: 4 }}>
-            Address
+            地址
             <span style={{ fontSize: 10, lineHeight: 1 }}>▼</span>
           </span>
         }
       >
         <MenuItem
-          label="Show Module Name"
+          label="显示模块名"
           checked={showSoName}
           onClick={onToggleSoName}
         />
         <MenuItem
-          label="Show Absolute Address"
+          label="显示绝对地址"
           checked={showAbsAddress}
           disabled={!showSoName}
           onClick={onToggleAbsAddress}
         />
         <MenuItem
-          label="Color Highlight"
+          label="使用颜色高亮"
           checked={addrColorHighlight}
           onClick={onToggleAddrColor}
         />
       </MenuDropdown>
       </span>
       <ResizeHandle onMouseDown={onAddrResizeMouseDown} />
-      <span style={{ width: disasmWidth, flexShrink: 0 }}>Disassembly</span>
+      <span style={{ width: disasmWidth, flexShrink: 0 }}>反汇编</span>
       <ResizeHandle onMouseDown={onDisasmResizeMouseDown} />
-      <span style={{ width: regBeforeWidth, flexShrink: 0 }}>Before</span>
+      <span style={{ width: regBeforeWidth, flexShrink: 0 }}>之前</span>
       <ResizeHandle onMouseDown={onRegBeforeResizeMouseDown} />
-      <span style={{ flex: 1 }}>Changes</span>
+      <span style={{ flex: 1 }}>变化</span>
       <span style={{ width: RIGHT_GUTTER, flexShrink: 0 }}></span>
     </div>
   );

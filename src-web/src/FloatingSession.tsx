@@ -171,21 +171,21 @@ export default function FloatingSession({
 
   // === Taint 下拉菜单（标题栏内） ===
   const taintDropdown = sliceActive ? (
-    <MenuDropdown label="Taint" minWidth={180} labelStyle={{ background: "rgba(80, 200, 120, 0.25)" }}>
+    <MenuDropdown label="污点" minWidth={180} labelStyle={{ background: "rgba(80, 200, 120, 0.25)" }}>
       <MenuItem
-        label="Tainted Only"
+        label="仅显示污点"
         checked={sliceFilterMode === "filter-only"}
         onClick={() => handleFilterModeChange("filter-only")}
       />
       <MenuItem
-        label="Show All (Dimmed)"
+        label="显示全部（置灰）"
         checked={sliceFilterMode === "highlight"}
         onClick={() => handleFilterModeChange("highlight")}
       />
       <MenuSeparator />
-      <MenuItem label="Go to Source" onClick={handleGoToSource} />
+      <MenuItem label="跳转到源头" onClick={handleGoToSource} />
       <MenuSeparator />
-      <MenuItem label="Clear" onClick={handleClearSlice} />
+      <MenuItem label="清除" onClick={handleClearSlice} />
     </MenuDropdown>
   ) : null;
 

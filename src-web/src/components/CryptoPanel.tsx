@@ -156,7 +156,7 @@ function DetectionPanel({ cryptoResults, cryptoScanning, onJumpToSeq }: Detectio
           borderRadius: "50%",
           animation: "spin 1s linear infinite",
         }} />
-        <span style={{ color: "var(--text-secondary)", fontSize: 12 }}>Scanning for crypto constants...</span>
+        <span style={{ color: "var(--text-secondary)", fontSize: 12 }}>正在扫描加密常量…</span>
       </div>
     );
   }
@@ -165,7 +165,7 @@ function DetectionPanel({ cryptoResults, cryptoScanning, onJumpToSeq }: Detectio
     return (
       <div style={{ flex: 1, display: "flex", alignItems: "center", justifyContent: "center" }}>
         <span style={{ color: "var(--text-secondary)", fontSize: 12 }}>
-          No crypto scan results. Use Analysis &gt; Scan Crypto to start.
+          暂无加密扫描结果，请从“分析 → 扫描加密常量”开始。
         </span>
       </div>
     );
@@ -181,7 +181,7 @@ function DetectionPanel({ cryptoResults, cryptoScanning, onJumpToSeq }: Detectio
         <input
           value={search}
           onChange={e => setSearch(e.target.value)}
-          placeholder="Filter results..."
+          placeholder="筛选结果…"
           style={{
             width: 260, background: "var(--input-bg)", border: "1px solid var(--border-color)",
             color: "var(--text-primary)", padding: "3px 8px", borderRadius: 3, fontSize: 12,
@@ -211,7 +211,7 @@ function DetectionPanel({ cryptoResults, cryptoScanning, onJumpToSeq }: Detectio
         </div>
         <span style={{ flex: 1 }} />
         <span style={{ color: "var(--text-tertiary)", fontSize: 11, whiteSpace: "nowrap" }}>
-          {filtered.length.toLocaleString()} matches
+          {filtered.length.toLocaleString()} 个匹配
           {cryptoResults.scan_duration_ms > 0 && ` · ${(cryptoResults.scan_duration_ms / 1000).toFixed(2)}s`}
         </span>
       </div>
@@ -223,15 +223,15 @@ function DetectionPanel({ cryptoResults, cryptoScanning, onJumpToSeq }: Detectio
         borderBottom: "1px solid var(--border-color)",
         fontSize: "var(--font-size-sm)", color: "var(--text-secondary)", flexShrink: 0,
       }}>
-        <span style={{ width: seqCol.width, flexShrink: 0 }}>Line#</span>
+        <span style={{ width: seqCol.width, flexShrink: 0 }}>行号</span>
         <div onMouseDown={seqCol.onMouseDown} style={HANDLE_STYLE}><div style={{ width: 1, height: "100%", background: "var(--border-color)" }} /></div>
-        <span style={{ width: algoCol.width, flexShrink: 0 }}>Algorithm</span>
+        <span style={{ width: algoCol.width, flexShrink: 0 }}>算法</span>
         <div onMouseDown={algoCol.onMouseDown} style={HANDLE_STYLE}><div style={{ width: 1, height: "100%", background: "var(--border-color)" }} /></div>
-        <span style={{ width: magicCol.width, flexShrink: 0 }}>Magic Number</span>
+        <span style={{ width: magicCol.width, flexShrink: 0 }}>魔数</span>
         <div onMouseDown={magicCol.onMouseDown} style={HANDLE_STYLE}><div style={{ width: 1, height: "100%", background: "var(--border-color)" }} /></div>
-        <span style={{ width: addrCol.width, flexShrink: 0 }}>Address</span>
+        <span style={{ width: addrCol.width, flexShrink: 0 }}>地址</span>
         <div onMouseDown={addrCol.onMouseDown} style={HANDLE_STYLE}><div style={{ width: 1, height: "100%", background: "var(--border-color)" }} /></div>
-        <span style={{ flex: 1 }}>Disasm</span>
+        <span style={{ flex: 1 }}>反汇编</span>
         <span style={{ width: MINIMAP_WIDTH + 12, flexShrink: 0 }}></span>
       </div>
 
@@ -306,9 +306,9 @@ function DetectionPanel({ cryptoResults, cryptoScanning, onJumpToSeq }: Detectio
       {/* Context menu */}
       {contextMenu && (
         <ContextMenu x={contextMenu.x} y={contextMenu.y} onClose={() => setContextMenu(null)} minWidth={160}>
-          <ContextMenuItem label="View in Memory" onClick={handleViewInMemory} />
-          <ContextMenuItem label="Copy Address" onClick={handleCopyAddr} />
-          <ContextMenuItem label="Copy Disasm" onClick={handleCopyDisasm} />
+          <ContextMenuItem label="在内存中查看" onClick={handleViewInMemory} />
+          <ContextMenuItem label="复制地址" onClick={handleCopyAddr} />
+          <ContextMenuItem label="复制反汇编" onClick={handleCopyDisasm} />
         </ContextMenu>
       )}
     </div>

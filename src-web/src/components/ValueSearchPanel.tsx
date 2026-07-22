@@ -40,6 +40,8 @@ const inputStyle: React.CSSProperties = {
   padding: "0 8px",
 };
 
+const sourceLabel = (source: string) => ({ strings: "字符串", memory: "内存", trace: "Trace" })[source] ?? source;
+
 export default function ValueSearchPanel({ sessionId, onJumpToSeq, onTraceMemory }: Props) {
   const [query, setQuery] = useState("");
   const [kind, setKind] = useState<ValueSearchKind>("auto");
@@ -71,15 +73,15 @@ export default function ValueSearchPanel({ sessionId, onJumpToSeq, onTraceMemory
 
   const runSearch = useCallback(async () => {
     if (!sessionId) {
-      setError("Open a trace before searching for a value.");
+      setError("请先打开 trace，再搜索值。");
       return;
     }
     if (!query) {
-      setError("Enter a value. Text is searched exactly, including spaces and case.");
+      setError("请输入要搜索的值。文本会按原样匹配，包括空格和大小写。");
       return;
     }
     if (!searchStrings && !searchMemory && !searchTrace) {
-      setError("Enable at least one search source.");
+      setError("请至少启用一种搜索来源。");
       return;
     }
     setLoading(true);
@@ -112,7 +114,7 @@ export default function ValueSearchPanel({ sessionId, onJumpToSeq, onTraceMemory
     if (!sessionId || !match.addr) return;
     const interpretation = interpretationFor(match);
     if (!interpretation) return;
-    setForwardStatus("Tracing forward...");
+    setForwardStatus("正在向前追踪…");
     setError(null);
     try {
       const result = await invoke<ForwardSliceResult>("run_forward_value_taint", {
@@ -122,12 +124,12 @@ export default function ValueSearchPanel({ sessionId, onJumpToSeq, onTraceMemory
         seq: match.lastSeq,
       });
       setForwardStatus(
-        `${result.affectedCount.toLocaleString()} affected instructions, ${result.terminalSeqs.length.toLocaleString()} endpoints${result.truncated ? " (truncated)" : ""}`,
+        `${result.affectedCount.toLocaleString()} 条受影响指令，${result.terminalSeqs.length.toLocaleString()} 个终点${result.truncated ? "（结果已截断）" : ""}`,
       );
       const endpoint = result.terminalSeqs[result.terminalSeqs.length - 1];
       if (endpoint !== undefined) onJumpToSeq(endpoint);
     } catch (traceError) {
-      setError(`Forward taint failed: ${String(traceError)}`);
+      setError(`向前污点追踪失败：${String(traceError)}`);
       setForwardStatus(null);
     }
   }, [interpretationFor, onJumpToSeq, sessionId]);
@@ -140,38 +142,38 @@ export default function ValueSearchPanel({ sessionId, onJumpToSeq, onTraceMemory
             value={query}
             onChange={(event) => setQuery(event.target.value)}
             onKeyDown={(event) => { if (event.key === "Enter") void runSearch(); }}
-            placeholder="Text, 0x address, integer, hex bytes, or digest"
+            placeholder="文本、0x 地址、整数、十六进制字节或摘要"
             style={{ ...inputStyle, flex: 1, minWidth: 160 }}
           />
           <select value={kind} onChange={(event) => setKind(event.target.value as ValueSearchKind)} style={inputStyle}>
-            <option value="auto">Auto</option>
-            <option value="text">Text</option>
-            <option value="hex">Hex</option>
-            <option value="integer">Integer</option>
-            <option value="address">Address</option>
-            <option value="digest">Digest bytes</option>
+            <option value="auto">自动识别</option>
+            <option value="text">文本</option>
+            <option value="hex">十六进制</option>
+            <option value="integer">整数</option>
+            <option value="address">地址</option>
+            <option value="digest">摘要字节</option>
           </select>
-          <button type="button" style={buttonStyle} onClick={() => setAdvanced(value => !value)}>Options</button>
+          <button type="button" style={buttonStyle} onClick={() => setAdvanced(value => !value)}>高级选项</button>
           <button type="button" style={buttonStyle} disabled={loading} onClick={() => void runSearch()}>
-            {loading ? "Searching..." : "Search"}
+            {loading ? "搜索中…" : "搜索"}
           </button>
         </div>
         {advanced && (
           <div style={{ display: "flex", gap: 12, alignItems: "center", marginTop: 7, flexWrap: "wrap", color: "var(--text-secondary)", fontSize: 11 }}>
-            <label>Endian <select value={endian} onChange={(event) => setEndian(event.target.value as ValueEndian)} style={{ ...inputStyle, height: 24, marginLeft: 4 }}>
-              <option value="both">Both</option><option value="little">Little</option><option value="big">Big</option>
+            <label>字节序 <select value={endian} onChange={(event) => setEndian(event.target.value as ValueEndian)} style={{ ...inputStyle, height: 24, marginLeft: 4 }}>
+              <option value="both">两者</option><option value="little">小端</option><option value="big">大端</option>
             </select></label>
-            <label>Width <select value={width} onChange={(event) => setWidth(event.target.value)} style={{ ...inputStyle, height: 24, marginLeft: 4 }}>
-              <option value="">Auto</option><option value="1">1</option><option value="2">2</option><option value="4">4</option><option value="8">8</option>
+            <label>宽度 <select value={width} onChange={(event) => setWidth(event.target.value)} style={{ ...inputStyle, height: 24, marginLeft: 4 }}>
+              <option value="">自动</option><option value="1">1</option><option value="2">2</option><option value="4">4</option><option value="8">8</option>
             </select></label>
-            <label><input type="checkbox" checked={includeNul} onChange={(event) => setIncludeNul(event.target.checked)} /> NUL forms</label>
-            <label><input type="checkbox" checked={searchStrings} onChange={(event) => setSearchStrings(event.target.checked)} /> Strings</label>
-            <label><input type="checkbox" checked={searchMemory} onChange={(event) => setSearchMemory(event.target.checked)} /> Memory history</label>
-            <label><input type="checkbox" checked={searchTrace} onChange={(event) => setSearchTrace(event.target.checked)} /> Trace text</label>
+            <label><input type="checkbox" checked={includeNul} onChange={(event) => setIncludeNul(event.target.checked)} /> NUL 形式</label>
+            <label><input type="checkbox" checked={searchStrings} onChange={(event) => setSearchStrings(event.target.checked)} /> 字符串索引</label>
+            <label><input type="checkbox" checked={searchMemory} onChange={(event) => setSearchMemory(event.target.checked)} /> 内存历史</label>
+            <label><input type="checkbox" checked={searchTrace} onChange={(event) => setSearchTrace(event.target.checked)} /> Trace 文本</label>
           </div>
         )}
         <div style={{ marginTop: 5, color: "var(--text-secondary)", fontSize: 10 }}>
-          Auto shows every interpretation explicitly. Hex remains in input order; integer/address endian forms are labeled.
+          自动模式会列出所有解释方式；十六进制保持输入顺序，整数和地址会标注字节序。
         </div>
       </div>
 
@@ -182,8 +184,8 @@ export default function ValueSearchPanel({ sessionId, onJumpToSeq, onTraceMemory
           {response && (
             <>
               <div style={{ color: "var(--text-secondary)" }}>
-                {response.totalMatches.toLocaleString()} matches · {response.stringsScanned.toLocaleString()} strings · {response.writesScanned.toLocaleString()} writes · {response.traceLinesScanned.toLocaleString()} trace lines
-                {response.truncated ? " · results truncated" : ""}
+                {response.totalMatches.toLocaleString()} 个匹配 · 扫描 {response.stringsScanned.toLocaleString()} 个字符串 · {response.writesScanned.toLocaleString()} 次写入 · {response.traceLinesScanned.toLocaleString()} 行 trace
+                {response.truncated ? " · 结果已截断" : ""}
               </div>
               <div style={{ display: "flex", gap: 5, flexWrap: "wrap", marginTop: 5 }}>
                 {response.interpretations.map((item, index) => (
@@ -200,27 +202,27 @@ export default function ValueSearchPanel({ sessionId, onJumpToSeq, onTraceMemory
 
       <div style={{ flex: 1, minHeight: 0, overflow: "auto" }}>
         {response && response.matches.length === 0 && (
-          <div style={{ padding: 18, textAlign: "center", color: "var(--text-secondary)", fontSize: 12 }}>No value matches.</div>
+          <div style={{ padding: 18, textAlign: "center", color: "var(--text-secondary)", fontSize: 12 }}>没有找到值匹配项。</div>
         )}
         {response?.matches.map((match, index) => {
           const interpretation = response.interpretations[match.interpretationIndex];
           const canTaint = Boolean(match.addr && match.source !== "trace");
           return (
             <div key={`${match.source}-${match.seq}-${match.addr}-${match.interpretationIndex}-${index}`} style={{ display: "grid", gridTemplateColumns: "72px 88px minmax(180px, 1fr) auto", gap: 8, alignItems: "center", minHeight: 34, padding: "4px 8px", borderBottom: "1px solid var(--border-color)", background: index % 2 ? "var(--bg-row-odd)" : "var(--bg-row-even)", fontSize: 11 }}>
-              <span style={{ color: "var(--syntax-keyword)" }}>{match.source}</span>
-              <span style={{ color: "var(--syntax-number)" }}>line {match.seq + 1}</span>
+              <span style={{ color: "var(--syntax-keyword)" }}>{sourceLabel(match.source)}</span>
+              <span style={{ color: "var(--syntax-number)" }}>第 {match.seq + 1} 行</span>
               <div style={{ minWidth: 0 }}>
-                <div style={{ color: "var(--text-primary)", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }} title={match.preview}>{match.preview || "(empty preview)"}</div>
+                <div style={{ color: "var(--text-primary)", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }} title={match.preview}>{match.preview || "（无预览）"}</div>
                 <div style={{ color: "var(--text-secondary)", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
-                  [{match.interpretationIndex}] {interpretation?.label} · {match.addr ?? "no memory address"}
-                  {match.writeSeqs.length > 1 ? ` · stores ${match.writeSeqs.map(seq => seq + 1).join(", ")}` : ""}
+                  [{match.interpretationIndex}] {interpretation?.label} · {match.addr ?? "无内存地址"}
+                  {match.writeSeqs.length > 1 ? ` · 写入行 ${match.writeSeqs.map(seq => seq + 1).join(", ")}` : ""}
                 </div>
               </div>
               <div style={{ display: "flex", gap: 4 }}>
-                <button type="button" style={buttonStyle} onClick={() => onJumpToSeq(match.seq)}>Jump</button>
-                <button type="button" style={{ ...buttonStyle, opacity: match.addr ? 1 : 0.45 }} disabled={!match.addr} onClick={() => viewMemory(match)}>Memory</button>
-                <button type="button" style={{ ...buttonStyle, opacity: canTaint && onTraceMemory ? 1 : 0.45 }} disabled={!canTaint || !onTraceMemory} onClick={() => traceBackward(match)}>Backward</button>
-                <button type="button" style={{ ...buttonStyle, opacity: canTaint ? 1 : 0.45 }} disabled={!canTaint} onClick={() => void traceForward(match)}>Forward</button>
+                <button type="button" style={buttonStyle} onClick={() => onJumpToSeq(match.seq)}>跳转</button>
+                <button type="button" style={{ ...buttonStyle, opacity: match.addr ? 1 : 0.45 }} disabled={!match.addr} onClick={() => viewMemory(match)}>查看内存</button>
+                <button type="button" style={{ ...buttonStyle, opacity: canTaint && onTraceMemory ? 1 : 0.45 }} disabled={!canTaint || !onTraceMemory} onClick={() => traceBackward(match)}>向后追踪</button>
+                <button type="button" style={{ ...buttonStyle, opacity: canTaint ? 1 : 0.45 }} disabled={!canTaint} onClick={() => void traceForward(match)}>向前追踪</button>
               </div>
             </div>
           );
