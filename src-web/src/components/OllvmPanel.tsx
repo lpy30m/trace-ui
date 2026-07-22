@@ -68,6 +68,18 @@ function optionalNumber(value: string): number | null {
   return Number.isInteger(parsed) && parsed >= 0 ? parsed : null;
 }
 
+function parsePointerRegisters(value: string): number[] | null {
+  const trimmed = value.trim();
+  if (!trimmed) return [];
+  const result = new Set<number>();
+  for (const token of trimmed.split(/[\s,;]+/)) {
+    const match = /^x?([0-7])$/i.exec(token);
+    if (!match) return null;
+    result.add(Number(match[1]));
+  }
+  return [...result].sort((left, right) => left - right);
+}
+
 function scoreColor(score: number): string {
   if (score >= 70) return "#b35c00";
   if (score >= 40) return "#9e6a03";
@@ -123,6 +135,8 @@ export default function OllvmPanel({ sessionId, onJumpToSeq, onPrepareFridaHook 
   const [atlasMaxDispatchers, setAtlasMaxDispatchers] = useState("12");
   const [atlasIdleGapMs, setAtlasIdleGapMs] = useState("1000");
   const [atlasMaxEvents, setAtlasMaxEvents] = useState("50000");
+  const [atlasPointerRegisters, setAtlasPointerRegisters] = useState("");
+  const [atlasPointerBytes, setAtlasPointerBytes] = useState("64");
   const [atlasScript, setAtlasScript] = useState<FridaOllvmDispatcherHookScript | null>(null);
   const [atlasBundle, setAtlasBundle] = useState<FridaCaptureBundle | null>(null);
   const [atlasCapturePath, setAtlasCapturePath] = useState<string | null>(null);
@@ -379,11 +393,15 @@ export default function OllvmPanel({ sessionId, onJumpToSeq, onPrepareFridaHook 
     setAtlasBusy(true);
     setError(null);
     try {
+      const capturePointerRegisters = parsePointerRegisters(atlasPointerRegisters);
+      if (capturePointerRegisters == null) throw new Error("Pointer registers must be a comma-separated subset of X0-X7");
       const generated = await invoke<FridaOllvmDispatcherHookScript>("generate_frida_ollvm_dispatcher_hook", {
         report,
         maxDispatchers: optionalNumber(atlasMaxDispatchers) ?? 12,
         idleGapMs: optionalNumber(atlasIdleGapMs) ?? 1_000,
         maxEvents: optionalNumber(atlasMaxEvents) ?? 50_000,
+        capturePointerRegisters,
+        pointerCaptureBytes: optionalNumber(atlasPointerBytes) ?? 64,
       });
       setAtlasScript(generated);
       setAtlasDisplay("script");
@@ -394,7 +412,7 @@ export default function OllvmPanel({ sessionId, onJumpToSeq, onPrepareFridaHook 
     } finally {
       setAtlasBusy(false);
     }
-  }, [atlasIdleGapMs, atlasMaxDispatchers, atlasMaxEvents, report]);
+  }, [atlasIdleGapMs, atlasMaxDispatchers, atlasMaxEvents, atlasPointerBytes, atlasPointerRegisters, report]);
 
   const saveAtlasHook = useCallback(async () => {
     if (!report) return;
@@ -407,19 +425,23 @@ export default function OllvmPanel({ sessionId, onJumpToSeq, onPrepareFridaHook 
     });
     if (typeof path !== "string") return;
     try {
+      const capturePointerRegisters = parsePointerRegisters(atlasPointerRegisters);
+      if (capturePointerRegisters == null) throw new Error("Pointer registers must be a comma-separated subset of X0-X7");
       const written = await invoke<string>("save_frida_ollvm_dispatcher_hook", {
         path,
         report,
         maxDispatchers: optionalNumber(atlasMaxDispatchers) ?? 12,
         idleGapMs: optionalNumber(atlasIdleGapMs) ?? 1_000,
         maxEvents: optionalNumber(atlasMaxEvents) ?? 50_000,
+        capturePointerRegisters,
+        pointerCaptureBytes: optionalNumber(atlasPointerBytes) ?? 64,
       });
       setAtlasSavedPath(written);
       setError(null);
     } catch (reason) {
       setError(String(reason));
     }
-  }, [atlasIdleGapMs, atlasMaxDispatchers, atlasMaxEvents, atlasScript, generateAtlasHook, report]);
+  }, [atlasIdleGapMs, atlasMaxDispatchers, atlasMaxEvents, atlasPointerBytes, atlasPointerRegisters, atlasScript, generateAtlasHook, report]);
 
   const importAtlasCapture = useCallback(async () => {
     const { open } = await import("@tauri-apps/plugin-dialog");
@@ -1053,6 +1075,13 @@ export default function OllvmPanel({ sessionId, onJumpToSeq, onPrepareFridaHook 
               <input id="atlas-idle-gap" style={inputStyle} value={atlasIdleGapMs} onChange={event => { setAtlasIdleGapMs(event.target.value); setAtlasScript(null); setAtlasResult(null); }} />
               <label htmlFor="atlas-max-events">Maximum hit events</label>
               <input id="atlas-max-events" style={inputStyle} value={atlasMaxEvents} onChange={event => { setAtlasMaxEvents(event.target.value); setAtlasScript(null); setAtlasResult(null); }} />
+              <label htmlFor="atlas-pointer-registers">Pointer memory (optional)</label>
+              <input id="atlas-pointer-registers" placeholder="X0,X1" style={inputStyle} value={atlasPointerRegisters} onChange={event => { setAtlasPointerRegisters(event.target.value); setAtlasScript(null); }} />
+              <label htmlFor="atlas-pointer-bytes">Bytes per pointer</label>
+              <input id="atlas-pointer-bytes" type="number" min={1} max={4096} style={inputStyle} value={atlasPointerBytes} onChange={event => { setAtlasPointerBytes(event.target.value); setAtlasScript(null); }} />
+            </div>
+            <div style={{ marginTop: 6, color: "var(--text-tertiary)", lineHeight: 1.4 }}>
+              Optional X0-X7 memory snapshots are bounded and become byteArray regions for later angr seeds. Invalid or unreadable pointers emit readError; no automatic retry or process control is performed.
             </div>
             <div style={{ display: "flex", gap: 6, flexWrap: "wrap", marginTop: 10 }}>
               <button type="button" style={{ ...buttonStyle, background: "var(--btn-primary)", color: "#fff", border: "none", opacity: atlasBusy ? 0.6 : 1 }} disabled={atlasBusy} onClick={generateAtlasHook}>{atlasBusy ? "Working..." : "Generate Frida 16 script"}</button>
@@ -1080,6 +1109,7 @@ export default function OllvmPanel({ sessionId, onJumpToSeq, onPrepareFridaHook 
               <div style={{ marginTop: 10, lineHeight: 1.5 }}>
                 <strong>{atlasScript.targets.length} dispatcher targets</strong>
                 <div>{atlasScript.fridaApiVersion} · idle {atlasScript.idleGapMs} ms · limit {atlasScript.maxEvents.toLocaleString()}</div>
+                <div>{atlasScript.capturePointerRegisters.length > 0 ? `${atlasScript.capturePointerRegisters.map(index => `X${index}`).join(", ")} · ${atlasScript.pointerCaptureBytes} bytes each` : "pointer memory capture disabled"}</div>
                 <div style={{ marginTop: 4, display: "flex", gap: 4, flexWrap: "wrap" }}>
                   {atlasScript.targets.map(target => <button key={target.offset} type="button" style={buttonStyle} onClick={() => jumpOffset(target.offset)}>{target.offset} · {target.score}</button>)}
                 </div>

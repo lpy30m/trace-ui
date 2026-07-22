@@ -23,6 +23,10 @@ fn default_max_events() -> u32 {
     50_000
 }
 
+fn default_pointer_capture_bytes() -> u32 {
+    64
+}
+
 fn default_max_values_per_register() -> u32 {
     64
 }
@@ -48,6 +52,10 @@ pub struct FridaOllvmDispatcherHookOptions {
     pub idle_gap_ms: u32,
     #[serde(default = "default_max_events")]
     pub max_events: u32,
+    #[serde(default)]
+    pub capture_pointer_registers: Vec<u8>,
+    #[serde(default = "default_pointer_capture_bytes")]
+    pub pointer_capture_bytes: u32,
 }
 
 impl Default for FridaOllvmDispatcherHookOptions {
@@ -56,6 +64,8 @@ impl Default for FridaOllvmDispatcherHookOptions {
             max_dispatchers: default_max_dispatchers(),
             idle_gap_ms: default_idle_gap_ms(),
             max_events: default_max_events(),
+            capture_pointer_registers: Vec::new(),
+            pointer_capture_bytes: default_pointer_capture_bytes(),
         }
     }
 }
@@ -109,6 +119,8 @@ pub struct FridaOllvmDispatcherHookScript {
     pub targets: Vec<FridaOllvmDispatcherHookTarget>,
     pub idle_gap_ms: u32,
     pub max_events: u32,
+    pub capture_pointer_registers: Vec<u8>,
+    pub pointer_capture_bytes: u32,
     pub script: String,
     pub warnings: Vec<String>,
     pub protocol_version: String,
@@ -215,6 +227,26 @@ fn validate_hook_options(options: &FridaOllvmDispatcherHookOptions) -> Result<()
     if !(1..=200_000).contains(&options.max_events) {
         return Err("Frida OLLVM capture event limit must be between 1 and 200000".to_string());
     }
+    let pointer_registers = options
+        .capture_pointer_registers
+        .iter()
+        .copied()
+        .collect::<HashSet<_>>();
+    if options.capture_pointer_registers.len() > 8
+        || pointer_registers.len() != options.capture_pointer_registers.len()
+        || options
+            .capture_pointer_registers
+            .iter()
+            .any(|index| *index > 7)
+    {
+        return Err(
+            "Frida OLLVM pointer capture registers must be unique X0-X7 entries (maximum 8)"
+                .to_string(),
+        );
+    }
+    if !(1..=4096).contains(&options.pointer_capture_bytes) {
+        return Err("Frida OLLVM pointer capture bytes must be between 1 and 4096".to_string());
+    }
     Ok(())
 }
 
@@ -309,6 +341,10 @@ pub fn generate_frida_ollvm_dispatcher_hook(
         .map_err(|error| format!("serialize module name failed: {error}"))?;
     let targets_json = serde_json::to_string(&targets)
         .map_err(|error| format!("serialize dispatcher targets failed: {error}"))?;
+    let mut capture_pointer_registers = options.capture_pointer_registers.clone();
+    capture_pointer_registers.sort_unstable();
+    let pointer_registers_json = serde_json::to_string(&capture_pointer_registers)
+        .map_err(|error| format!("serialize pointer capture registers failed: {error}"))?;
     let template = r##"/* Trace UI OLLVM dispatcher capture hook
  * Frida JavaScript API target: 16.x
  * Generated schema: trace-ui/frida-ollvm-dispatcher-hook-v1
@@ -323,6 +359,8 @@ const MODULE_NAME = __MODULE_NAME__;
 const TARGETS = __TARGETS__;
 const IDLE_GAP_MS = __IDLE_GAP_MS__;
 const MAX_EVENTS = __MAX_EVENTS__;
+const POINTER_CAPTURE_REGISTERS = __POINTER_CAPTURE_REGISTERS__;
+const POINTER_CAPTURE_BYTES = __POINTER_CAPTURE_BYTES__;
 const CAPTURE_SESSION_ID = 'ollvm:' + Date.now().toString(16) + ':' + Process.id;
 let resolvedModuleBase = null;
 let resolvedModuleSize = 0;
@@ -365,6 +403,34 @@ function captureRegisters(context) {
     } catch (_) {}
   }
   return registers;
+}
+
+function capturePointerRegisters(context) {
+  const captures = [];
+  POINTER_CAPTURE_REGISTERS.forEach(function (index) {
+    const name = 'x' + index;
+    let pointer = null;
+    try {
+      pointer = context[name];
+      const pointerText = pointer !== null && pointer !== undefined ? pointer.toString() : null;
+      if (!pointerText || pointerText === '0x0') {
+        captures.push({ index: index, label: name + '-memory', kind: 'byteArray', direction: 'input', phase: 'enter', pointer: pointerText, value: null, byteLength: 0, requestedLength: POINTER_CAPTURE_BYTES, readError: 'null pointer' });
+        return;
+      }
+      const bytes = pointer.readByteArray(POINTER_CAPTURE_BYTES);
+      if (bytes === null) {
+        captures.push({ index: index, label: name + '-memory', kind: 'byteArray', direction: 'input', phase: 'enter', pointer: pointerText, value: null, byteLength: 0, requestedLength: POINTER_CAPTURE_BYTES, readError: 'readByteArray returned null' });
+        return;
+      }
+      const array = new Uint8Array(bytes);
+      let value = '';
+      for (let i = 0; i < array.length; i++) value += ('0' + array[i].toString(16)).slice(-2);
+      captures.push({ index: index, label: name + '-memory', kind: 'byteArray', direction: 'input', phase: 'enter', pointer: pointerText, value: value, byteLength: array.length, requestedLength: POINTER_CAPTURE_BYTES });
+    } catch (error) {
+      captures.push({ index: index, label: name + '-memory', kind: 'byteArray', direction: 'input', phase: 'enter', pointer: pointer ? pointer.toString() : null, value: null, byteLength: 0, requestedLength: POINTER_CAPTURE_BYTES, readError: String(error) });
+    }
+  });
+  return captures;
 }
 
 function nextFlow(threadId, now) {
@@ -425,7 +491,8 @@ function install() {
             flowId: flow.flowId,
             hitSequence: flow.hitSequence,
             candidateStateRegisters: spec.stateRegisters,
-            registers: captureRegisters(this.context)
+            registers: captureRegisters(this.context),
+            captures: capturePointerRegisters(this.context)
           });
         }
       });
@@ -450,7 +517,12 @@ setImmediate(install);
         .replace("__MODULE_NAME__", &module_json)
         .replace("__TARGETS__", &targets_json)
         .replace("__IDLE_GAP_MS__", &options.idle_gap_ms.to_string())
-        .replace("__MAX_EVENTS__", &options.max_events.to_string());
+        .replace("__MAX_EVENTS__", &options.max_events.to_string())
+        .replace("__POINTER_CAPTURE_REGISTERS__", &pointer_registers_json)
+        .replace(
+            "__POINTER_CAPTURE_BYTES__",
+            &options.pointer_capture_bytes.to_string(),
+        );
     Ok(FridaOllvmDispatcherHookScript {
         schema_version: FRIDA_OLLVM_HOOK_SCHEMA.to_string(),
         module_name: module_name.to_string(),
@@ -464,9 +536,12 @@ setImmediate(install);
             "Each target is an exact module-relative dispatcher candidate startOffset from the current dynamic OLLVM report; confirm the loaded module is the same binary build.".to_string(),
             "Flow IDs split a thread after the configured idle gap. They are capture-session grouping aids, not proof of function-invocation boundaries.".to_string(),
             "The script captures full ARM64 GPR context at dispatcher hits and emits bounded trace-ui/frida-hook-v1 events for manual import.".to_string(),
+            "Pointer-register memory capture is opt-in, limited to X0-X7 and the configured byte count; unreadable pointers are reported as readError without retrying unbounded reads.".to_string(),
         ],
         protocol_version: FRIDA_HOOK_PROTOCOL.to_string(),
         frida_api_version: "16.x".to_string(),
+        capture_pointer_registers,
+        pointer_capture_bytes: options.pointer_capture_bytes,
     })
 }
 
@@ -1127,6 +1202,29 @@ mod tests {
         assert!(generated.script.contains("dispatcherOffset"));
         assert!(generated.script.contains("flowId"));
         assert!(!generated.script.contains("frida.attach"));
+    }
+
+    #[test]
+    fn generates_opt_in_bounded_pointer_memory_capture() {
+        let generated = generate_frida_ollvm_dispatcher_hook(
+            &sample_report(),
+            &FridaOllvmDispatcherHookOptions {
+                capture_pointer_registers: vec![3, 0],
+                pointer_capture_bytes: 96,
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        assert_eq!(generated.capture_pointer_registers, vec![0, 3]);
+        assert_eq!(generated.pointer_capture_bytes, 96);
+        assert!(generated
+            .script
+            .contains("const POINTER_CAPTURE_REGISTERS = [0,3]"));
+        assert!(generated
+            .script
+            .contains("const POINTER_CAPTURE_BYTES = 96"));
+        assert!(generated.script.contains("pointer.readByteArray"));
+        assert!(generated.script.contains("readError"));
     }
 
     #[test]

@@ -39,6 +39,8 @@ Use `mcp__trace-ui__list_frida_hook_recipes`, `mcp__trace-ui__generate_frida_hoo
     capture. Prefer dedicated `ollvm-dispatcher-hit` events with `captureSessionId`, `flowId`, and
     contiguous `hitSequence`; treat legacy idle-gap-derived flows and every atlas edge as
     Candidate/Related only.
+    If angr needs memory context, set a small explicit X0-X7 pointer register list and byte cap. Keep
+    this opt-in because pointer validity and buffer semantics are unknown; inspect `readError` values.
 
 ## Request fields
 

@@ -42,6 +42,7 @@
 - [x] angr OLLVM Bounded Seeded Flow：从首个 trace-register seed 与 exact-offset Frida seed 继续有界 symbolic exploration，限制深度/状态数并回导路径、循环、截断和终点证据。
 - [x] Frida Dispatcher-entry → angr Next-dispatcher Flow：从 dispatcher `startOffset` 生成 Frida 16 候选 Hook，由用户手动捕获精确入口状态；angr 有界探索下一 dispatcher/循环/退出并回导 state-register concrete/symbolic/unavailable 候选值，始终保持 Candidate/Related。
 - [x] Frida 16 Multi-dispatcher Capture Atlas：一次生成有界多入口脚本；用户手动执行后导入 `ollvm-dispatcher-hit`，按 exact offset、capture session、线程、flow、连续 hit sequence 聚合 dispatcher nodes/transitions/state distributions/state changes/flow paths；legacy capture 仅以 idle-gap 派生 flow，并保留 Candidate/Related 限制。
+- [x] Frida Dispatcher Pointer Memory Seed：multi-dispatcher Frida 16 脚本可选 bounded X0-X7 pointer byteArray 捕获，错误以 readError 返回，默认关闭，并可复用于 angr state seed；不做无界内存读取或自动运行 Hook。
 
 ## 3. 当前限制
 

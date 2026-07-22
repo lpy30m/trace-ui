@@ -4234,7 +4234,7 @@ impl TraceToolHandler {
 
     #[tool(
         name = "generate_frida_ollvm_dispatcher_hook",
-        description = "Analyze a trace-scoped ARM64 function/range and generate one bounded Frida 16.x JavaScript script that Interceptor-hooks multiple ranked dispatcher startOffsets. The script emits per-thread flow IDs, hit sequences, full GPR snapshots, and exact runtime-relative offsets as trace-ui/frida-hook-v1 events. Trace UI only generates the script; the user manually attaches/spawns/loads/runs it."
+        description = "Analyze a trace-scoped ARM64 function/range and generate one bounded Frida 16.x JavaScript script that Interceptor-hooks multiple ranked dispatcher startOffsets. The script emits per-thread flow IDs, hit sequences, full GPR snapshots, exact runtime-relative offsets, and optional bounded X0-X7 pointer-memory snapshots as trace-ui/frida-hook-v1 events. Trace UI only generates the script; the user manually attaches/spawns/loads/runs it."
     )]
     async fn generate_frida_ollvm_dispatcher_hook(
         &self,
@@ -4263,6 +4263,8 @@ impl TraceToolHandler {
                     max_dispatchers: req.max_dispatchers,
                     idle_gap_ms: req.idle_gap_ms,
                     max_events: req.max_events,
+                    capture_pointer_registers: req.capture_pointer_registers,
+                    pointer_capture_bytes: req.pointer_capture_bytes,
                 },
             )?))
         })

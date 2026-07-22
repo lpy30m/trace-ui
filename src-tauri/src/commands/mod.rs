@@ -716,6 +716,8 @@ pub fn generate_frida_ollvm_dispatcher_hook(
     max_dispatchers: Option<u32>,
     idle_gap_ms: Option<u32>,
     max_events: Option<u32>,
+    capture_pointer_registers: Option<Vec<u8>>,
+    pointer_capture_bytes: Option<u32>,
 ) -> Result<trace_core::FridaOllvmDispatcherHookScript, String> {
     trace_core::generate_frida_ollvm_dispatcher_hook(
         &report,
@@ -723,6 +725,8 @@ pub fn generate_frida_ollvm_dispatcher_hook(
             max_dispatchers: max_dispatchers.unwrap_or(12),
             idle_gap_ms: idle_gap_ms.unwrap_or(1_000),
             max_events: max_events.unwrap_or(50_000),
+            capture_pointer_registers: capture_pointer_registers.unwrap_or_default(),
+            pointer_capture_bytes: pointer_capture_bytes.unwrap_or(64),
         },
     )
 }
@@ -734,6 +738,8 @@ pub async fn save_frida_ollvm_dispatcher_hook(
     max_dispatchers: Option<u32>,
     idle_gap_ms: Option<u32>,
     max_events: Option<u32>,
+    capture_pointer_registers: Option<Vec<u8>>,
+    pointer_capture_bytes: Option<u32>,
 ) -> Result<String, String> {
     tauri::async_runtime::spawn_blocking(move || {
         let generated = trace_core::generate_frida_ollvm_dispatcher_hook(
@@ -742,6 +748,8 @@ pub async fn save_frida_ollvm_dispatcher_hook(
                 max_dispatchers: max_dispatchers.unwrap_or(12),
                 idle_gap_ms: idle_gap_ms.unwrap_or(1_000),
                 max_events: max_events.unwrap_or(50_000),
+                capture_pointer_registers: capture_pointer_registers.unwrap_or_default(),
+                pointer_capture_bytes: pointer_capture_bytes.unwrap_or(64),
             },
         )?;
         let trimmed = path.trim();

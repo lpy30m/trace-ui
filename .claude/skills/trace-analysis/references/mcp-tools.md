@@ -83,10 +83,12 @@ Line numbers in taint `@LINE` specs are **1-based**; `start_seq`/`end_seq`/`seq`
   only; the user manually attaches and loads it. `capture_registers:true` records X0-X28, FP/LR/SP/PC,
   plus NZCV when the Frida 16 ARM64 context exposes it; buffer argument selection remains X0-X7.
 - **generate_frida_ollvm_dispatcher_hook** accepts an OLLVM scope plus
-  `max_dispatchers?=12`, `idle_gap_ms?=1000`, and `max_events?=50000`. It generates one bounded Frida
-  16.x script for ranked dispatcher `startOffset` values, up to 64 targets and 200000 hits. Dedicated
-  `ollvm-dispatcher-hit` events include full ARM64 GPRs, `dispatcherOffset`, `captureSessionId`,
-  `flowId`, `hitSequence`, and candidate state registers. Trace UI never runs the script.
+  `max_dispatchers?=12`, `idle_gap_ms?=1000`, `max_events?=50000`,
+  `capture_pointer_registers?=[]` (unique X0-X7), and `pointer_capture_bytes?=64` (1-4096). It
+  generates one bounded Frida 16.x script for ranked dispatcher `startOffset` values, up to 64 targets
+  and 200000 hits. Dedicated `ollvm-dispatcher-hit` events include full ARM64 GPRs,
+  `dispatcherOffset`, `captureSessionId`, `flowId`, `hitSequence`, candidate state registers, and
+  optional bounded byteArray pointer snapshots/readError records. Trace UI never runs the script.
 - **inspect_frida_capture** `{file_path}` reads user-captured JSON objects/arrays, Frida send envelopes,
   NDJSON, or `TRACE_UI_JSON`-prefixed CLI logs. It normalizes call IDs, module metadata, registers,
   buffers, returns, backtraces, and Stalker batch counts without running Frida.

@@ -494,6 +494,8 @@ export interface FridaOllvmDispatcherHookScript {
   targets: FridaOllvmDispatcherHookTarget[];
   idleGapMs: number;
   maxEvents: number;
+  capturePointerRegisters: number[];
+  pointerCaptureBytes: number;
   script: string;
   warnings: string[];
   protocolVersion: string;

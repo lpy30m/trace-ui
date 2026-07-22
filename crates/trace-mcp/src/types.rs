@@ -1041,6 +1041,16 @@ pub struct GenerateFridaOllvmDispatcherHookRequest {
     )]
     #[serde(default = "default_frida_ollvm_events")]
     pub max_events: u32,
+    #[schemars(
+        description = "Optional unique ARM64 pointer registers X0-X7 to read at every dispatcher hit; empty by default"
+    )]
+    #[serde(default)]
+    pub capture_pointer_registers: Vec<u8>,
+    #[schemars(
+        description = "Bounded bytes read from each selected pointer register (1-4096, default: 64)"
+    )]
+    #[serde(default = "default_frida_ollvm_pointer_bytes")]
+    pub pointer_capture_bytes: u32,
 }
 
 #[derive(Debug, Deserialize, JsonSchema)]
@@ -1270,6 +1280,10 @@ fn default_frida_ollvm_idle_gap() -> u32 {
 
 fn default_frida_ollvm_events() -> u32 {
     50_000
+}
+
+fn default_frida_ollvm_pointer_bytes() -> u32 {
+    64
 }
 
 fn default_frida_ollvm_state_values() -> u32 {
@@ -1532,6 +1546,8 @@ mod tests {
         assert_eq!(hook.max_dispatchers, 12);
         assert_eq!(hook.idle_gap_ms, 1_000);
         assert_eq!(hook.max_events, 50_000);
+        assert!(hook.capture_pointer_registers.is_empty());
+        assert_eq!(hook.pointer_capture_bytes, 64);
 
         let atlas: AnalyzeFridaOllvmDispatcherCaptureRequest =
             serde_json::from_value(serde_json::json!({
