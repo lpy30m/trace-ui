@@ -92,6 +92,14 @@ Line numbers in taint `@LINE` specs are **1-based**; `start_seq`/`end_seq`/`seq`
 - **inspect_frida_capture** `{file_path}` reads user-captured JSON objects/arrays, Frida send envelopes,
   NDJSON, or `TRACE_UI_JSON`-prefixed CLI logs. It normalizes call IDs, module metadata, registers,
   buffers, returns, backtraces, and Stalker batch counts without running Frida.
+- **search_frida_capture_events** `{file_path,query?,event_type?,module_name?,function_name?,call_id?,
+  only_payload?=false,offset?=0,limit?=50}` searches up to 200 compact summaries per page. It returns
+  exact normalized `eventIndex` values, counts, capture labels, and payload-presence metadata without
+  returning register maps, capture values, return values, or backtraces.
+- **get_frida_capture_event** `{file_path,event_index,include_registers?=false,
+  include_captures?=false,include_return_value?=false,include_backtrace?=false,max_bytes?=256}` reads
+  one exact event. Sensitive payload sections are opt-in; each capture value is bounded to at most
+  1048576 bytes and reports `valueTruncated` when shortened.
 - **analyze_frida_crypto_materials** `{file_path,max_materials?=1000,include_unknown?=false}` groups
   imported captures by callId and indexes key/password/salt/IV/nonce/AAD/tag/input/output/digest/MAC/KDF
   candidates. Exact MD5/SHA, HMAC, and PBKDF2 recomputation may open the Verified gate for that captured

@@ -8,6 +8,7 @@
 - 新增 **Frida 16 Hook Generator**：按 module export 或 module-relative offset 生成 X0-X7、SP/LR/PC、buffer/string、return、backtrace、Stalker 脚本，事件协议为 `trace-ui/frida-hook-v1`。产品边界固定为“只生成/保存脚本”，用户自行 attach、spawn、load 和执行 hook。
 - 新增 **Frida 16 Crypto API Recipes**：GUI/MCP 可列出并套用 OpenSSL/BoringSSL 与 Apple CommonCrypto 的 17 个常见 MD5/SHA、EVP、HMAC、PBKDF2、CCCrypt 配方；支持固定长度、X0-X7 长度寄存器和返回时 `*Xn` u32 输出长度。ABI 无法证明的算法、PRF、IV/栈参数均保留警告，长度指针读取失败不会降级为最大缓冲区读取。
 - 新增 **Frida Capture Import / angr State Seed**：导入用户手动捕获的 JSON/NDJSON/`TRACE_UI_JSON` CLI 日志，规范化 callId/module mapping，查看 registers/buffers/return/backtrace/Stalker batches，并生成 `trace-ui/angr-state-seed-v1` 的 `configure_state(state)`。
+- 新增 **AI 分页检索 Frida Capture**：MCP `search_frida_capture_events` 按元数据、事件类型、module/function/callId 与 payload 条件返回有界摘要和精确 event index；`get_frida_capture_event` 再按需读取单个事件。寄存器、buffer、return、backtrace 默认不返回，避免大捕获占满 AI 上下文。
 - 增强 **Frida → angr NZCV state handoff**：从 ARM64 Frida capture 读取 packed `NZCV`，写入 standalone angr seed 和 OLLVM bridge；如果 angr 架构没有 packed `nzcv`，生成脚本会尝试 N/Z/C/V 单独寄存器并保留 warning。Flags 与寄存器/内存一样仍需匹配捕获点语义，不能单独证明 opaque branch 可达。
 - 新增 **Frida Capture Crypto Materials**：按 callId 索引 key/password/salt/IV/nonce/AAD/tag/input/output/digest/MAC/KDF 候选，并对完整捕获的 MD5/SHA、HMAC、PBKDF2 做受限确定性重算；标签推断保持 Related。
 - 增强 **IDA / OLLVM**：动态 CFG、dispatcher/opaque branch 候选评分、dispatcher state-register snapshots/transitions、branch register observations、IDAPython 注释/颜色/可选 xrefs，以及 `trace-ui/ida-ollvm-v1` annotations 双向 JSON。所有 OLLVM 结论保持动态候选级。
@@ -21,7 +22,7 @@
 - 增强 **angr exact ELF guard / multi-seed handoff**：`generate_angr_ollvm_script` 可选绑定 exact AArch64 ELF SHA-256，生成的 Python 在建立 angr Project 前拒绝哈希不一致的文件；同一 Frida 捕获可一次嵌入最多 32 个精确匹配的 branch/condition-source/dispatcher 事件，并在结果中保留全部 provenance。该哈希只验证用户选择的文件，不证明原 trace 的运行时映像。
 - 增强 **OLLVM condition-state profile**：条件分支报告聚合已捕获/缺失观察、distinct 条件值、按 outcome 的值分布及 NZCV 的 N/Z/C/V set/clear 计数；profile 不完整时明确标记，仍仅作为 Candidate/Related 证据。
 - GUI 入口位于 `Crypto > Materials`、`Crypto > Frida Hook`、`Crypto > IDA / OLLVM`，其中 OLLVM 面板包含 IDA 与 angr bridge；Tauri 和 MCP 已完整接线。
-- MCP 覆盖 `analyze_crypto_materials`、`compare_crypto_material_traces`、`list_frida_hook_recipes`、`generate_frida_hook`、`generate_frida_ollvm_dispatcher_hook`、`inspect_frida_capture`、`analyze_frida_crypto_materials`、`analyze_frida_ollvm_dispatcher_capture`、`generate_angr_state_seed`、`analyze_ollvm`、`compare_ollvm_traces`、`map_ollvm_versions`、`generate_ida_ollvm_script`、`inspect_ida_annotations`、`generate_angr_ollvm_script`、`inspect_angr_ollvm_results`。
+- MCP 覆盖 `analyze_crypto_materials`、`compare_crypto_material_traces`、`list_frida_hook_recipes`、`generate_frida_hook`、`generate_frida_ollvm_dispatcher_hook`、`inspect_frida_capture`、`search_frida_capture_events`、`get_frida_capture_event`、`analyze_frida_crypto_materials`、`analyze_frida_ollvm_dispatcher_capture`、`generate_angr_state_seed`、`analyze_ollvm`、`compare_ollvm_traces`、`map_ollvm_versions`、`generate_ida_ollvm_script`、`inspect_ida_annotations`、`generate_angr_ollvm_script`、`inspect_angr_ollvm_results`。
 - Skills：更新 `trace-analysis`、`frida-hook-generation`、`ida-ollvm-analysis`。Frida skill 会优先检查审计配方，并明确禁止自动执行脚本；angr bridge 同样只生成脚本，由用户手动运行。
 - `main` push 会触发 `.github/workflows/macos.yml`，构建 macOS arm64 与 x64 DMG artifacts。
 

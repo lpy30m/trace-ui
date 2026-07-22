@@ -17,13 +17,15 @@ use trace_core::{
     generate_angr_ollvm_script_with_seeds_flow_and_identity,
     generate_angr_state_seed as build_angr_state_seed, generate_frida_hook as build_frida_hook,
     generate_frida_ollvm_dispatcher_hook as build_frida_ollvm_dispatcher_hook,
-    generate_ida_ollvm_script, inspect_elf_binary,
-    list_frida_hook_recipes as build_frida_hook_recipes, parse_angr_ollvm_result_bundle,
-    parse_frida_capture_bundle, parse_hex_addr, parse_ida_annotation_bundle, score_evidence,
-    summarize_dependency_graph, AnalysisEvidence, AngrOllvmFlowConfig, BuildOptions,
-    CryptoFunctionsOptions, CryptoMaterialKind, CryptoMaterialMultiTraceRequest,
-    CryptoMaterialOptions, CryptoMaterialTraceCase, DepTreeOptions, EvidenceScoreSignal,
-    ForwardSliceOptions, FridaArgumentKind, FridaArgumentSpec, FridaCaptureDirection,
+    generate_ida_ollvm_script, get_frida_capture_event as build_frida_capture_event,
+    inspect_elf_binary, list_frida_hook_recipes as build_frida_hook_recipes,
+    parse_angr_ollvm_result_bundle, parse_frida_capture_bundle, parse_hex_addr,
+    parse_ida_annotation_bundle, score_evidence,
+    search_frida_capture_events as build_frida_capture_event_search, summarize_dependency_graph,
+    AnalysisEvidence, AngrOllvmFlowConfig, BuildOptions, CryptoFunctionsOptions,
+    CryptoMaterialKind, CryptoMaterialMultiTraceRequest, CryptoMaterialOptions,
+    CryptoMaterialTraceCase, DepTreeOptions, EvidenceScoreSignal, ForwardSliceOptions,
+    FridaArgumentKind, FridaArgumentSpec, FridaCaptureDirection, FridaCaptureSearchOptions,
     FridaHookRequest, FridaOllvmDispatcherAtlasOptions, FridaOllvmDispatcherHookOptions,
     FridaStalkerMode, HashAlgorithm, HashMatchRequest, HashTransformOptions, OllvmAnalysisOptions,
     OllvmMultiTraceRequest, OllvmTraceCase, OllvmVersionMapRequest, OllvmVersionTraceCase,
@@ -4125,6 +4127,62 @@ impl TraceToolHandler {
             let bytes = std::fs::read(&req.file_path)
                 .map_err(|error| format!("failed to read Frida capture: {error}"))?;
             Ok(json(&parse_frida_capture_bundle(&bytes)?))
+        })
+        .await
+    }
+
+    #[tool(
+        name = "search_frida_capture_events",
+        description = "Search a user-captured trace-ui/frida-hook-v1 JSON/NDJSON file with bounded pagination. Returns compact event summaries and exact normalized event_index values without returning registers, buffer bytes, or backtraces. Use get_frida_capture_event for one selected event. Trace UI does not attach, spawn, load, or execute Frida."
+    )]
+    async fn search_frida_capture_events(
+        &self,
+        Parameters(req): Parameters<SearchFridaCaptureEventsRequest>,
+    ) -> Result<String, String> {
+        blocking(move || {
+            let bytes = std::fs::read(&req.file_path)
+                .map_err(|error| format!("failed to read Frida capture: {error}"))?;
+            let bundle = parse_frida_capture_bundle(&bytes)?;
+            let result = build_frida_capture_event_search(
+                &bundle,
+                &FridaCaptureSearchOptions {
+                    query: req.query,
+                    event_type: req.event_type,
+                    module_name: req.module_name,
+                    function_name: req.function_name,
+                    call_id: req.call_id,
+                    only_payload: req.only_payload,
+                    offset: req.offset,
+                    limit: req.limit,
+                },
+            );
+            Ok(json(&result))
+        })
+        .await
+    }
+
+    #[tool(
+        name = "get_frida_capture_event",
+        description = "Read one exact normalized event from a user-captured trace-ui/frida-hook-v1 JSON/NDJSON file. The event index must come from search_frida_capture_events or inspect_frida_capture. Registers, capture values, return values, and backtraces are opt-in and capture values are bounded by max_bytes. Trace UI does not attach, spawn, load, or execute Frida."
+    )]
+    async fn get_frida_capture_event(
+        &self,
+        Parameters(req): Parameters<GetFridaCaptureEventRequest>,
+    ) -> Result<String, String> {
+        blocking(move || {
+            let bytes = std::fs::read(&req.file_path)
+                .map_err(|error| format!("failed to read Frida capture: {error}"))?;
+            let bundle = parse_frida_capture_bundle(&bytes)?;
+            let result = build_frida_capture_event(
+                &bundle,
+                req.event_index,
+                req.include_registers,
+                req.include_captures,
+                req.include_return_value,
+                req.include_backtrace,
+                req.max_bytes,
+            )?;
+            Ok(json(&result))
         })
         .await
     }

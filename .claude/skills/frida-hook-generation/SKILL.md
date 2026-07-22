@@ -7,6 +7,7 @@ description: Generate bounded ARM64 Frida 16.x JavaScript hook scripts, inspect 
 
 Use `mcp__trace-ui__list_frida_hook_recipes`, `mcp__trace-ui__generate_frida_hook`,
 `mcp__trace-ui__generate_frida_ollvm_dispatcher_hook`, `mcp__trace-ui__inspect_frida_capture`,
+`mcp__trace-ui__search_frida_capture_events`, `mcp__trace-ui__get_frida_capture_event`,
 `mcp__trace-ui__analyze_frida_crypto_materials`, `mcp__trace-ui__analyze_frida_ollvm_dispatcher_capture`, and
 `mcp__trace-ui__generate_angr_state_seed`. Generated hooks target Frida 16.x JavaScript APIs and emit
 `trace-ui/frida-hook-v1` messages with `send()` plus `TRACE_UI_JSON` strict-JSON log lines.
@@ -21,8 +22,10 @@ Use `mcp__trace-ui__list_frida_hook_recipes`, `mcp__trace-ui__generate_frida_hoo
 4. Call `generate_frida_hook` with only the captures needed for the question.
 5. Return or save the generated `.js` script. Explain the expected event fields and any unsafe memory-read assumptions.
 6. Stop. Do not attach, spawn, load, execute, or claim the hook ran. The user performs those steps manually.
-7. If the user supplies captured JSON/NDJSON, run `inspect_frida_capture`. Select an exact event index,
-   normally a `hook-enter` with registers or buffers.
+7. If the user supplies captured JSON/NDJSON, run `inspect_frida_capture`. For large captures, use
+   `search_frida_capture_events` to page compact summaries, then `get_frida_capture_event` for one exact
+   event index, normally a `hook-enter` with registers or buffers. Keep registers, capture values,
+   return values, and backtraces opt-in.
 8. When crypto roles are requested, run `analyze_frida_crypto_materials`. Treat explicit labels as
    Related unless exact MD5/SHA/HMAC/PBKDF2 recomputation verifies the captured call. Prefer byteArray;
    text re-encoding is weaker evidence.

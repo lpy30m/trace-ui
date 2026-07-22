@@ -103,7 +103,12 @@ For detailed capture selection rules, use `$frida-hook-generation`.
 
 **"Inspect the Frida output I captured manually or turn it into angr state."**
 → `inspect_frida_capture{file_path}` for JSON arrays, send envelopes, NDJSON, or
-`TRACE_UI_JSON`-prefixed CLI logs. Use `analyze_frida_crypto_materials{file_path}` to index explicit
+`TRACE_UI_JSON`-prefixed CLI logs. For large captures, call
+`search_frida_capture_events{file_path,query?,event_type?,module_name?,function_name?,call_id?,only_payload?,offset?,limit?}`
+first; it returns bounded metadata summaries and exact normalized `event_index` values without
+returning full registers, buffers, or backtraces. Then call
+`get_frida_capture_event{file_path,event_index,include_registers?,include_captures?,include_return_value?,include_backtrace?,max_bytes?}`
+for one selected event. Use `analyze_frida_crypto_materials{file_path}` to index explicit
 key/password/salt/IV/nonce/input/output labels and deterministically recompute observable
 MD5/SHA/HMAC/PBKDF2 calls. Select an exact event index, then call
 `generate_angr_state_seed{file_path,event_index,include_sp?,include_lr?}`. Treat module rebasing as
@@ -203,7 +208,7 @@ recomputes to a known digest.
 | Taint | `taint_analysis` (backward), `forward_taint_analysis`, `get_tainted_lines`, `start_forward_taint_analysis` |
 | Functions | `analyze_function` (node_id / name / list) |
 | Diff | `compare_traces`, `start_trace_diff` |
-| Frida | `list_frida_hook_recipes`, `generate_frida_hook`, `generate_frida_ollvm_dispatcher_hook`, `inspect_frida_capture`, `analyze_frida_crypto_materials`, `analyze_frida_ollvm_dispatcher_capture`, `generate_angr_state_seed` (user executes hooks manually) |
+| Frida | `list_frida_hook_recipes`, `generate_frida_hook`, `generate_frida_ollvm_dispatcher_hook`, `inspect_frida_capture`, `search_frida_capture_events`, `get_frida_capture_event`, `analyze_frida_crypto_materials`, `analyze_frida_ollvm_dispatcher_capture`, `generate_angr_state_seed` (user executes hooks manually) |
 | IDA / angr / OLLVM | `analyze_ollvm`, `compare_ollvm_traces`, `map_ollvm_versions`, `generate_ida_ollvm_script`, `inspect_ida_annotations`, `generate_angr_ollvm_script`, `inspect_angr_ollvm_results` |
 | Orchestration | `auto_investigate`, `start_auto_investigation`, `start_crypto_investigation` |
 | Evidence store | `list_analyses`, `get_analysis`, `compare_analyses`, `export_analysis_report`, `delete_analysis` |

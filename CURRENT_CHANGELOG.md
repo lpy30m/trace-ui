@@ -6,6 +6,16 @@
 
 这份文档是后续 Codex/开发者进入项目时的快速入口。它记录当前已经实现的 Frida 16、OLLVM、IDA、angr 和密码材料分析能力，以及每项能力对应的代码位置和边界。
 
+## 本轮 MCP 大捕获检索
+
+2026-07-22 增加了面向 AI 的 Frida capture 两阶段读取能力：
+
+- `search_frida_capture_events` 对 JSON/NDJSON/CLI log 做元数据、事件类型、模块、函数、callId 和 payload 条件筛选，默认每页 50 条、最大 200 条，只返回摘要与精确 `eventIndex`。
+- `get_frida_capture_event` 按精确 `eventIndex` 读取单个事件；registers、captures、return value、backtrace 默认关闭，capture value 受 `maxBytes` 限制并标记 `valueTruncated`。
+- AI 推荐流程改为“捕获概要 → 分页搜索 → 单事件详情 → crypto material/angr seed”，避免把超大捕获一次塞进模型上下文。
+- 保持 `trace-ui/frida-hook-v1` 协议兼容；Trace UI 仍不 attach、spawn、load 或执行 Frida/angr。
+- 同步更新仓库和本机 Codex 的 `trace-analysis`、`frida-hook-generation` skill 文档。
+
 ## 本轮工作流与敏感材料防护
 
 2026-07-22 完成了一轮轻量前端收尾，未修改后端 DTO、Frida/angr/IDA 脚本协议或执行边界：

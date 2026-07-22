@@ -59,9 +59,11 @@ pub use query::evidence_score::{
     score_evidence, EvidenceAssessment, EvidenceScoreFactor, EvidenceScoreSignal,
 };
 pub use query::frida_capture::{
-    analyze_frida_crypto_materials, generate_angr_state_seed, parse_frida_capture_bundle,
-    AngrSeedMemoryRegion, AngrSeedRegister, AngrStateSeed, FridaCaptureBundle, FridaCaptureEvent,
-    FridaCapturedValue,
+    analyze_frida_crypto_materials, generate_angr_state_seed, get_frida_capture_event,
+    parse_frida_capture_bundle, search_frida_capture_events, AngrSeedMemoryRegion,
+    AngrSeedRegister, AngrStateSeed, FridaCaptureBundle, FridaCaptureEvent,
+    FridaCaptureEventDetail, FridaCaptureEventSearchResult, FridaCaptureEventSummary,
+    FridaCaptureSearchOptions, FridaCaptureValueDetail, FridaCapturedValue,
 };
 pub use query::frida_hook::{
     generate_frida_hook, FridaArgumentKind, FridaArgumentSpec, FridaCaptureDirection,

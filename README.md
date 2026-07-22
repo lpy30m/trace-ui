@@ -92,7 +92,7 @@ claude mcp add trace-ui --transport http http://127.0.0.1:19821/mcp
 | 结构与对比 | `get_call_tree`、`analyze_function`、`compare_traces` |
 | 密码分析 | `analyze_crypto_functions`、`analyze_crypto_implementations`、`analyze_crypto_materials`、`analyze_known_digest` |
 | 多 trace 参数隔离 | `compare_crypto_material_traces`、`compare_crypto_table_traces` |
-| Frida 16 脚本与回导 | `list_frida_hook_recipes`、`generate_frida_hook`、`generate_frida_ollvm_dispatcher_hook`、`inspect_frida_capture`、`analyze_frida_crypto_materials`、`analyze_frida_ollvm_dispatcher_capture`、`generate_angr_state_seed`（用户手动执行 Hook） |
+| Frida 16 脚本与回导 | `list_frida_hook_recipes`、`generate_frida_hook`、`generate_frida_ollvm_dispatcher_hook`、`inspect_frida_capture`、`search_frida_capture_events`、`get_frida_capture_event`、`analyze_frida_crypto_materials`、`analyze_frida_ollvm_dispatcher_capture`、`generate_angr_state_seed`（用户手动执行 Hook） |
 | IDA / angr / OLLVM | `analyze_ollvm`、`compare_ollvm_traces`、`map_ollvm_versions`、`generate_ida_ollvm_script`、`inspect_ida_annotations`、`generate_angr_ollvm_script`、`inspect_angr_ollvm_results` |
 | 证据与编排 | `list_analyses`、`get_analysis`、`compare_analyses`、`auto_investigate` |
 

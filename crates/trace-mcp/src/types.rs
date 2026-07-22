@@ -938,6 +938,68 @@ pub struct InspectFridaCaptureRequest {
 }
 
 #[derive(Debug, Deserialize, JsonSchema)]
+pub struct SearchFridaCaptureEventsRequest {
+    #[schemars(
+        description = "Absolute path to user-captured trace-ui/frida-hook-v1 JSON/NDJSON/CLI log"
+    )]
+    pub file_path: String,
+    #[schemars(
+        description = "Optional case-insensitive search across event metadata, register names/values, capture labels/values, return values, errors, and backtrace frames"
+    )]
+    pub query: Option<String>,
+    #[schemars(
+        description = "Optional exact event type such as hook-enter or ollvm-dispatcher-hit"
+    )]
+    pub event_type: Option<String>,
+    #[schemars(description = "Optional case-insensitive module-name filter")]
+    pub module_name: Option<String>,
+    #[schemars(description = "Optional case-insensitive function-name filter")]
+    pub function_name: Option<String>,
+    #[schemars(description = "Optional case-insensitive callId filter")]
+    pub call_id: Option<String>,
+    #[schemars(
+        description = "Only return events containing registers, captures, return values, backtraces, or Stalker payloads"
+    )]
+    #[serde(default)]
+    pub only_payload: bool,
+    #[schemars(description = "0-based offset in the filtered event list")]
+    #[serde(default)]
+    pub offset: u32,
+    #[schemars(description = "Maximum event summaries to return (default: 50, max: 200)")]
+    #[serde(default = "default_frida_event_limit")]
+    pub limit: u32,
+}
+
+#[derive(Debug, Deserialize, JsonSchema)]
+pub struct GetFridaCaptureEventRequest {
+    #[schemars(
+        description = "Absolute path to user-captured trace-ui/frida-hook-v1 JSON/NDJSON/CLI log"
+    )]
+    pub file_path: String,
+    #[schemars(
+        description = "Exact normalized event index returned by search_frida_capture_events"
+    )]
+    pub event_index: u64,
+    #[schemars(description = "Include the full captured register map (default: false)")]
+    #[serde(default)]
+    pub include_registers: bool,
+    #[schemars(description = "Include captured argument/buffer values (default: false)")]
+    #[serde(default)]
+    pub include_captures: bool,
+    #[schemars(description = "Include the captured return value (default: false)")]
+    #[serde(default)]
+    pub include_return_value: bool,
+    #[schemars(description = "Include captured backtrace frames (default: false)")]
+    #[serde(default)]
+    pub include_backtrace: bool,
+    #[schemars(
+        description = "Maximum bytes returned for each capture value (default: 256, max: 1048576)"
+    )]
+    #[serde(default = "default_frida_max_bytes")]
+    pub max_bytes: u32,
+}
+
+#[derive(Debug, Deserialize, JsonSchema)]
 pub struct AnalyzeFridaCryptoMaterialsRequest {
     #[schemars(
         description = "Absolute path to user-captured trace-ui/frida-hook-v1 JSON/NDJSON/CLI log"
@@ -973,6 +1035,10 @@ pub struct GenerateAngrStateSeedRequest {
 
 fn default_frida_stalker_duration() -> u32 {
     10_000
+}
+
+fn default_frida_event_limit() -> u32 {
+    50
 }
 
 fn default_frida_materials() -> u32 {
@@ -1477,6 +1543,27 @@ mod tests {
         assert_eq!(request.max_trace_matches, 3);
         assert_eq!(request.max_diff_items, 50);
         assert!(request.search_terms.is_empty());
+    }
+
+    #[test]
+    fn frida_capture_queries_default_to_bounded_ai_pages() {
+        let request: SearchFridaCaptureEventsRequest =
+            serde_json::from_value(serde_json::json!({ "file_path": "/tmp/capture.json" }))
+                .unwrap();
+        assert_eq!(request.limit, 50);
+        assert_eq!(request.offset, 0);
+        assert!(!request.only_payload);
+
+        let detail: GetFridaCaptureEventRequest = serde_json::from_value(serde_json::json!({
+            "file_path": "/tmp/capture.json",
+            "event_index": 7
+        }))
+        .unwrap();
+        assert!(!detail.include_registers);
+        assert!(!detail.include_captures);
+        assert!(!detail.include_return_value);
+        assert!(!detail.include_backtrace);
+        assert_eq!(detail.max_bytes, 256);
     }
 
     #[test]

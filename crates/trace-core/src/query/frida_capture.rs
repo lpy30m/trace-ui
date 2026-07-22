@@ -20,6 +20,9 @@ const ANGR_STATE_SEED_SCHEMA: &str = "trace-ui/angr-state-seed-v1";
 const DEFAULT_MAX_FRIDA_MATERIALS: u32 = 1_000;
 const MAX_FRIDA_MATERIALS: u32 = 5_000;
 const MAX_FRIDA_PBKDF2_ITERATIONS: u32 = 1_000_000;
+const DEFAULT_FRIDA_EVENT_PAGE_SIZE: u32 = 50;
+const MAX_FRIDA_EVENT_PAGE_SIZE: u32 = 200;
+const MAX_FRIDA_EVENT_DETAIL_BYTES: u32 = 1_048_576;
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -99,6 +102,93 @@ pub struct FridaCaptureBundle {
     pub enter_event_count: u64,
     pub leave_event_count: u64,
     pub stalker_event_count: u64,
+    pub warnings: Vec<String>,
+}
+
+#[derive(Clone, Debug, Default)]
+pub struct FridaCaptureSearchOptions {
+    pub query: Option<String>,
+    pub event_type: Option<String>,
+    pub module_name: Option<String>,
+    pub function_name: Option<String>,
+    pub call_id: Option<String>,
+    pub only_payload: bool,
+    pub offset: u32,
+    pub limit: u32,
+}
+
+#[derive(Clone, Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct FridaCaptureEventSummary {
+    pub index: u64,
+    pub event_id: Option<String>,
+    pub hook_id: String,
+    pub event: String,
+    pub function_name: String,
+    pub timestamp_ms: u64,
+    pub thread_id: u64,
+    pub call_id: Option<String>,
+    pub module_name: Option<String>,
+    pub module_base: Option<String>,
+    pub module_size: Option<u64>,
+    pub target: Option<String>,
+    pub dispatcher_offset: Option<String>,
+    pub capture_session_id: Option<String>,
+    pub flow_id: Option<String>,
+    pub hit_sequence: Option<u64>,
+    pub candidate_state_registers: Vec<String>,
+    pub register_count: u32,
+    pub capture_count: u32,
+    pub capture_labels: Vec<String>,
+    pub has_return_value: bool,
+    pub backtrace_count: u32,
+    pub stalker_mode: Option<String>,
+    pub stalker_event_count: Option<u64>,
+    pub has_error: bool,
+}
+
+#[derive(Clone, Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct FridaCaptureEventSearchResult {
+    pub schema: String,
+    pub total_event_count: u64,
+    pub matched_event_count: u64,
+    pub offset: u32,
+    pub limit: u32,
+    pub has_more: bool,
+    pub events: Vec<FridaCaptureEventSummary>,
+    pub warnings: Vec<String>,
+}
+
+#[derive(Clone, Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct FridaCaptureValueDetail {
+    pub index: u8,
+    pub label: String,
+    pub kind: String,
+    pub direction: String,
+    pub phase: String,
+    pub pointer: Option<String>,
+    pub value: Option<String>,
+    pub byte_length: Option<u64>,
+    pub requested_length: Option<u64>,
+    pub read_error: Option<String>,
+    pub value_truncated: bool,
+}
+
+#[derive(Clone, Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct FridaCaptureEventDetail {
+    pub schema: String,
+    pub event: FridaCaptureEventSummary,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub registers: Option<BTreeMap<String, String>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub captures: Option<Vec<FridaCaptureValueDetail>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub return_value: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub backtrace: Option<Vec<String>>,
     pub warnings: Vec<String>,
 }
 
@@ -485,6 +575,260 @@ pub fn parse_frida_capture_bundle(bytes: &[u8]) -> Result<FridaCaptureBundle, St
         enter_event_count,
         leave_event_count,
         stalker_event_count,
+        warnings,
+    })
+}
+
+fn event_has_payload(event: &FridaCaptureEvent) -> bool {
+    !event.registers.is_empty()
+        || !event.captures.is_empty()
+        || event.return_value.is_some()
+        || !event.backtrace.is_empty()
+        || event.stalker_event_count.unwrap_or_default() > 0
+}
+
+fn contains_case_insensitive(value: Option<&str>, query: &str) -> bool {
+    value
+        .map(|value| value.to_ascii_lowercase().contains(query))
+        .unwrap_or(false)
+}
+
+fn event_matches_query(event: &FridaCaptureEvent, query: &str) -> bool {
+    contains_case_insensitive(Some(&event.event), query)
+        || contains_case_insensitive(Some(&event.hook_id), query)
+        || contains_case_insensitive(Some(&event.function_name), query)
+        || contains_case_insensitive(event.event_id.as_deref(), query)
+        || contains_case_insensitive(event.call_id.as_deref(), query)
+        || contains_case_insensitive(event.module_name.as_deref(), query)
+        || contains_case_insensitive(event.target.as_deref(), query)
+        || contains_case_insensitive(event.dispatcher_offset.as_deref(), query)
+        || contains_case_insensitive(event.capture_session_id.as_deref(), query)
+        || contains_case_insensitive(event.flow_id.as_deref(), query)
+        || event.registers.iter().any(|(name, value)| {
+            contains_case_insensitive(Some(name), query)
+                || contains_case_insensitive(Some(value), query)
+        })
+        || event.captures.iter().any(|capture| {
+            contains_case_insensitive(Some(&capture.label), query)
+                || contains_case_insensitive(Some(&capture.kind), query)
+                || contains_case_insensitive(Some(&capture.direction), query)
+                || contains_case_insensitive(capture.pointer.as_deref(), query)
+                || contains_case_insensitive(capture.value.as_deref(), query)
+                || contains_case_insensitive(capture.read_error.as_deref(), query)
+        })
+        || contains_case_insensitive(event.return_value.as_deref(), query)
+        || event
+            .backtrace
+            .iter()
+            .any(|frame| contains_case_insensitive(Some(frame), query))
+        || contains_case_insensitive(event.error.as_deref(), query)
+}
+
+fn event_summary(event: &FridaCaptureEvent) -> FridaCaptureEventSummary {
+    FridaCaptureEventSummary {
+        index: event.index,
+        event_id: event.event_id.clone(),
+        hook_id: event.hook_id.clone(),
+        event: event.event.clone(),
+        function_name: event.function_name.clone(),
+        timestamp_ms: event.timestamp_ms,
+        thread_id: event.thread_id,
+        call_id: event.call_id.clone(),
+        module_name: event.module_name.clone(),
+        module_base: event.module_base.clone(),
+        module_size: event.module_size,
+        target: event.target.clone(),
+        dispatcher_offset: event.dispatcher_offset.clone(),
+        capture_session_id: event.capture_session_id.clone(),
+        flow_id: event.flow_id.clone(),
+        hit_sequence: event.hit_sequence,
+        candidate_state_registers: event.candidate_state_registers.clone(),
+        register_count: event.registers.len() as u32,
+        capture_count: event.captures.len() as u32,
+        capture_labels: event
+            .captures
+            .iter()
+            .map(|capture| capture.label.clone())
+            .collect(),
+        has_return_value: event.return_value.is_some(),
+        backtrace_count: event.backtrace.len() as u32,
+        stalker_mode: event.stalker_mode.clone(),
+        stalker_event_count: event.stalker_event_count,
+        has_error: event.error.is_some(),
+    }
+}
+
+pub fn search_frida_capture_events(
+    bundle: &FridaCaptureBundle,
+    options: &FridaCaptureSearchOptions,
+) -> FridaCaptureEventSearchResult {
+    let query = options
+        .query
+        .as_deref()
+        .map(str::trim)
+        .filter(|query| !query.is_empty())
+        .map(str::to_ascii_lowercase);
+    let event_type = options
+        .event_type
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(str::to_ascii_lowercase);
+    let module_name = options
+        .module_name
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(str::to_ascii_lowercase);
+    let function_name = options
+        .function_name
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(str::to_ascii_lowercase);
+    let call_id = options
+        .call_id
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(str::to_ascii_lowercase);
+    let limit = if options.limit == 0 {
+        DEFAULT_FRIDA_EVENT_PAGE_SIZE
+    } else {
+        options.limit.min(MAX_FRIDA_EVENT_PAGE_SIZE)
+    };
+
+    let matches: Vec<&FridaCaptureEvent> = bundle
+        .events
+        .iter()
+        .filter(|event| {
+            query
+                .as_deref()
+                .map(|query| event_matches_query(event, query))
+                .unwrap_or(true)
+                && event_type
+                    .as_deref()
+                    .map(|event_type| event.event.eq_ignore_ascii_case(event_type))
+                    .unwrap_or(true)
+                && module_name
+                    .as_deref()
+                    .map(|module_name| {
+                        contains_case_insensitive(event.module_name.as_deref(), module_name)
+                    })
+                    .unwrap_or(true)
+                && function_name
+                    .as_deref()
+                    .map(|function_name| {
+                        contains_case_insensitive(Some(&event.function_name), function_name)
+                    })
+                    .unwrap_or(true)
+                && call_id
+                    .as_deref()
+                    .map(|call_id| contains_case_insensitive(event.call_id.as_deref(), call_id))
+                    .unwrap_or(true)
+                && (!options.only_payload || event_has_payload(event))
+        })
+        .collect();
+    let matched_event_count = matches.len() as u64;
+    let events = matches
+        .iter()
+        .skip(options.offset as usize)
+        .take(limit as usize)
+        .map(|event| event_summary(event))
+        .collect::<Vec<_>>();
+    let consumed = (options.offset as u64).saturating_add(events.len() as u64);
+
+    FridaCaptureEventSearchResult {
+        schema: "trace-ui/frida-capture-search-v1".to_string(),
+        total_event_count: bundle.events.len() as u64,
+        matched_event_count,
+        offset: options.offset,
+        limit,
+        has_more: consumed < matched_event_count,
+        events,
+        warnings: bundle.warnings.clone(),
+    }
+}
+
+fn capture_value_detail(capture: &FridaCapturedValue, max_bytes: u32) -> FridaCaptureValueDetail {
+    let max_bytes = max_bytes.clamp(1, MAX_FRIDA_EVENT_DETAIL_BYTES) as usize;
+    let (value, value_truncated) = match capture.value.as_deref() {
+        Some(value) if capture.kind.eq_ignore_ascii_case("byteArray") => {
+            let max_chars = max_bytes.saturating_mul(2);
+            if value.len() > max_chars {
+                (Some(value.chars().take(max_chars).collect()), true)
+            } else {
+                (Some(value.to_string()), false)
+            }
+        }
+        Some(value) => {
+            let char_count = value.chars().count();
+            if char_count > max_bytes {
+                (Some(value.chars().take(max_bytes).collect()), true)
+            } else {
+                (Some(value.to_string()), false)
+            }
+        }
+        None => (None, false),
+    };
+
+    FridaCaptureValueDetail {
+        index: capture.index,
+        label: capture.label.clone(),
+        kind: capture.kind.clone(),
+        direction: capture.direction.clone(),
+        phase: capture.phase.clone(),
+        pointer: capture.pointer.clone(),
+        value,
+        byte_length: capture.byte_length,
+        requested_length: capture.requested_length,
+        read_error: capture.read_error.clone(),
+        value_truncated,
+    }
+}
+
+pub fn get_frida_capture_event(
+    bundle: &FridaCaptureBundle,
+    event_index: u64,
+    include_registers: bool,
+    include_captures: bool,
+    include_return_value: bool,
+    include_backtrace: bool,
+    max_bytes: u32,
+) -> Result<FridaCaptureEventDetail, String> {
+    let event = bundle
+        .events
+        .iter()
+        .find(|event| event.index == event_index)
+        .ok_or_else(|| format!("Frida capture event index {event_index} was not found"))?;
+    let max_bytes = max_bytes.clamp(1, MAX_FRIDA_EVENT_DETAIL_BYTES);
+    let captures = include_captures.then(|| {
+        event
+            .captures
+            .iter()
+            .map(|capture| capture_value_detail(capture, max_bytes))
+            .collect::<Vec<_>>()
+    });
+    let mut warnings = Vec::new();
+    if captures
+        .as_ref()
+        .map(|captures| captures.iter().any(|capture| capture.value_truncated))
+        .unwrap_or(false)
+    {
+        warnings.push(format!(
+            "One or more capture values were truncated to {max_bytes} bytes."
+        ));
+    }
+
+    Ok(FridaCaptureEventDetail {
+        schema: "trace-ui/frida-capture-event-v1".to_string(),
+        event: event_summary(event),
+        registers: include_registers.then(|| event.registers.clone()),
+        captures,
+        return_value: include_return_value
+            .then(|| event.return_value.clone())
+            .flatten(),
+        backtrace: include_backtrace.then(|| event.backtrace.clone()),
         warnings,
     })
 }
@@ -1524,6 +1868,46 @@ TRACE_UI_JSON {"protocol":"trace-ui/frida-hook-v1","eventId":"one:event:2","hook
             .warnings
             .iter()
             .any(|warning| warning.contains("duplicate Frida eventId")));
+    }
+
+    #[test]
+    fn searches_capture_events_with_bounded_metadata_summaries() {
+        let bundle = parse_frida_capture_bundle(&sample_capture()).unwrap();
+        let result = search_frida_capture_events(
+            &bundle,
+            &FridaCaptureSearchOptions {
+                event_type: Some("hook-enter".to_string()),
+                only_payload: true,
+                offset: 0,
+                limit: 1,
+                ..Default::default()
+            },
+        );
+        assert_eq!(result.matched_event_count, 1);
+        assert_eq!(result.events.len(), 1);
+        assert_eq!(result.events[0].index, 1);
+        assert_eq!(result.events[0].capture_labels, vec!["key"]);
+        assert_eq!(result.events[0].register_count, 8);
+        assert!(!result.has_more);
+        let serialized = serde_json::to_value(&result).unwrap();
+        assert!(serialized["events"][0].get("registers").is_none());
+        assert!(serialized["events"][0].get("captures").is_none());
+    }
+
+    #[test]
+    fn gets_one_event_with_opt_in_and_bounded_payload_details() {
+        let bundle = parse_frida_capture_bundle(&sample_capture()).unwrap();
+        let detail = get_frida_capture_event(&bundle, 1, true, true, false, false, 2).unwrap();
+        assert_eq!(detail.event.index, 1);
+        assert!(detail.registers.as_ref().unwrap().contains_key("x0"));
+        let capture = &detail.captures.as_ref().unwrap()[0];
+        assert_eq!(capture.value.as_deref(), Some("0011"));
+        assert!(capture.value_truncated);
+        assert!(detail
+            .warnings
+            .iter()
+            .any(|warning| warning.contains("truncated")));
+        assert!(get_frida_capture_event(&bundle, 999, false, false, false, false, 256).is_err());
     }
 
     #[test]
