@@ -1,11 +1,11 @@
 ---
 name: ida-ollvm-analysis
-description: Analyze ARM64 dynamic traces for OLLVM control-flow-flattening and opaque-branch candidates, compare dispatcher/state/branch stability across controlled runs, bridge module-relative evidence and exact-offset Frida captures to IDA and angr, continue trace/Frida seeds through bounded symbolic flows, and inspect exported results through the trace-ui MCP server. Use for ASLR-stable dynamic CFG evidence, dispatcher state trajectories, opaque predicate leads, seeded execution-flow candidates, trace-to-IDA annotations, or static/dynamic CFG reconciliation. Treat all OLLVM and angr structural classifications as candidates unless independently proven.
+description: Analyze ARM64 dynamic traces for OLLVM control-flow-flattening and opaque-branch candidates, compare dispatcher/state/branch stability across controlled runs, map dispatcher/state structural candidates across distinct ELF versions, bridge module-relative evidence and exact-offset Frida captures to IDA and angr, continue trace/Frida seeds through bounded symbolic flows, and inspect exported results through the trace-ui MCP server. Use for ASLR-stable dynamic CFG evidence, dispatcher state trajectories, cross-version relocation candidates, opaque predicate leads, seeded execution-flow candidates, trace-to-IDA annotations, or static/dynamic CFG reconciliation. Treat all OLLVM and angr structural classifications as candidates unless independently proven.
 ---
 
 # Analyze OLLVM traces and bridge them to IDA or angr
 
-Use `mcp__trace-ui__analyze_ollvm`, `mcp__trace-ui__compare_ollvm_traces`, `mcp__trace-ui__generate_ida_ollvm_script`,
+Use `mcp__trace-ui__analyze_ollvm`, `mcp__trace-ui__compare_ollvm_traces`, `mcp__trace-ui__map_ollvm_versions`, `mcp__trace-ui__generate_ida_ollvm_script`,
 `mcp__trace-ui__inspect_ida_annotations`, `mcp__trace-ui__generate_angr_ollvm_script`,
 `mcp__trace-ui__inspect_angr_ollvm_results`, `mcp__trace-ui__inspect_frida_capture`, and
 `mcp__trace-ui__generate_angr_state_seed`.
@@ -37,10 +37,19 @@ Use `mcp__trace-ui__analyze_ollvm`, `mcp__trace-ui__compare_ollvm_traces`, `mcp_
    event, then call `generate_angr_ollvm_script` with `frida_capture_path` and `frida_event_index`.
    The tool must reject module or offset mismatches. Use `generate_angr_state_seed` separately when a
    reusable standalone `configure_state(state)` function is desired.
-9. Keep bounded seeded-flow enabled when the question is where a captured state can travel after the
+9. For a selected dispatcher candidate, generate a Frida 16 Hook at its exact `startOffset` and let the
+   user run it manually. Import the `hook-enter` event and pass it to `generate_angr_ollvm_script`.
+   Keep bounded flow enabled to stop at the next dispatcher, loop, external target, dead end, or bound;
+   inspect source/target state-register values as Candidate/Related leads only.
+10. Keep bounded seeded-flow enabled when the question is where a captured state can travel after the
    candidate branch. Start with `flow_max_depth:8` and `flow_max_states_per_probe:32`; lower them when
    several candidates branch heavily. Inspect loop/depth-limit/state-limit/dead-end/external-target
    endings and the final bounded path constraints as leads, not recovered control flow.
+11. For different binary builds, call `map_ollvm_versions` with two to eight independent version IDs,
+    trace scopes, and exact AArch64 ELF paths. Every SHA-256 must differ; repeated runs of one ELF belong
+    in `compare_ollvm_traces`. Review normalized operation/CFG/state-role candidates and ambiguous top
+    scores. Never carry source offsets, concrete state values, Frida captures, or angr seeds into the
+    target build; regenerate an exact-offset Frida 16 Hook and angr seed per version.
 
 ## Interpretation rules
 
@@ -58,17 +67,21 @@ Use `mcp__trace-ui__analyze_ollvm`, `mcp__trace-ui__compare_ollvm_traces`, `mcp_
   snapshots exist. Neither proves real-entry reachability; trace-seeded probes may still lack memory,
   SIMD, flags, or other architectural state.
 - An embedded Frida probe is emitted only when the hook-enter target exactly matches the candidate
-  branch or condition source. It may add X0-X28/FP/LR/SP and byteArray memory, but missing flags, SIMD,
-  unread buffers, or entry-path constraints keep the result Candidate/Related.
-- Bounded seeded-flow continuation applies only to the first trace-register seed per candidate and an
-  exact-offset Frida seed. Blank state remains single-step. A `loop-detected` result is useful evidence
-  for a dispatcher cycle, while `depth-limit` or `state-limit` means the exploration is incomplete;
-  none of these statuses proves a deobfuscated CFG or real-entry reachability.
+  branch, condition source, or dispatcher entry. It may add X0-X28/FP/LR/SP and byteArray memory, but
+  missing flags, SIMD, unread buffers, or entry-path constraints keep the result Candidate/Related.
+- Bounded branch continuation applies only to the first trace-register seed per candidate and an exact
+  branch/condition-source Frida seed. An exact dispatcher-entry seed instead explores to the next
+  dispatcher, loop, exit, or bound and may report each target state register as `concrete`, `symbolic`
+  with at most two alternatives, or `unavailable`. Blank state remains single-step. A `loop-detected`
+  result is useful evidence for a dispatcher cycle, while `depth-limit` or `state-limit` means the
+  exploration is incomplete; none of these statuses proves a deobfuscated CFG or real-entry reachability.
 - Require the exact ELF/shared object for every case and enable `require_matching_binary`. A matching
   supplied SHA-256 confirms the selected files are identical, not that the trace format cryptographically
   attests which image was mapped at runtime.
 - Excluding child call ranges usually produces a cleaner function-local CFG. Include them only when the investigation explicitly needs interprocedural flow.
 - Do not mark OLLVM findings `Verified` solely from structural evidence.
+- Cross-version operation/CFG/state-role similarity is a relocation lead only. Module renames and offset
+  changes are allowed, while equal hashes are rejected to keep cross-version and same-build semantics separate.
 
 ## IDA bridge boundary
 

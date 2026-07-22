@@ -4467,7 +4467,7 @@ impl TraceToolHandler {
 
     #[tool(
         name = "generate_angr_ollvm_script",
-        description = "Analyze a trace-scoped function/range and generate a standalone Python angr bridge for manual execution. The script reconciles static/dynamic CFG evidence, runs blank/trace-register probes, optionally continues the first trace seed and exact Frida seed through strictly bounded symbolic flows, and can embed one user-captured Frida 16 hook-enter seed only when its module-relative offset exactly matches an opaque branch or recorded condition source. Trace UI never executes Frida or angr; all structural results remain Candidate/Related."
+        description = "Analyze a trace-scoped function/range and generate a standalone Python angr bridge for manual execution. The script reconciles static/dynamic CFG evidence, runs blank/trace-register branch probes, and can embed one user-captured Frida 16 hook-enter seed only when its module-relative offset exactly matches an opaque branch, recorded condition source, or dispatcher entry. Branch seeds get bounded post-branch flow; dispatcher seeds get bounded next-dispatcher/loop/exit exploration with state-register values. Trace UI never executes Frida or angr; all structural results remain Candidate/Related."
     )]
     async fn generate_angr_ollvm_script(
         &self,

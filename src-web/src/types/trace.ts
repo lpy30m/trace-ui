@@ -927,6 +927,8 @@ export interface AngrOllvmFridaSeedProvenance {
   registersSeeded: string[];
   memoryRegionCount: number;
   matchedProbeOffsets: string[];
+  matchedBranchOffsets: string[];
+  matchedDispatcherOffsets: string[];
 }
 
 export interface AngrSuccessor {
@@ -970,9 +972,18 @@ export interface AngrFlowPath {
   jumpKinds: string[];
   terminalAddress: string;
   terminalOffset: string | null;
+  matchedDispatcherOffset: string | null;
+  dispatcherStateValues: AngrRegisterValue[];
   constraintCount: number;
   constraints: string[];
   error: string | null;
+}
+
+export interface AngrRegisterValue {
+  register: string;
+  status: string;
+  value: string | null;
+  alternatives: string[];
 }
 
 export interface AngrFlowExploration {
@@ -982,6 +993,21 @@ export interface AngrFlowExploration {
   truncated: boolean;
   paths: AngrFlowPath[];
   limitation: string;
+}
+
+export interface AngrDispatcherProbe {
+  offset: string;
+  status: string;
+  seedKind: string;
+  sourceEventIndex: number;
+  sourceOffset: string;
+  seededRegisters: string[];
+  seededMemoryRegions: string[];
+  stateRegisters: string[];
+  sourceStateValues: AngrRegisterValue[];
+  flowExploration: AngrFlowExploration | null;
+  limitation: string;
+  error: string | null;
 }
 
 export interface AngrOllvmResultBundle {
@@ -996,6 +1022,7 @@ export interface AngrOllvmResultBundle {
   flowConfig: AngrOllvmFlowConfig | null;
   blocks: AngrBlockResult[];
   branchProbes: AngrBranchProbe[];
+  dispatcherProbes: AngrDispatcherProbe[];
   warnings: string[];
 }
 

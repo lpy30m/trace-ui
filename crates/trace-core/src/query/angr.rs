@@ -47,6 +47,10 @@ pub struct AngrOllvmFridaSeedProvenance {
     pub registers_seeded: Vec<String>,
     pub memory_region_count: u64,
     pub matched_probe_offsets: Vec<String>,
+    #[serde(default)]
+    pub matched_branch_offsets: Vec<String>,
+    #[serde(default)]
+    pub matched_dispatcher_offsets: Vec<String>,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -121,11 +125,26 @@ pub struct AngrFlowPath {
     pub terminal_address: String,
     #[serde(default)]
     pub terminal_offset: Option<String>,
+    #[serde(default)]
+    pub matched_dispatcher_offset: Option<String>,
+    #[serde(default)]
+    pub dispatcher_state_values: Vec<AngrRegisterValue>,
     pub constraint_count: u64,
     #[serde(default)]
     pub constraints: Vec<String>,
     #[serde(default)]
     pub error: Option<String>,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AngrRegisterValue {
+    pub register: String,
+    pub status: String,
+    #[serde(default)]
+    pub value: Option<String>,
+    #[serde(default)]
+    pub alternatives: Vec<String>,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -138,6 +157,29 @@ pub struct AngrFlowExploration {
     #[serde(default)]
     pub paths: Vec<AngrFlowPath>,
     pub limitation: String,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AngrDispatcherProbe {
+    pub offset: String,
+    pub status: String,
+    pub seed_kind: String,
+    pub source_event_index: u64,
+    pub source_offset: String,
+    #[serde(default)]
+    pub seeded_registers: Vec<String>,
+    #[serde(default)]
+    pub seeded_memory_regions: Vec<String>,
+    #[serde(default)]
+    pub state_registers: Vec<String>,
+    #[serde(default)]
+    pub source_state_values: Vec<AngrRegisterValue>,
+    #[serde(default)]
+    pub flow_exploration: Option<AngrFlowExploration>,
+    pub limitation: String,
+    #[serde(default)]
+    pub error: Option<String>,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -158,6 +200,8 @@ pub struct AngrOllvmResultBundle {
     pub blocks: Vec<AngrBlockResult>,
     #[serde(default)]
     pub branch_probes: Vec<AngrBranchProbe>,
+    #[serde(default)]
+    pub dispatcher_probes: Vec<AngrDispatcherProbe>,
     #[serde(default)]
     pub warnings: Vec<String>,
 }
@@ -240,7 +284,7 @@ fn prepare_frida_seed(
         })?
         .to_lowercase();
     parse_hex_addr(&capture_offset)?;
-    let mut matched_probe_offsets = report
+    let mut matched_branch_offsets = report
         .opaque_branch_candidates
         .iter()
         .filter(|candidate| {
@@ -254,11 +298,26 @@ fn prepare_frida_seed(
         })
         .map(|candidate| candidate.branch_offset.to_lowercase())
         .collect::<Vec<_>>();
+    matched_branch_offsets.sort_by_key(|value| parse_hex_addr(value).unwrap_or(u64::MAX));
+    matched_branch_offsets.dedup();
+    let mut matched_dispatcher_offsets = report
+        .dispatcher_candidates
+        .iter()
+        .filter(|candidate| candidate.start_offset.eq_ignore_ascii_case(&capture_offset))
+        .map(|candidate| candidate.start_offset.to_lowercase())
+        .collect::<Vec<_>>();
+    matched_dispatcher_offsets.sort_by_key(|value| parse_hex_addr(value).unwrap_or(u64::MAX));
+    matched_dispatcher_offsets.dedup();
+    let mut matched_probe_offsets = matched_branch_offsets
+        .iter()
+        .chain(&matched_dispatcher_offsets)
+        .cloned()
+        .collect::<Vec<_>>();
     matched_probe_offsets.sort_by_key(|value| parse_hex_addr(value).unwrap_or(u64::MAX));
     matched_probe_offsets.dedup();
     if matched_probe_offsets.is_empty() {
         return Err(format!(
-            "Frida capture offset {} does not exactly match an opaque branch or its condition-source offset",
+            "Frida capture offset {} does not exactly match an opaque branch, its condition-source offset, or a dispatcher entry",
             capture_offset
         ));
     }
@@ -310,6 +369,8 @@ fn prepare_frida_seed(
         registers_seeded: seed.registers_seeded.clone(),
         memory_region_count: seed.memory_regions.len() as u64,
         matched_probe_offsets,
+        matched_branch_offsets,
+        matched_dispatcher_offsets,
     };
     let payload = serde_json::json!({
         "sourceEventIndex": seed.source_event_index,
@@ -353,12 +414,6 @@ pub fn generate_angr_ollvm_script_with_seed_and_flow(
         return Err("OLLVM report module name must not be empty".to_string());
     }
     validate_flow_config(&flow_config)?;
-    if !probe_opaque_branches {
-        flow_config.enabled = false;
-    }
-    if frida_seed.is_some() && !probe_opaque_branches {
-        return Err("Frida OLLVM seed merging requires opaque branch probes".to_string());
-    }
     let (frida_seed_json, frida_seed_provenance) = match frida_seed {
         Some(seed) => {
             let (payload, provenance) = prepare_frida_seed(report, seed)?;
@@ -366,6 +421,20 @@ pub fn generate_angr_ollvm_script_with_seed_and_flow(
         }
         None => (serde_json::Value::Null, None),
     };
+    let has_dispatcher_seed = frida_seed_provenance
+        .as_ref()
+        .is_some_and(|provenance| !provenance.matched_dispatcher_offsets.is_empty());
+    let has_branch_seed = frida_seed_provenance
+        .as_ref()
+        .is_some_and(|provenance| !provenance.matched_branch_offsets.is_empty());
+    if has_branch_seed && !probe_opaque_branches && !has_dispatcher_seed {
+        return Err(
+            "Frida branch/condition-source seed merging requires opaque branch probes".to_string(),
+        );
+    }
+    if !probe_opaque_branches && !has_dispatcher_seed {
+        flow_config.enabled = false;
+    }
     let frida_seed_json = serde_json::to_string(&frida_seed_json)
         .map_err(|error| format!("serialize Frida seed failed: {error}"))?;
     let frida_seed_literal = serde_json::to_string(&frida_seed_json)
@@ -551,16 +620,148 @@ def _apply_frida_seed(state):
     return seeded_registers, seeded_memory, errors
 
 
-def _flow_path(project, status, state, offsets, jump_kinds, error=None):
+def _register_values(state, names):
+    values = []
+    for original_name in names[:16]:
+        name = original_name.lower()
+        try:
+            expression = getattr(state.regs, name)
+            alternatives = state.solver.eval_upto(expression, 2)
+            if len(alternatives) == 1:
+                values.append({
+                    "register": original_name.upper(),
+                    "status": "concrete",
+                    "value": hex(int(alternatives[0])),
+                    "alternatives": [],
+                })
+            else:
+                values.append({
+                    "register": original_name.upper(),
+                    "status": "symbolic",
+                    "value": None,
+                    "alternatives": [hex(int(value)) for value in alternatives[:2]],
+                })
+        except Exception:
+            values.append({
+                "register": original_name.upper(),
+                "status": "unavailable",
+                "value": None,
+                "alternatives": [],
+            })
+    return values
+
+
+def _flow_path(project, status, state, offsets, jump_kinds, error=None, matched_dispatcher_offset=None, dispatcher_state_values=None):
     return {
         "status": status,
         "offsets": offsets,
         "jumpKinds": jump_kinds,
         "terminalAddress": hex(state.addr),
         "terminalOffset": _mapped_offset(project, state.addr),
+        "matchedDispatcherOffset": matched_dispatcher_offset,
+        "dispatcherStateValues": dispatcher_state_values or [],
         "constraintCount": len(state.solver.constraints),
         "constraints": [str(item)[:500] for item in state.solver.constraints[-4:]],
         "error": error,
+    }
+
+
+def _dispatcher_candidates():
+    return {
+        candidate["startOffset"].lower(): candidate
+        for candidate in REPORT.get("dispatcherCandidates", [])
+    }
+
+
+def _explore_dispatcher_flow(project, source_offset, initial_state, max_depth, max_states):
+    limitation = (
+        "Bounded symbolic continuation starts at an exact dispatcher-entry Frida capture and stops at the next observed dispatcher entry, loop, external target, dead end, or configured bound. "
+        "It does not prove function-entry reachability, complete state-machine recovery, or OLLVM removal."
+    )
+    dispatchers = _dispatcher_candidates()
+    queue = [(initial_state, 0, [source_offset], [])]
+    paths = []
+    truncated = False
+    explored = 0
+    while queue and explored < max_states:
+        state, depth, offsets, jump_kinds = queue.pop(0)
+        explored += 1
+        current_offset = _mapped_offset(project, state.addr)
+        if current_offset is None:
+            paths.append(_flow_path(project, "external-target", state, offsets, jump_kinds))
+            continue
+        current_offset = current_offset.lower()
+        if depth > 0 and current_offset in dispatchers:
+            candidate = dispatchers[current_offset]
+            paths.append(_flow_path(
+                project,
+                "dispatcher-hit",
+                state,
+                offsets,
+                jump_kinds,
+                matched_dispatcher_offset=current_offset,
+                dispatcher_state_values=_register_values(state, candidate.get("stateRegisters", [])),
+            ))
+            continue
+        if current_offset in offsets[:-1]:
+            paths.append(_flow_path(project, "loop-detected", state, offsets, jump_kinds))
+            continue
+        if depth >= max_depth:
+            truncated = True
+            paths.append(_flow_path(project, "depth-limit", state, offsets, jump_kinds))
+            continue
+        try:
+            successors = project.factory.successors(state, opt_level=0)
+        except Exception as error:
+            paths.append(_flow_path(project, "step-error", state, offsets, jump_kinds, str(error)))
+            continue
+        flat = []
+        for successor in successors.flat_successors:
+            try:
+                if successor.solver.satisfiable():
+                    flat.append(successor)
+            except Exception:
+                continue
+        if not flat:
+            status = "unconstrained" if successors.unconstrained_successors else "dead-end"
+            paths.append(_flow_path(project, status, state, offsets, jump_kinds))
+            continue
+        for successor in flat:
+            if explored + len(queue) >= max_states:
+                truncated = True
+                next_offsets = list(offsets)
+                next_offset = _mapped_offset(project, successor.addr)
+                if next_offset is not None:
+                    next_offsets.append(next_offset.lower())
+                paths.append(_flow_path(
+                    project,
+                    "state-limit",
+                    successor,
+                    next_offsets,
+                    jump_kinds + [successor.history.jumpkind or "unknown"],
+                ))
+                break
+            next_offsets = list(offsets)
+            next_offset = _mapped_offset(project, successor.addr)
+            if next_offset is not None:
+                next_offsets.append(next_offset.lower())
+            queue.append((
+                successor,
+                depth + 1,
+                next_offsets,
+                jump_kinds + [successor.history.jumpkind or "unknown"],
+            ))
+    if queue:
+        truncated = True
+        state, _, offsets, jump_kinds = queue[0]
+        paths.append(_flow_path(project, "state-limit", state, offsets, jump_kinds))
+    return {
+        "maxDepth": max_depth,
+        "maxStates": max_states,
+        "exploredStates": explored,
+        "truncated": truncated,
+        "paths": paths,
+        "limitation": limitation,
     }
 
 
@@ -825,6 +1026,64 @@ def _probe_branch_with_frida(project, candidate, explore_flow=False, flow_max_de
         }
 
 
+def _probe_dispatcher_with_frida(project, candidate, explore_flow=False, flow_max_depth=8, flow_max_states=32):
+    dispatcher_offset = candidate["startOffset"].lower()
+    source_offset = FRIDA_SEED["captureOffset"].lower()
+    if source_offset != dispatcher_offset:
+        return None
+    limitation = (
+        "The Frida capture exactly matches this dispatcher entry and seeds captured GPR/memory state. "
+        "The bounded continuation can identify candidate next-dispatcher states, but missing SIMD, flags, unread memory, and entry-path constraints still prevent Verified control-flow recovery."
+    )
+    try:
+        address = project.loader.main_object.mapped_base + _offset(dispatcher_offset)
+        state = configure_state(project.factory.blank_state(addr=address))
+        seeded_registers, seeded_memory, seed_errors = _apply_frida_seed(state)
+        state.options.add(angr.options.LAZY_SOLVES)
+        source_state_values = _register_values(state, candidate.get("stateRegisters", []))
+        flow = None
+        if explore_flow:
+            flow = _explore_dispatcher_flow(
+                project,
+                dispatcher_offset,
+                state,
+                flow_max_depth,
+                flow_max_states,
+            )
+        status = "dispatcher_flow_explored" if flow is not None else "dispatcher_seed_applied"
+        if seed_errors:
+            status += "_with_seed_warnings"
+        return {
+            "offset": dispatcher_offset,
+            "status": status,
+            "seedKind": "frida-capture-exact-dispatcher",
+            "sourceEventIndex": FRIDA_SEED.get("sourceEventIndex"),
+            "sourceOffset": source_offset,
+            "seededRegisters": seeded_registers,
+            "seededMemoryRegions": seeded_memory,
+            "stateRegisters": [value.upper() for value in candidate.get("stateRegisters", [])],
+            "sourceStateValues": source_state_values,
+            "flowExploration": flow,
+            "limitation": limitation,
+            "error": "; ".join(seed_errors) if seed_errors else None,
+        }
+    except Exception as error:
+        return {
+            "offset": dispatcher_offset,
+            "status": "probe_error",
+            "seedKind": "frida-capture-exact-dispatcher",
+            "sourceEventIndex": FRIDA_SEED.get("sourceEventIndex"),
+            "sourceOffset": source_offset,
+            "seededRegisters": [],
+            "seededMemoryRegions": [],
+            "stateRegisters": [value.upper() for value in candidate.get("stateRegisters", [])],
+            "sourceStateValues": [],
+            "flowExploration": None,
+            "limitation": limitation,
+            "error": str(error),
+        }
+
+
 def analyze(binary_path, prefer_emulated, probe_opaque, explore_flows, flow_max_depth, flow_max_states):
     project = angr.Project(binary_path, auto_load_libs=False)
     cfg, cfg_kind, warnings = _build_cfg(project, prefer_emulated)
@@ -856,16 +1115,28 @@ def analyze(binary_path, prefer_emulated, probe_opaque, explore_flows, flow_max_
                 )
                 if frida_probe is not None:
                     probes.append(frida_probe)
+    dispatcher_probes = []
+    if FRIDA_SEED is not None:
+        for item in REPORT.get("dispatcherCandidates", []):
+            dispatcher_probe = _probe_dispatcher_with_frida(
+                project,
+                item,
+                explore_flow=explore_flows,
+                flow_max_depth=flow_max_depth,
+                flow_max_states=flow_max_states,
+            )
+            if dispatcher_probe is not None:
+                dispatcher_probes.append(dispatcher_probe)
     warnings.extend([
         "Static CFG successors absent from the dynamic trace may be unexecuted, infeasible, or CFG recovery artifacts.",
         "Dynamic-only edges may indicate indirect control flow or static CFG recovery gaps.",
         "Unconstrained branch probes are hypothesis generators, not proof of real-input reachability.",
         "Trace-seeded probes contain selected register values only; missing memory and architectural state can change feasibility.",
     ])
-    if explore_flows and probe_opaque:
+    if explore_flows and (probe_opaque or dispatcher_probes):
         warnings.append("Bounded seeded-flow paths stop at configured depth/state limits and remain candidate execution-flow evidence.")
     if FRIDA_SEED is not None:
-        warnings.append("Frida-seeded probes are emitted only for an exact module-relative branch or condition-source offset match; they remain candidate evidence.")
+        warnings.append("Frida-seeded probes are emitted only for an exact module-relative branch, condition-source, or dispatcher-entry offset match; they remain candidate evidence.")
     with open(binary_path, "rb") as source:
         binary_sha256 = hashlib.sha256(source.read()).hexdigest()
     return {
@@ -878,12 +1149,13 @@ def analyze(binary_path, prefer_emulated, probe_opaque, explore_flows, flow_max_
         "cfgKind": cfg_kind,
         "fridaSeed": FRIDA_SEED.get("provenance") if FRIDA_SEED is not None else None,
         "flowConfig": {
-            "enabled": bool(explore_flows and probe_opaque),
+            "enabled": bool(explore_flows and (probe_opaque or dispatcher_probes)),
             "maxDepth": flow_max_depth,
             "maxStatesPerProbe": flow_max_states,
         },
         "blocks": blocks,
         "branchProbes": probes,
+        "dispatcherProbes": dispatcher_probes,
         "warnings": warnings,
     }
 
@@ -916,8 +1188,9 @@ def main():
     with open(output_path, "w", encoding="utf-8") as output:
         json.dump(result, output, ensure_ascii=False, indent=2)
     flow_count = sum(1 for probe in result["branchProbes"] if probe.get("flowExploration") is not None)
-    print("[Trace UI] wrote {} block reconciliations, {} branch probes, and {} bounded flows to {}".format(
-        len(result["blocks"]), len(result["branchProbes"]), flow_count, output_path
+    flow_count += sum(1 for probe in result["dispatcherProbes"] if probe.get("flowExploration") is not None)
+    print("[Trace UI] wrote {} block reconciliations, {} branch probes, {} dispatcher probes, and {} bounded flows to {}".format(
+        len(result["blocks"]), len(result["branchProbes"]), len(result["dispatcherProbes"]), flow_count, output_path
     ))
 
 
@@ -955,13 +1228,13 @@ if __name__ == "__main__":
     ];
     if flow_config.enabled {
         warnings.push(format!(
-            "Bounded symbolic flow continuation is enabled for the first trace-register seed and exact Frida seed (depth {}, at most {} states per probe). Paths remain Candidate/Related evidence.",
+            "Bounded symbolic flow continuation is enabled for the first trace-register branch seed and exact Frida branch/dispatcher seed (depth {}, at most {} states per probe). Paths remain Candidate/Related evidence.",
             flow_config.max_depth, flow_config.max_states_per_probe
         ));
     }
     if frida_seed_provenance.is_some() {
         warnings.push(
-            "The embedded Frida seed is applied only to exact branch/condition-source offset matches. Missing flags, SIMD state, memory, and entry-path constraints can still change feasibility."
+            "The embedded Frida seed is applied only to exact branch/condition-source or dispatcher-entry offset matches. Missing flags, SIMD state, memory, and entry-path constraints can still change feasibility."
                 .to_string(),
         );
     } else {
@@ -978,6 +1251,139 @@ if __name__ == "__main__":
         flow_config,
         warnings,
     })
+}
+
+fn validate_angr_register_values(
+    values: &[AngrRegisterValue],
+    context: &str,
+) -> Result<(), String> {
+    if values.len() > 16 {
+        return Err(format!(
+            "{context} contains more than 16 state-register values"
+        ));
+    }
+    for value in values {
+        if value.register.trim().is_empty() {
+            return Err(format!("{context} contains an empty register name"));
+        }
+        if value.alternatives.len() > 2 {
+            return Err(format!(
+                "{context} register {} contains more than two alternatives",
+                value.register
+            ));
+        }
+        if let Some(concrete) = &value.value {
+            parse_hex_addr(concrete)?;
+        }
+        for alternative in &value.alternatives {
+            parse_hex_addr(alternative)?;
+        }
+        match value.status.as_str() {
+            "concrete" if value.value.is_some() && value.alternatives.is_empty() => {}
+            "symbolic" if value.value.is_none() => {}
+            "unavailable" if value.value.is_none() && value.alternatives.is_empty() => {}
+            _ => {
+                return Err(format!(
+                    "{context} register {} has inconsistent status/value fields",
+                    value.register
+                ));
+            }
+        }
+    }
+    Ok(())
+}
+
+fn validate_angr_flow(
+    probe_offset: &str,
+    flow: &AngrFlowExploration,
+    config: &AngrOllvmFlowConfig,
+    dispatcher_flow: bool,
+) -> Result<(), String> {
+    if !config.enabled {
+        return Err("angr seeded-flow result is disabled by flowConfig".to_string());
+    }
+    if flow.max_depth != config.max_depth || flow.max_states != config.max_states_per_probe {
+        return Err(format!(
+            "angr seeded-flow bounds do not match flowConfig at {probe_offset}"
+        ));
+    }
+    if flow.explored_states > flow.max_states {
+        return Err(format!(
+            "angr seeded-flow exploredStates exceeds maxStates at {probe_offset}"
+        ));
+    }
+    if flow.paths.len() > flow.max_states as usize + 1 {
+        return Err(format!(
+            "angr seeded-flow path count exceeds the bounded limit at {probe_offset}"
+        ));
+    }
+    for path in &flow.paths {
+        parse_hex_addr(&path.terminal_address)?;
+        if let Some(offset) = &path.terminal_offset {
+            parse_hex_addr(offset)?;
+        }
+        if path.offsets.is_empty() {
+            return Err(format!("angr seeded-flow path is empty at {probe_offset}"));
+        }
+        if path.offsets.len() > flow.max_depth as usize + 1 {
+            return Err(format!(
+                "angr seeded-flow path depth exceeds the configured limit at {probe_offset}"
+            ));
+        }
+        for offset in &path.offsets {
+            parse_hex_addr(offset)?;
+        }
+        if path.constraints.len() > 4
+            || path
+                .constraints
+                .iter()
+                .any(|constraint| constraint.len() > 500)
+        {
+            return Err(format!(
+                "angr seeded-flow constraints exceed the bounded limit at {probe_offset}"
+            ));
+        }
+        if path
+            .offsets
+            .first()
+            .is_some_and(|offset| !offset.eq_ignore_ascii_case(probe_offset))
+        {
+            return Err(format!(
+                "angr seeded-flow path does not begin at probe offset {probe_offset}"
+            ));
+        }
+        if let Some(dispatcher_offset) = &path.matched_dispatcher_offset {
+            if !dispatcher_flow || path.status != "dispatcher-hit" {
+                return Err(format!(
+                    "angr seeded-flow has unexpected dispatcher match at {probe_offset}"
+                ));
+            }
+            parse_hex_addr(dispatcher_offset)?;
+            if path
+                .terminal_offset
+                .as_deref()
+                .is_some_and(|terminal| !terminal.eq_ignore_ascii_case(dispatcher_offset))
+            {
+                return Err(format!(
+                    "angr dispatcher-hit terminal offset does not match {dispatcher_offset}"
+                ));
+            }
+        } else if path.status == "dispatcher-hit" {
+            return Err(format!(
+                "angr dispatcher-hit path lacks matchedDispatcherOffset at {probe_offset}"
+            ));
+        }
+        if !dispatcher_flow && !path.dispatcher_state_values.is_empty() {
+            return Err(format!(
+                "angr branch flow contains dispatcher state values at {probe_offset}"
+            ));
+        }
+        validate_angr_register_values(
+            &path.dispatcher_state_values,
+            &format!("angr flow path at {probe_offset}"),
+        )?;
+    }
+    Ok(())
 }
 
 pub fn parse_angr_ollvm_result_bundle(bytes: &[u8]) -> Result<AngrOllvmResultBundle, String> {
@@ -1010,16 +1416,46 @@ pub fn parse_angr_ollvm_result_bundle(bytes: &[u8]) -> Result<AngrOllvmResultBun
         parse_hex_addr(&seed.capture_offset)?;
         for offset in &seed.matched_probe_offsets {
             parse_hex_addr(offset)?;
-            if !bundle.branch_probes.iter().any(|probe| {
+            let branch_match = bundle.branch_probes.iter().any(|probe| {
                 probe.offset.eq_ignore_ascii_case(offset)
                     && probe.source_event_index == Some(seed.source_event_index)
                     && probe
                         .seed_kind
                         .as_deref()
                         .is_some_and(|kind| kind.starts_with("frida-capture-"))
-            }) {
+            });
+            let dispatcher_match = bundle.dispatcher_probes.iter().any(|probe| {
+                probe.offset.eq_ignore_ascii_case(offset)
+                    && probe.source_event_index == seed.source_event_index
+                    && probe.seed_kind == "frida-capture-exact-dispatcher"
+            });
+            if !branch_match && !dispatcher_match {
                 return Err(format!(
-                    "angr result Frida provenance has no matching branch probe at {offset}"
+                    "angr result Frida provenance has no matching branch or dispatcher probe at {offset}"
+                ));
+            }
+        }
+        for offset in &seed.matched_branch_offsets {
+            parse_hex_addr(offset)?;
+            if !seed
+                .matched_probe_offsets
+                .iter()
+                .any(|matched| matched.eq_ignore_ascii_case(offset))
+            {
+                return Err(format!(
+                    "angr result Frida branch offset {offset} is absent from matchedProbeOffsets"
+                ));
+            }
+        }
+        for offset in &seed.matched_dispatcher_offsets {
+            parse_hex_addr(offset)?;
+            if !seed
+                .matched_probe_offsets
+                .iter()
+                .any(|matched| matched.eq_ignore_ascii_case(offset))
+            {
+                return Err(format!(
+                    "angr result Frida dispatcher offset {offset} is absent from matchedProbeOffsets"
                 ));
             }
         }
@@ -1029,18 +1465,24 @@ pub fn parse_angr_ollvm_result_bundle(bytes: &[u8]) -> Result<AngrOllvmResultBun
                 .seed_kind
                 .as_deref()
                 .is_some_and(|kind| kind.starts_with("frida-capture-"))
-    }) {
+    }) || !bundle.dispatcher_probes.is_empty()
+    {
         return Err(
-            "angr result contains a Frida branch probe without top-level provenance".to_string(),
+            "angr result contains a Frida branch/dispatcher probe without top-level provenance"
+                .to_string(),
         );
     }
     if let Some(config) = &bundle.flow_config {
         validate_flow_config(config)?;
         if !config.enabled
-            && bundle
+            && (bundle
                 .branch_probes
                 .iter()
                 .any(|probe| probe.flow_exploration.is_some())
+                || bundle
+                    .dispatcher_probes
+                    .iter()
+                    .any(|probe| probe.flow_exploration.is_some()))
         {
             return Err(
                 "angr result contains seeded-flow paths while flowConfig is disabled".to_string(),
@@ -1050,6 +1492,10 @@ pub fn parse_angr_ollvm_result_bundle(bytes: &[u8]) -> Result<AngrOllvmResultBun
         .branch_probes
         .iter()
         .any(|probe| probe.flow_exploration.is_some())
+        || bundle
+            .dispatcher_probes
+            .iter()
+            .any(|probe| probe.flow_exploration.is_some())
     {
         return Err("angr result contains seeded-flow paths without flowConfig".to_string());
     }
@@ -1089,9 +1535,6 @@ pub fn parse_angr_ollvm_result_bundle(bytes: &[u8]) -> Result<AngrOllvmResultBun
                 .flow_config
                 .as_ref()
                 .ok_or_else(|| "angr seeded-flow result lacks flowConfig".to_string())?;
-            if !config.enabled {
-                return Err("angr seeded-flow result is disabled by flowConfig".to_string());
-            }
             if !probe.seed_kind.as_deref().is_some_and(|kind| {
                 kind == "trace-register-snapshot" || kind.starts_with("frida-capture-")
             }) {
@@ -1100,67 +1543,55 @@ pub fn parse_angr_ollvm_result_bundle(bytes: &[u8]) -> Result<AngrOllvmResultBun
                     probe.offset
                 ));
             }
-            if flow.max_depth != config.max_depth || flow.max_states != config.max_states_per_probe
-            {
-                return Err(format!(
-                    "angr seeded-flow bounds do not match flowConfig at {}",
-                    probe.offset
-                ));
-            }
-            if flow.explored_states > flow.max_states {
-                return Err(format!(
-                    "angr seeded-flow exploredStates exceeds maxStates at {}",
-                    probe.offset
-                ));
-            }
-            if flow.paths.len() > flow.max_states as usize + 1 {
-                return Err(format!(
-                    "angr seeded-flow path count exceeds the bounded limit at {}",
-                    probe.offset
-                ));
-            }
-            for path in &flow.paths {
-                parse_hex_addr(&path.terminal_address)?;
-                if let Some(offset) = &path.terminal_offset {
-                    parse_hex_addr(offset)?;
-                }
-                if path.offsets.is_empty() {
-                    return Err(format!(
-                        "angr seeded-flow path is empty at {}",
-                        probe.offset
-                    ));
-                }
-                if path.offsets.len() > flow.max_depth as usize + 1 {
-                    return Err(format!(
-                        "angr seeded-flow path depth exceeds the configured limit at {}",
-                        probe.offset
-                    ));
-                }
-                for offset in &path.offsets {
-                    parse_hex_addr(offset)?;
-                }
-                if path.constraints.len() > 4
-                    || path
-                        .constraints
-                        .iter()
-                        .any(|constraint| constraint.len() > 500)
-                {
-                    return Err(format!(
-                        "angr seeded-flow constraints exceed the bounded limit at {}",
-                        probe.offset
-                    ));
-                }
-                if path
-                    .offsets
-                    .first()
-                    .is_some_and(|offset| !offset.eq_ignore_ascii_case(&probe.offset))
-                {
-                    return Err(format!(
-                        "angr seeded-flow path does not begin at probe offset {}",
-                        probe.offset
-                    ));
-                }
-            }
+            validate_angr_flow(&probe.offset, flow, config, false)?;
+        }
+    }
+    for probe in &bundle.dispatcher_probes {
+        parse_hex_addr(&probe.offset)?;
+        parse_hex_addr(&probe.source_offset)?;
+        if probe.seed_kind != "frida-capture-exact-dispatcher" {
+            return Err(format!(
+                "angr dispatcher probe at {} has unsupported seedKind {}",
+                probe.offset, probe.seed_kind
+            ));
+        }
+        if !probe.offset.eq_ignore_ascii_case(&probe.source_offset) {
+            return Err(format!(
+                "angr dispatcher probe sourceOffset does not match probe offset {}",
+                probe.offset
+            ));
+        }
+        let seed = bundle
+            .frida_seed
+            .as_ref()
+            .ok_or_else(|| "angr dispatcher probe lacks top-level Frida provenance".to_string())?;
+        if probe.source_event_index != seed.source_event_index
+            || !seed
+                .matched_probe_offsets
+                .iter()
+                .any(|offset| offset.eq_ignore_ascii_case(&probe.offset))
+        {
+            return Err(format!(
+                "angr dispatcher probe provenance mismatch at {}",
+                probe.offset
+            ));
+        }
+        if probe.state_registers.len() > 16 {
+            return Err(format!(
+                "angr dispatcher probe has more than 16 state registers at {}",
+                probe.offset
+            ));
+        }
+        validate_angr_register_values(
+            &probe.source_state_values,
+            &format!("angr dispatcher probe at {}", probe.offset),
+        )?;
+        if let Some(flow) = &probe.flow_exploration {
+            let config = bundle
+                .flow_config
+                .as_ref()
+                .ok_or_else(|| "angr dispatcher flow result lacks flowConfig".to_string())?;
+            validate_angr_flow(&probe.offset, flow, config, true)?;
         }
     }
     Ok(bundle)
@@ -1172,8 +1603,8 @@ mod tests {
     use crate::query::evidence_score::{score_evidence, EvidenceScoreSignal};
     use crate::query::frida_capture::{AngrSeedMemoryRegion, AngrSeedRegister};
     use crate::query::ollvm::{
-        BranchStateObservation, DynamicBasicBlock, DynamicBranchProfile, OllvmScope,
-        OpaqueBranchCandidate,
+        BranchStateObservation, DispatcherCandidate, DynamicBasicBlock, DynamicBranchProfile,
+        OllvmScope, OpaqueBranchCandidate,
     };
 
     fn sample_report() -> OllvmReport {
@@ -1220,7 +1651,33 @@ mod tests {
                 observations: Vec::new(),
                 observations_truncated: false,
             }],
-            dispatcher_candidates: Vec::new(),
+            dispatcher_candidates: vec![DispatcherCandidate {
+                block_id: "libtarget.so+0x80".to_string(),
+                start_offset: "0x80".to_string(),
+                end_offset: "0x8c".to_string(),
+                visit_count: 8,
+                predecessor_count: 3,
+                successor_count: 2,
+                indirect_branch_count: 8,
+                backward_edge_count: 1,
+                state_registers: vec!["X8".to_string()],
+                state_snapshots: Vec::new(),
+                state_transitions: Vec::new(),
+                state_snapshots_truncated: false,
+                rationale: "dispatcher candidate".to_string(),
+                assessment: score_evidence(
+                    "dispatcher",
+                    false,
+                    vec![EvidenceScoreSignal::new(
+                        "test",
+                        "Test evidence",
+                        40,
+                        true,
+                        None,
+                    )],
+                    vec!["candidate only".to_string()],
+                ),
+            }],
             opaque_branch_candidates: vec![OpaqueBranchCandidate {
                 branch_offset: "0x104".to_string(),
                 disasm: "b.eq 0x120".to_string(),
@@ -1303,6 +1760,8 @@ mod tests {
         assert!(generated.script.contains("_apply_trace_snapshot"));
         assert!(generated.script.contains("_probe_branch_with_frida"));
         assert!(generated.script.contains("_explore_seeded_flow"));
+        assert!(generated.script.contains("_probe_dispatcher_with_frida"));
+        assert!(generated.script.contains("_explore_dispatcher_flow"));
         assert!(generated
             .script
             .contains("DEFAULT_EXPLORE_SEEDED_FLOWS = True"));
@@ -1342,6 +1801,26 @@ mod tests {
             Some(&mismatched)
         )
         .is_err());
+    }
+
+    #[test]
+    fn embeds_exact_dispatcher_seed_without_requiring_branch_probes() {
+        let seed = sample_frida_seed("0x80");
+        let generated = generate_angr_ollvm_script_with_seed_and_flow(
+            &sample_report(),
+            false,
+            false,
+            Some(&seed),
+            AngrOllvmFlowConfig::default(),
+        )
+        .unwrap();
+        let provenance = generated.frida_seed.unwrap();
+        assert_eq!(provenance.matched_probe_offsets, vec!["0x80"]);
+        assert!(provenance.matched_branch_offsets.is_empty());
+        assert_eq!(provenance.matched_dispatcher_offsets, vec!["0x80"]);
+        assert!(generated.flow_config.enabled);
+        assert!(generated.script.contains("frida-capture-exact-dispatcher"));
+        assert!(generated.script.contains("dispatcherProbes"));
     }
 
     #[test]
@@ -1432,7 +1911,7 @@ mod tests {
         }"#;
 
         let error = parse_angr_ollvm_result_bundle(result).unwrap_err();
-        assert!(error.contains("no matching branch probe at 0x104"));
+        assert!(error.contains("no matching branch or dispatcher probe at 0x104"));
     }
 
     #[test]
@@ -1478,6 +1957,70 @@ mod tests {
             parsed.branch_probes[0].source_offset.as_deref(),
             Some("0x100")
         );
+    }
+
+    #[test]
+    fn accepts_bounded_dispatcher_seed_flow_and_state_values() {
+        let result = br#"{
+          "schema":"trace-ui/angr-ollvm-v1",
+          "moduleName":"libtarget.so",
+          "binarySha256":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          "mappedBase":"0x400000",
+          "architecture":"AARCH64",
+          "angrVersion":"9.2",
+          "cfgKind":"CFGFast",
+          "fridaSeed":{
+            "sourceEventIndex":7,
+            "hookId":"dispatcher-probe",
+            "moduleName":"libtarget.so",
+            "functionName":"dispatcher-probe",
+            "captureOffset":"0x80",
+            "registersSeeded":["x8"],
+            "memoryRegionCount":0,
+            "matchedProbeOffsets":["0x80"],
+            "matchedDispatcherOffsets":["0x80"]
+          },
+          "flowConfig":{"enabled":true,"maxDepth":8,"maxStatesPerProbe":32},
+          "blocks":[],
+          "branchProbes":[],
+          "dispatcherProbes":[{
+            "offset":"0x80",
+            "status":"dispatcher_flow_explored",
+            "seedKind":"frida-capture-exact-dispatcher",
+            "sourceEventIndex":7,
+            "sourceOffset":"0x80",
+            "seededRegisters":["X8"],
+            "seededMemoryRegions":[],
+            "stateRegisters":["X8"],
+            "sourceStateValues":[{"register":"X8","status":"concrete","value":"0x1","alternatives":[]}],
+            "flowExploration":{
+              "maxDepth":8,
+              "maxStates":32,
+              "exploredStates":2,
+              "truncated":false,
+              "paths":[{
+                "status":"dispatcher-hit",
+                "offsets":["0x80","0x120"],
+                "jumpKinds":["Ijk_Boring"],
+                "terminalAddress":"0x400120",
+                "terminalOffset":"0x120",
+                "matchedDispatcherOffset":"0x120",
+                "dispatcherStateValues":[{"register":"X9","status":"symbolic","alternatives":["0x2","0x3"]}],
+                "constraintCount":1,
+                "constraints":["x8 == 1"]
+              }],
+              "limitation":"Candidate only"
+            },
+            "limitation":"Candidate only"
+          }],
+          "warnings":[]
+        }"#;
+        let parsed = parse_angr_ollvm_result_bundle(result).unwrap();
+        let probe = &parsed.dispatcher_probes[0];
+        assert_eq!(probe.source_state_values[0].value.as_deref(), Some("0x1"));
+        let path = &probe.flow_exploration.as_ref().unwrap().paths[0];
+        assert_eq!(path.matched_dispatcher_offset.as_deref(), Some("0x120"));
+        assert_eq!(path.dispatcher_state_values[0].alternatives.len(), 2);
     }
 
     #[test]

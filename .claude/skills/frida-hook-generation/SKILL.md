@@ -27,10 +27,11 @@ Use `mcp__trace-ui__list_frida_hook_recipes`, `mcp__trace-ui__generate_frida_hoo
    text re-encoding is weaker evidence.
 9. When angr initialization is requested, run `generate_angr_state_seed` for that event. Keep SP
    opt-in and explain that heap/stack addresses are process-specific.
-10. For an OLLVM branch probe, generate the Hook at the reported branch or condition-source module
-    offset, select its `hook-enter` event, and pass `frida_capture_path` plus `frida_event_index` to
-    `generate_angr_ollvm_script`. Do not bypass an exact-offset mismatch. When post-branch flow is the
-    question, retain bounded seeded-flow and keep its depth/state caps small; the user still runs angr manually.
+10. For an OLLVM probe, generate the Hook at the reported branch, condition-source, or dispatcher
+    `startOffset`, select its `hook-enter` event, and pass `frida_capture_path` plus
+    `frida_event_index` to `generate_angr_ollvm_script`. Do not bypass an exact-offset mismatch. Retain
+    bounded seeded-flow for post-branch continuation or next-dispatcher exploration, keep depth/state
+    caps small, and leave both Frida and angr execution to the user.
 
 ## Request fields
 
@@ -62,9 +63,10 @@ Use `mcp__trace-ui__list_frida_hook_recipes`, `mcp__trace-ui__generate_frida_hoo
 - Match `moduleBase/moduleSize` and the exact binary build before trusting pointer rebasing.
 - A function-entry capture is not automatically valid state for a later opaque branch. Match capture
   point semantics before using a seed in a blank-state branch probe.
-- For OLLVM handoff, require the captured module-relative target to equal the candidate branch offset
-  or one of its recorded condition-source offsets. Exact matching prevents obvious state-point misuse;
-  it does not prove real-entry reachability or completeness of flags, SIMD, or memory.
+- For OLLVM handoff, require the captured module-relative target to equal the candidate branch offset,
+  one of its recorded condition-source offsets, or a dispatcher `startOffset`. Exact matching prevents
+  obvious state-point misuse; it does not prove real-entry reachability, complete dispatcher recovery,
+  or completeness of flags, SIMD, and memory.
 
 ## Frida 16 boundary
 

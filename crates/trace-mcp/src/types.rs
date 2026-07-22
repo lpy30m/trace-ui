@@ -1164,11 +1164,11 @@ pub struct GenerateAngrOllvmScriptRequest {
     #[serde(default = "default_angr_flow_states")]
     pub flow_max_states_per_probe: u32,
     #[schemars(
-        description = "Optional absolute path to a user-captured trace-ui/frida-hook-v1 file. Must be paired with frida_event_index; Trace UI reads the file but never executes Frida."
+        description = "Optional absolute path to a user-captured trace-ui/frida-hook-v1 file. Must be paired with frida_event_index; Trace UI reads the file but never executes Frida. The exact offset may match an opaque branch, condition source, or dispatcher entry."
     )]
     pub frida_capture_path: Option<String>,
     #[schemars(
-        description = "Normalized hook-enter event index whose exact module-relative offset must match an opaque branch or recorded condition source"
+        description = "Normalized hook-enter event index whose exact module-relative offset must match an opaque branch, recorded condition source, or dispatcher entry"
     )]
     pub frida_event_index: Option<u64>,
     #[schemars(description = "Include captured SP in the embedded Frida seed (default: false)")]

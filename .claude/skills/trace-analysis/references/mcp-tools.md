@@ -108,6 +108,16 @@ Line numbers in taint `@LINE` specs are **1-based**; `start_seq`/`end_seq`/`seq`
   status, SHA-256, and GNU Build ID when available, then reports dispatcher/state-register stability and branch outcomes.
   `alternate-outcomes-observed` is evidence against a global opaque claim; stable single outcomes remain
   Candidate/Related. The result is saved to the first case session.
+- **map_ollvm_versions** `{versions:[{version_id,session_id,node_id?,module_name?,start_seq?,end_seq?,
+  include_child_calls?,static_binary_path}],baseline_version_id?,max_blocks?=1000,max_edges?=3000,
+  max_matches_per_block?=3,min_score?=55}` maps baseline dispatcher candidates across two to eight
+  distinct AArch64 ELF builds. Every version requires an exact ELF and all SHA-256 values must differ;
+  equal hashes are rejected in favor of `compare_ollvm_traces`. Module basenames and offsets may change.
+  It scores bounded normalized operation LCS, terminal family, dynamic predecessor/successor and edge-kind
+  shape, independently ranked dispatcher role, and state-register behavioral roles. Top candidates within
+  five points are marked `ambiguous`. All mappings keep `verificationGateMet:false`; do not reuse source
+  offsets, concrete state values, Frida captures, or angr seeds in another build. The result is saved to
+  the selected baseline session.
 - **generate_ida_ollvm_script** accepts the same scope plus `ida_image_base?` and
   `add_user_xrefs?=false`. It returns IDAPython that applies dynamic comments/colors and can export
   `trace-ui/ida-ollvm-v1` annotations. The user runs it manually in IDA.
@@ -118,21 +128,26 @@ Line numbers in taint `@LINE` specs are **1-based**; `start_seq`/`end_seq`/`seq`
   `explore_seeded_flows?=true`, `flow_max_depth?=8`, `flow_max_states_per_probe?=32`, and optional
   `frida_capture_path`, `frida_event_index`, `frida_include_sp?=false`, `frida_include_lr?=true`.
   The Frida fields must select a user-captured hook-enter event whose module-relative target exactly
-  matches an opaque branch or one of its recorded condition-source offsets; mismatches are rejected.
+  matches an opaque branch, one of its recorded condition-source offsets, or a dispatcher `startOffset`;
+  mismatches are rejected.
   It returns standalone Python that the
   user manually runs against the exact ELF/shared object. The script reconciles angr static CFG
   successors with observed dynamic edges, performs blank-state probes, and performs trace-register-seeded
-  probes when bounded branch snapshots are available. An exact-offset Frida seed adds captured registers
-  and byteArray memory regions as a separate candidate probe. Missing flags, SIMD, memory, or entry-path
-  constraints can still change feasibility. Bounded continuation applies to the first trace seed per
-  candidate and the exact Frida seed, records loop/depth/state/dead-end/external path endings plus the
-  final four bounded constraints per path, and rejects
+  probes when bounded branch snapshots are available. An exact branch/condition-source Frida seed adds
+  captured registers and byteArray memory regions as a separate branch candidate probe. An exact
+  dispatcher-entry seed adds a dispatcher probe whose bounded flow stops at the next dispatcher, loop,
+  external target, dead end, unconstrained state, or configured bound and reports source/target state
+  registers as `concrete`, `symbolic` with at most two alternatives, or `unavailable`. Missing flags,
+  SIMD, memory, or entry-path constraints can still change feasibility. Branch continuation applies to
+  the first trace seed per candidate and exact branch Frida seed; dispatcher continuation is independent
+  of `probe_opaque_branches`. Both record bounded endings and reject
   result JSON that exceeds the configured 1-64 depth or 1-256 state bounds.
   It writes `trace-ui/angr-ollvm-v1` JSON. Trace UI does not install or execute angr.
 - **inspect_angr_ollvm_results** `{file_path}` validates and returns an imported
   `trace-ui/angr-ollvm-v1` bundle, including binary SHA-256, mapped base, CFG kind, unobserved static
-  successors, dynamic-only successors, and optional branch probes. Blank-state probes are candidate
-  evidence and do not prove real-entry reachability.
+  successors, dynamic-only successors, optional branch probes, and optional exact dispatcher-entry
+  probes with bounded paths and state-register values. Blank-state and dispatcher-flow results are
+  candidate evidence and do not prove real-entry reachability or a recovered/deobfuscated CFG.
 
 ## Taint (data-flow slicing)
 

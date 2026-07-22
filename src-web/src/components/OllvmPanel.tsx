@@ -338,7 +338,7 @@ export default function OllvmPanel({ sessionId, onJumpToSeq, onPrepareFridaHook 
     if (instruction) onJumpToSeq(instruction.sampleSeq);
   }, [onJumpToSeq, report]);
 
-  const prepareFridaOffsetHook = useCallback((offset: string, role: "branch" | "condition-source") => {
+  const prepareFridaOffsetHook = useCallback((offset: string, role: "branch" | "condition-source" | "dispatcher") => {
     if (!report) return;
     onPrepareFridaHook({
       sourceLabel: `OLLVM ${role} candidate ${report.scope.moduleName}+${offset}`,
@@ -576,6 +576,7 @@ export default function OllvmPanel({ sessionId, onJumpToSeq, onPrepareFridaHook 
               <span>{candidate.indirectBranchCount} indirect</span>
               <code>{candidate.stateRegisters.join(", ") || "no state register"}</code>
               <span>{candidate.stateSnapshots.length} states / {candidate.stateTransitions.length} transitions</span>
+              <button type="button" style={buttonStyle} onClick={() => prepareFridaOffsetHook(candidate.startOffset, "dispatcher")}>Prepare dispatcher Hook</button>
               <span style={{ flex: 1, color: "var(--text-secondary)" }}>{candidate.rationale}</span>
             </div>
           ))}
@@ -945,7 +946,7 @@ export default function OllvmPanel({ sessionId, onJumpToSeq, onPrepareFridaHook 
               </div>
             </div>
             <div style={{ marginTop: 6, color: "var(--text-tertiary)", lineHeight: 1.4 }}>
-              Flow continuation applies only to the first trace-register seed per candidate and an exact-offset Frida seed. Blank-state probes remain single-step.
+              Branch continuation applies to the first trace-register seed and exact branch/condition Frida seed. An exact dispatcher-entry seed instead explores bounded paths until another dispatcher, loop, exit, or configured limit. Blank-state probes remain single-step.
             </div>
             <div style={{ marginTop: 10, paddingTop: 9, borderTop: "1px solid var(--border-color)" }}>
               <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
@@ -955,7 +956,7 @@ export default function OllvmPanel({ sessionId, onJumpToSeq, onPrepareFridaHook 
                 <button type="button" style={{ ...buttonStyle, opacity: angrFridaBundle ? 1 : 0.5 }} disabled={!angrFridaBundle} onClick={clearAngrFridaCapture}>Clear</button>
               </div>
               <div style={{ marginTop: 5, color: "var(--text-tertiary)", lineHeight: 1.4 }}>
-                The selected hook-enter target must exactly match an opaque branch or its recorded condition-source module offset. Trace UI embeds the seed but never runs Frida or angr.
+                The selected hook-enter target must exactly match an opaque branch, recorded condition-source, or dispatcher-entry module offset. Trace UI embeds the seed but never runs Frida or angr.
               </div>
               {angrFridaBundle && (
                 <div style={{ marginTop: 7 }}>
@@ -980,6 +981,7 @@ export default function OllvmPanel({ sessionId, onJumpToSeq, onPrepareFridaHook 
                 <div style={{ marginTop: 7, padding: 7, border: "1px solid #d29922", borderRadius: 4, background: "var(--bg-secondary)", lineHeight: 1.4 }}>
                   <strong>Embedded Candidate seed</strong>
                   <div><code>{angrScript.fridaSeed.captureOffset}</code> → {angrScript.fridaSeed.matchedProbeOffsets.join(", ")}</div>
+                  {angrScript.fridaSeed.matchedDispatcherOffsets.length > 0 && <div>Dispatcher entry: {angrScript.fridaSeed.matchedDispatcherOffsets.join(", ")}</div>}
                   <div>{angrScript.fridaSeed.registersSeeded.length} registers · {angrScript.fridaSeed.memoryRegionCount} memory regions · event #{angrScript.fridaSeed.sourceEventIndex}</div>
                 </div>
               )}
@@ -1000,8 +1002,8 @@ export default function OllvmPanel({ sessionId, onJumpToSeq, onPrepareFridaHook 
                 <strong>{angrResults.cfgKind} / angr {angrResults.angrVersion}</strong>
                 <div>{angrResults.architecture} mapped at {angrResults.mappedBase}</div>
                 <div title={angrResults.binarySha256} style={{ overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>SHA-256 {angrResults.binarySha256}</div>
-                <div>{angrResults.blocks.length} blocks / {angrResults.branchProbes.length} probes</div>
-                {angrResults.flowConfig?.enabled && <div>{angrResults.branchProbes.filter(probe => probe.flowExploration).length} bounded flows / depth {angrResults.flowConfig.maxDepth} / {angrResults.flowConfig.maxStatesPerProbe} states each</div>}
+                <div>{angrResults.blocks.length} blocks / {angrResults.branchProbes.length} branch probes / {angrResults.dispatcherProbes.length} dispatcher probes</div>
+                {angrResults.flowConfig?.enabled && <div>{angrResults.branchProbes.filter(probe => probe.flowExploration).length + angrResults.dispatcherProbes.filter(probe => probe.flowExploration).length} bounded flows / depth {angrResults.flowConfig.maxDepth} / {angrResults.flowConfig.maxStatesPerProbe} states each</div>}
                 {angrResults.fridaSeed && <div>Frida event #{angrResults.fridaSeed.sourceEventIndex} at {angrResults.fridaSeed.captureOffset} → {angrResults.fridaSeed.matchedProbeOffsets.join(", ")}</div>}
               </div>
             )}
@@ -1025,6 +1027,50 @@ export default function OllvmPanel({ sessionId, onJumpToSeq, onPrepareFridaHook 
                   <span style={{ color: "var(--text-secondary)", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
                     {block.functionName || ""} {block.unobservedStaticSuccessors.length ? `unseen: ${block.unobservedStaticSuccessors.join(", ")}` : ""}
                   </span>
+                </div>
+              ))}
+              {angrResults.dispatcherProbes.length > 0 && (
+                <div style={{ padding: "9px 10px", borderBottom: "1px solid var(--border-color)", fontWeight: 600 }}>Exact dispatcher-entry Frida probes</div>
+              )}
+              {angrResults.dispatcherProbes.map(probe => (
+                <div key={`dispatcher-${probe.offset}-${probe.sourceEventIndex}`} style={{ padding: "7px 8px", borderBottom: "1px solid var(--border-color)" }}>
+                  <div style={{ display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap" }}>
+                    <button type="button" style={buttonStyle} onClick={() => jumpOffset(probe.offset)}>{probe.offset}</button>
+                    <code>{probe.status}</code>
+                    <span>Frida event #{probe.sourceEventIndex}</span>
+                    {probe.seededRegisters.length > 0 && <code>{probe.seededRegisters.join(", ")}</code>}
+                    {probe.seededMemoryRegions.length > 0 && <span>{probe.seededMemoryRegions.length} memory regions</span>}
+                    {probe.sourceStateValues.map(value => (
+                      <code key={`${probe.offset}-source-${value.register}`} title={value.alternatives.join(", ")}>
+                        {value.register}={value.value || value.status}
+                      </code>
+                    ))}
+                    {probe.error && <span style={{ color: "#e5484d" }}>{probe.error}</span>}
+                  </div>
+                  <div style={{ marginTop: 4, paddingLeft: 108, color: "var(--text-secondary)" }}>{probe.limitation}</div>
+                  {probe.flowExploration && (
+                    <details style={{ marginTop: 6, marginLeft: 108 }} open>
+                      <summary style={{ cursor: "pointer", color: probe.flowExploration.truncated ? "#d29922" : "#3fb950" }}>
+                        {probe.flowExploration.paths.length} bounded paths / {probe.flowExploration.exploredStates} states{probe.flowExploration.truncated ? " / truncated" : ""}
+                      </summary>
+                      <div style={{ marginTop: 5, color: "var(--text-tertiary)" }}>{probe.flowExploration.limitation}</div>
+                      {probe.flowExploration.paths.map((path, pathIndex) => (
+                        <div key={`${probe.offset}-dispatcher-flow-${pathIndex}`} style={{ display: "grid", gridTemplateColumns: "120px minmax(180px, 1fr) minmax(160px, 0.8fr) 90px", gap: 7, alignItems: "center", marginTop: 5, padding: "4px 6px", background: "var(--bg-secondary)", borderRadius: 3 }}>
+                          <code title={path.constraints.join("\n")}>{path.status} · {path.constraintCount}c</code>
+                          <span title={path.offsets.join(" -> ")} style={{ overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{path.offsets.join(" -> ") || path.terminalAddress}</span>
+                          <span style={{ overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+                            {path.dispatcherStateValues.map(value => `${value.register}=${value.value || value.status}${value.alternatives.length ? `(${value.alternatives.join("|")})` : ""}`).join(", ") || "no concrete target state"}
+                          </span>
+                          {path.matchedDispatcherOffset
+                            ? <button type="button" style={buttonStyle} onClick={() => jumpOffset(path.matchedDispatcherOffset!)}>{path.matchedDispatcherOffset}</button>
+                            : path.terminalOffset
+                              ? <button type="button" style={buttonStyle} onClick={() => jumpOffset(path.terminalOffset!)}>{path.terminalOffset}</button>
+                              : <code>{path.terminalAddress}</code>}
+                          {path.error && <span style={{ gridColumn: "1 / -1", color: "#e5484d" }}>{path.error}</span>}
+                        </div>
+                      ))}
+                    </details>
+                  )}
                 </div>
               ))}
               {angrResults.branchProbes.length > 0 && (

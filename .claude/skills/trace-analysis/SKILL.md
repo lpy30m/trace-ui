@@ -5,9 +5,9 @@ description: >
   Use for native/.so reverse engineering, crypto key/IV/nonce/salt/material identification,
   MD5/SHA/HMAC/PBKDF2 input matching, backward or forward taint, function I/O inspection, cross-run
   diffing, static ELF-to-trace table reconciliation, software/table-driven/obfuscated/white-box crypto
-  classification, Frida 16 hook generation/capture import, angr state seeding, and dynamic IDA/angr/OLLVM analysis. Trigger on requests
+  classification, Frida 16 hook generation/capture import, angr state seeding, dynamic IDA/angr/OLLVM analysis, and cross-version dispatcher/state structural mapping. Trigger on requests
   such as analyze this trace, reverse this native function, inspect this .so with its trace, find the key
-  or algorithm, isolate a salt, generate a Frida hook, inspect OLLVM, where did this value come from, or
+  or algorithm, isolate a salt, generate a Frida hook, inspect OLLVM, map OLLVM across versions, where did this value come from, or
   分析 trace / 逆向 so / 污点 / 加密分析 / Frida hook / OLLVM.
 ---
 
@@ -116,15 +116,17 @@ Then `generate_ida_ollvm_script` for manual execution in IDA. Inspect exported
 `trace-ui/ida-ollvm-v1` JSON with `inspect_ida_annotations`. Dispatcher and opaque-branch findings remain
 dynamic candidates; unexecuted paths are unknown. For the full workflow, use `$ida-ollvm-analysis`.
 
-**"Reconcile this OLLVM trace with angr or probe an opaque branch."**
+**"Reconcile this OLLVM trace with angr or probe an opaque branch/dispatcher."**
 → `analyze_ollvm` on a narrow call-tree node/range, then `generate_angr_ollvm_script`. Give the
 generated Python to the user for manual execution against the exact ELF/shared object. Inspect the
 resulting `trace-ui/angr-ollvm-v1` JSON with `inspect_angr_ollvm_results`. CFGFast/CFGEmulated
 differences, blank-state probes, and automatically emitted trace-register-seeded probes are candidate
-evidence only. For a user-captured Frida seed, generate the Hook at the candidate branch or reported
-condition-source offset, then pass `frida_capture_path` and the exact `hook-enter` event index. The
-generator rejects module/offset mismatches and embeds captured GPR/memory as a separate candidate probe.
-Missing flags, SIMD, memory, and entry-path state still prevent Verified classification. For the full workflow, use
+evidence only. For a user-captured Frida seed, generate the Hook at the candidate branch, reported
+condition-source offset, or dispatcher `startOffset`, then pass `frida_capture_path` and the exact
+`hook-enter` event index. The generator rejects module/offset mismatches and embeds captured GPR/memory
+as a separate candidate probe. A dispatcher-entry seed can stop at the next dispatcher/loop/exit/bound
+and return target state-register values as concrete/symbolic/unavailable candidates. Missing flags,
+SIMD, memory, and entry-path state still prevent Verified classification. For the full workflow, use
 `$ida-ollvm-analysis`.
 Keep bounded seeded-flow enabled to continue the first trace-register seed and exact Frida seed when
 the question is the post-branch execution flow. Interpret loop/depth/state/dead-end/external endings as
@@ -136,6 +138,13 @@ Candidate/Related leads; depth/state limits explicitly mean incomplete explorati
 values are rejected. Treat `alternate-outcomes-observed` as evidence against patching the branch as globally opaque.
 `stable-single-outcome-across-runs` raises confidence only to Candidate/Related because untested states
 and unexecuted paths remain unknown.
+
+**"Where did this dispatcher move in another binary version?"**
+→ open two to eight version-specific traces, then call `map_ollvm_versions` with a unique `version_id`,
+narrow scope, and exact AArch64 `static_binary_path` for every version. SHA-256 values must all differ;
+use `compare_ollvm_traces` when hashes match. Review operation-sequence, dynamic CFG, dispatcher-role,
+and state-register-role scores plus the `ambiguous` flag. Treat every mapping as Candidate/Related and
+regenerate exact-offset Frida 16 Hooks and angr seeds separately for each build.
 
 **"Is this a real white-box/key-fused implementation?"**
 → Do not decide from one trace or one table. Run `analyze_crypto_implementations` with the exact ELF,
@@ -187,7 +196,7 @@ recomputes to a known digest.
 | Functions | `analyze_function` (node_id / name / list) |
 | Diff | `compare_traces`, `start_trace_diff` |
 | Frida | `list_frida_hook_recipes`, `generate_frida_hook`, `inspect_frida_capture`, `analyze_frida_crypto_materials`, `generate_angr_state_seed` (user executes hooks manually) |
-| IDA / angr / OLLVM | `analyze_ollvm`, `compare_ollvm_traces`, `generate_ida_ollvm_script`, `inspect_ida_annotations`, `generate_angr_ollvm_script`, `inspect_angr_ollvm_results` |
+| IDA / angr / OLLVM | `analyze_ollvm`, `compare_ollvm_traces`, `map_ollvm_versions`, `generate_ida_ollvm_script`, `inspect_ida_annotations`, `generate_angr_ollvm_script`, `inspect_angr_ollvm_results` |
 | Orchestration | `auto_investigate`, `start_auto_investigation`, `start_crypto_investigation` |
 | Evidence store | `list_analyses`, `get_analysis`, `compare_analyses`, `export_analysis_report`, `delete_analysis` |
 | Recipes | `list_analysis_recipes`, `run_analysis_recipe`, `save_analysis_recipe`, `delete_analysis_recipe` |

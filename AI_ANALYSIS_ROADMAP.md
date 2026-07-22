@@ -39,6 +39,7 @@
 - [x] OLLVM Exact ELF Identity：多运行 case 可绑定 ELF，校验 SHA-256/Build ID，拒绝不同二进制之间的 module-offset 对齐。
 - [x] Frida → angr OLLVM Exact-offset Seed：从 branch/condition-source 生成 Frida 16 候选 Hook 配置，导入用户手动捕获的完整 ARM64 GPR/buffer 状态，并仅在 module-relative offset 精确匹配时嵌入 symbolic probe。
 - [x] angr OLLVM Bounded Seeded Flow：从首个 trace-register seed 与 exact-offset Frida seed 继续有界 symbolic exploration，限制深度/状态数并回导路径、循环、截断和终点证据。
+- [x] Frida Dispatcher-entry → angr Next-dispatcher Flow：从 dispatcher `startOffset` 生成 Frida 16 候选 Hook，由用户手动捕获精确入口状态；angr 有界探索下一 dispatcher/循环/退出并回导 state-register concrete/symbolic/unavailable 候选值，始终保持 Candidate/Related。
 
 ## 3. 当前限制
 
