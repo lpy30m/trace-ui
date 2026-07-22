@@ -62,7 +62,8 @@ Use `mcp__trace-ui__list_frida_hook_recipes`, `mcp__trace-ui__generate_frida_hoo
 - Treat `length`, `length_arg`, and `length_pointer_arg` as mutually exclusive.
 - Do not treat JNI references such as `jbyteArray` as native byte pointers. Require a native buffer boundary or a separate Java-layer hook instead.
 - With `capture_registers:true`, expect X0-X28, FP/LR/SP/PC, and best-effort NZCV from the Frida 16
-  ARM64 context. Argument buffer decoding remains limited to X0-X7.
+  ARM64 context. Argument buffer decoding remains limited to X0-X7. The generated angr state seed
+  preserves NZCV and attempts packed `state.regs.nzcv` first, with an explicit N/Z/C/V fallback.
 - Default Stalker to `off`. Enable `calls` first; use `blocks` or `instructions` only for a narrow function and bounded duration.
 - Treat invalid pointers, unreadable memory, and truncated captures as expected runtime conditions.
 - Prefer `byteArray` captures for angr memory seeds. Re-encoded UTF-8/UTF-16 strings do not preserve

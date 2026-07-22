@@ -1248,6 +1248,25 @@ pub fn generate_angr_state_seed(
             }
         }
     }
+    if let Some((_, value)) = event
+        .registers
+        .iter()
+        .find(|(name, _)| name.eq_ignore_ascii_case("nzcv"))
+    {
+        if let Ok(parsed) = parse_hex_addr(value) {
+            register_lines.push(format!("    _trace_ui_set_nzcv(state, 0x{parsed:x})"));
+            registers_seeded.push("nzcv".to_string());
+            registers.push(AngrSeedRegister {
+                name: "nzcv".to_string(),
+                value: format!("0x{parsed:x}"),
+            });
+            warnings.push(
+                "NZCV was seeded from the Frida ARM64 context; verify that the capture point and angr instruction semantics use the same flags state.".to_string(),
+            );
+        } else {
+            warnings.push(format!("Ignored non-address register nzcv={value}."));
+        }
+    }
     if let Some(value) = event.registers.get("fp") {
         if let Ok(parsed) = parse_hex_addr(value) {
             register_lines.push(format!(
@@ -1419,6 +1438,11 @@ pub fn generate_angr_state_seed(
             .map(|value| format!("0x{value:x}"))
             .unwrap_or_else(|| "None".to_string()),
     );
+    let nzcv_helper = "\ndef _trace_ui_set_nzcv(state, value):\n    \"\"\"Seed packed AArch64 NZCV, with a conservative per-flag fallback.\"\"\"\n    try:\n        state.regs.nzcv = value\n        return\n    except Exception:\n        pass\n    wrote = False\n    for name, bit in ((\"n\", 31), (\"z\", 30), (\"c\", 29), (\"v\", 28)):\n        try:\n            setattr(state.regs, name, (value >> bit) & 1)\n            wrote = True\n        except Exception:\n            pass\n    if not wrote:\n        raise RuntimeError(\"angr architecture exposes neither packed nzcv nor individual N/Z/C/V flags\")\n";
+    script = script.replace(
+        "\ndef configure_state(state):\n",
+        &format!("{nzcv_helper}\ndef configure_state(state):\n"),
+    );
     if !register_lines.is_empty() {
         script.push_str("    # Registers captured at the selected hook event\n");
         script.push_str(&register_lines.join("\n"));
@@ -1459,7 +1483,7 @@ mod tests {
     fn sample_capture() -> Vec<u8> {
         br#"[
           {"type":"send","payload":{"protocol":"trace-ui/frida-hook-v1","hookId":"target","event":"hook-ready","functionName":"target","timestampMs":1,"threadId":7,"module":"libtarget.so","moduleBase":"0x71000000","moduleSize":4096,"target":"0x71000100"}},
-          {"type":"send","payload":{"protocol":"trace-ui/frida-hook-v1","hookId":"target","event":"hook-enter","functionName":"target","timestampMs":2,"threadId":7,"registers":{"x0":"0x71000200","x1":"0x90000000","x8":"0x88","fp":"0x71000340","sp":"0xa0000000","lr":"0x71000300","pc":"0x71000100"},"captures":[{"index":1,"label":"key","kind":"byteArray","direction":"input","phase":"enter","pointer":"0x90000000","value":"00112233","byteLength":4,"requestedLength":4}]}},
+          {"type":"send","payload":{"protocol":"trace-ui/frida-hook-v1","hookId":"target","event":"hook-enter","functionName":"target","timestampMs":2,"threadId":7,"registers":{"x0":"0x71000200","x1":"0x90000000","x8":"0x88","fp":"0x71000340","sp":"0xa0000000","lr":"0x71000300","pc":"0x71000100","nzcv":"0x60000000"},"captures":[{"index":1,"label":"key","kind":"byteArray","direction":"input","phase":"enter","pointer":"0x90000000","value":"00112233","byteLength":4,"requestedLength":4}]}},
           {"type":"send","payload":{"protocol":"trace-ui/frida-hook-v1","hookId":"target","event":"stalker-events","functionName":"target","timestampMs":3,"threadId":7,"mode":"blocks","events":[["block","0x1","0x2"]]}},
           {"type":"send","payload":{"protocol":"trace-ui/frida-hook-v1","hookId":"target","event":"hook-leave","functionName":"target","timestampMs":4,"threadId":7,"returnValue":"0x1","captures":[]}}
         ]"#
@@ -1511,6 +1535,9 @@ TRACE_UI_JSON {"protocol":"trace-ui/frida-hook-v1","eventId":"one:event:2","hook
         assert!(seed.script.contains("state.regs.x8"));
         assert!(seed.script.contains("state.regs.x29"));
         assert!(seed.script.contains("state.regs.x30"));
+        assert!(seed
+            .script
+            .contains("_trace_ui_set_nzcv(state, 0x60000000)"));
         assert!(!seed.script.contains("state.regs.pc"));
         assert!(!seed.script.contains("state.regs.sp"));
         assert!(seed.script.contains("bytes.fromhex(\"00112233\")"));
@@ -1518,6 +1545,10 @@ TRACE_UI_JSON {"protocol":"trace-ui/frida-hook-v1","eventId":"one:event:2","hook
         assert_eq!(seed.source_event, "hook-enter");
         assert_eq!(seed.capture_offset.as_deref(), Some("0x100"));
         assert!(seed.registers.iter().any(|register| register.name == "x8"));
+        assert!(seed
+            .registers
+            .iter()
+            .any(|register| register.name == "nzcv"));
         assert_eq!(seed.memory_regions.len(), 1);
     }
 

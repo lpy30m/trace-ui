@@ -6,6 +6,7 @@
 - 新增 **Frida 16 Hook Generator**：按 module export 或 module-relative offset 生成 X0-X7、SP/LR/PC、buffer/string、return、backtrace、Stalker 脚本，事件协议为 `trace-ui/frida-hook-v1`。产品边界固定为“只生成/保存脚本”，用户自行 attach、spawn、load 和执行 hook。
 - 新增 **Frida 16 Crypto API Recipes**：GUI/MCP 可列出并套用 OpenSSL/BoringSSL 与 Apple CommonCrypto 的 17 个常见 MD5/SHA、EVP、HMAC、PBKDF2、CCCrypt 配方；支持固定长度、X0-X7 长度寄存器和返回时 `*Xn` u32 输出长度。ABI 无法证明的算法、PRF、IV/栈参数均保留警告，长度指针读取失败不会降级为最大缓冲区读取。
 - 新增 **Frida Capture Import / angr State Seed**：导入用户手动捕获的 JSON/NDJSON/`TRACE_UI_JSON` CLI 日志，规范化 callId/module mapping，查看 registers/buffers/return/backtrace/Stalker batches，并生成 `trace-ui/angr-state-seed-v1` 的 `configure_state(state)`。
+- 增强 **Frida → angr NZCV state handoff**：从 ARM64 Frida capture 读取 packed `NZCV`，写入 standalone angr seed 和 OLLVM bridge；如果 angr 架构没有 packed `nzcv`，生成脚本会尝试 N/Z/C/V 单独寄存器并保留 warning。Flags 与寄存器/内存一样仍需匹配捕获点语义，不能单独证明 opaque branch 可达。
 - 新增 **Frida Capture Crypto Materials**：按 callId 索引 key/password/salt/IV/nonce/AAD/tag/input/output/digest/MAC/KDF 候选，并对完整捕获的 MD5/SHA、HMAC、PBKDF2 做受限确定性重算；标签推断保持 Related。
 - 增强 **IDA / OLLVM**：动态 CFG、dispatcher/opaque branch 候选评分、dispatcher state-register snapshots/transitions、branch register observations、IDAPython 注释/颜色/可选 xrefs，以及 `trace-ui/ida-ollvm-v1` annotations 双向 JSON。所有 OLLVM 结论保持动态候选级。
 - 增强 **OLLVM 多运行矩阵**：`compare_ollvm_traces` 对齐 2–16 个 trace scope 的 module offsets，比较 dispatcher/state-register 稳定性与所有条件分支结果；每个 case 可绑定 exact ELF，默认 GUI 要求完整身份，SHA-256 不一致会拒绝比较，Build ID/哈希写入报告；alternate outcome 会明确反驳全局 opaque 假设。

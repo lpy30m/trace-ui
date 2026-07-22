@@ -78,7 +78,9 @@ Use `mcp__trace-ui__analyze_ollvm`, `mcp__trace-ui__compare_ollvm_traces`, `mcp_
   SIMD, flags, or other architectural state.
 - An embedded Frida probe is emitted only when the hook-enter target exactly matches the candidate
   branch, condition source, or dispatcher entry. It may add X0-X28/FP/LR/SP and byteArray memory, but
-  missing flags, SIMD, unread buffers, or entry-path constraints keep the result Candidate/Related.
+  missing flags, SIMD, unread buffers, or entry-path constraints keep the result Candidate/Related. When
+  Frida provides packed NZCV, the generated angr bridge carries it forward with a packed-register or
+  N/Z/C/V fallback; the capture point still must have branch-equivalent flag semantics.
 - Bounded branch continuation applies only to the first trace-register seed per candidate and an exact
   branch/condition-source Frida seed. An exact dispatcher-entry seed instead explores to the next
   dispatcher, loop, exit, or bound and may report each target state register as `concrete`, `symbolic`

@@ -175,7 +175,7 @@ IDA 脚本中的 `export_ida_annotations()` 可手动导出 `trace-ui/ida-ollvm-
 
 angr 脚本输出 `trace-ui/angr-ollvm-v1` JSON，并记录 exact ELF 的 SHA-256、mapped base、angr 版本和 CFG 类型。Trace UI 只生成/保存脚本和导入结果，不安装或自动执行 angr。
 
-Frida 捕获回导支持 JSON object/array、标准 send envelope、NDJSON 和带前缀的 CLI 日志。选中一次捕获后可生成 `trace-ui/angr-state-seed-v1` Python，填充 X0-X7、可选 SP/LR 和已捕获内存；module 内指针会按 mapped base 重定位，heap/stack 地址仍属于单次进程证据。
+Frida 捕获回导支持 JSON object/array、标准 send envelope、NDJSON 和带前缀的 CLI 日志。选中一次捕获后可生成 `trace-ui/angr-state-seed-v1` Python，填充 X0-X7、X8-X28、可选 SP/LR、可用的 NZCV 和已捕获内存；module 内指针会按 mapped base 重定位，heap/stack 地址仍属于单次进程证据。NZCV 会优先按 AArch64 packed flags 写入 angr，必要时回退到 N/Z/C/V 单独寄存器，仍需人工确认捕获点语义一致。
 
 专用 dispatcher 捕获事件使用同一 `trace-ui/frida-hook-v1` 协议，事件类型为 `ollvm-dispatcher-hit`；`dispatcherOffset` 与 `target/moduleBase` 会交叉校验。该 atlas 是执行样本的结构化索引，不是完整 CFG、自动去平坦化或函数调用边界证明。
 

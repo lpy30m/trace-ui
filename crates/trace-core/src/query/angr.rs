@@ -242,7 +242,7 @@ fn validate_flow_config(config: &AngrOllvmFlowConfig) -> Result<(), String> {
 }
 
 fn allowed_seed_register(name: &str) -> bool {
-    if name == "sp" {
+    if name == "sp" || name == "nzcv" {
         return true;
     }
     name.strip_prefix('x')
@@ -501,6 +501,23 @@ def _mapped_offset(project, address):
     return None
 
 
+def _set_nzcv(state, value):
+    """Seed packed AArch64 NZCV, with a conservative per-flag fallback."""
+    try:
+        state.regs.nzcv = value
+        return True
+    except Exception:
+        pass
+    wrote = False
+    for name, bit in (("n", 31), ("z", 30), ("c", 29), ("v", 28)):
+        try:
+            setattr(state.regs, name, (value >> bit) & 1)
+            wrote = True
+        except Exception:
+            pass
+    return wrote
+
+
 def _successor(project, address, jumpkind=None, satisfiable=None):
     return {
         "address": hex(address),
@@ -583,7 +600,12 @@ def _apply_trace_snapshot(state, snapshot):
     for name, text in snapshot.get("registers", {}).items():
         register_name = name.lower()
         try:
-            setattr(state.regs, register_name, int(text, 16))
+            parsed = int(text, 16)
+            if register_name == "nzcv":
+                if not _set_nzcv(state, parsed):
+                    raise RuntimeError("angr architecture exposes no NZCV flags")
+            else:
+                setattr(state.regs, register_name, parsed)
             seeded.append(name.upper())
         except Exception as error:
             errors.append("{}={}: {}".format(name, text, error))
@@ -611,7 +633,12 @@ def _apply_frida_seed(state):
     for register in FRIDA_SEED.get("registers", []):
         name = register["name"].lower()
         try:
-            setattr(state.regs, name, _frida_rebase(state.project, int(register["value"], 16)))
+            parsed = int(register["value"], 16)
+            if name == "nzcv":
+                if not _set_nzcv(state, parsed):
+                    raise RuntimeError("angr architecture exposes no NZCV flags")
+            else:
+                setattr(state.regs, name, _frida_rebase(state.project, parsed))
             seeded_registers.append(name.upper())
         except Exception as error:
             errors.append("{}={}: {}".format(name, register.get("value"), error))
@@ -1738,10 +1765,16 @@ mod tests {
             capture_offset: Some(capture_offset.to_string()),
             script: "def configure_state(state): return state".to_string(),
             registers_seeded: vec!["x0".to_string()],
-            registers: vec![AngrSeedRegister {
-                name: "x0".to_string(),
-                value: "0x90000000".to_string(),
-            }],
+            registers: vec![
+                AngrSeedRegister {
+                    name: "x0".to_string(),
+                    value: "0x90000000".to_string(),
+                },
+                AngrSeedRegister {
+                    name: "nzcv".to_string(),
+                    value: "0x60000000".to_string(),
+                },
+            ],
             memory_regions: vec![AngrSeedMemoryRegion {
                 address: "0x90000000".to_string(),
                 byte_length: 4,
@@ -1767,6 +1800,7 @@ mod tests {
         assert!(generated.script.contains("_explore_seeded_flow"));
         assert!(generated.script.contains("_probe_dispatcher_with_frida"));
         assert!(generated.script.contains("_explore_dispatcher_flow"));
+        assert!(generated.script.contains("def _set_nzcv(state, value):"));
         assert!(generated
             .script
             .contains("DEFAULT_EXPLORE_SEEDED_FLOWS = True"));
@@ -1796,6 +1830,7 @@ mod tests {
             .script
             .contains("frida-capture-exact-condition-source"));
         assert!(generated.script.contains("00112233"));
+        assert!(generated.script.contains("nzcv"));
         assert!(generated.script.contains("sourceEventIndex"));
 
         let mismatched = sample_frida_seed("0x200");

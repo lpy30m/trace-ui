@@ -105,8 +105,9 @@ Line numbers in taint `@LINE` specs are **1-based**; `start_seq`/`end_seq`/`seq`
   result remains Candidate/Related.
 - **generate_angr_state_seed** `{file_path,event_index,include_sp?=false,include_lr?=true}` returns a
   manual Python `configure_state(state)` function. It rebases pointers inside the captured module and
-  seeds captured byte buffers. Heap/stack addresses remain process-specific, and capture-point
-  mismatch remains a limitation.
+  seeds captured byte buffers and available ARM64 NZCV (packed `state.regs.nzcv`, with N/Z/C/V fallback).
+  Heap/stack addresses remain process-specific, and capture-point/flag-semantic mismatch remains a
+  limitation.
 
 ## IDA / OLLVM
 
