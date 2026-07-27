@@ -1,5 +1,5 @@
 use serde::{Deserialize, Serialize};
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 
 use crate::query::call_tree::CallTree;
 use crate::query::evidence_score::{score_evidence, EvidenceAssessment, EvidenceScoreSignal};
@@ -81,6 +81,32 @@ pub struct SoftwareShapeHit {
     pub class: &'static str,
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum CryptoSoftwareSignal {
+    AesSbox,
+    Aes128KeySchedule,
+    AesSemanticVerification,
+}
+
+impl CryptoSoftwareSignal {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::AesSbox => "AES_SBOX_FINGERPRINT",
+            Self::Aes128KeySchedule => "AES128_KEY_SCHEDULE",
+            Self::AesSemanticVerification => "AES_SEMANTIC_VERIFICATION",
+        }
+    }
+}
+
+#[derive(Clone, Debug)]
+pub struct CryptoSoftwareHit {
+    pub seq: u32,
+    pub signal: CryptoSoftwareSignal,
+    pub table_base: Option<u64>,
+    pub table_index: Option<u8>,
+    pub verification_status: Option<String>,
+}
+
 pub fn software_shape_class(mnemonic: &str) -> Option<&'static str> {
     match mnemonic {
         "eor" | "eor3" | "and" | "ands" | "orr" | "orn" | "bic" | "bics" | "mvn" => Some("boolean"),
@@ -123,6 +149,13 @@ pub struct RawFunctionSignals {
     pub crypto_insn_total: u32,
     pub software_shape_counts: BTreeMap<String, u32>,
     pub software_shape_total: u32,
+    pub software_signal_counts: BTreeMap<String, u32>,
+    pub software_signal_total: u32,
+    pub aes_sbox_distinct_indices: u32,
+    pub aes_sbox_bases: Vec<String>,
+    pub standard_aes128_schedule: bool,
+    pub semantic_aes_verified: bool,
+    pub verification_status: Option<String>,
     pub implementation_hints: Vec<String>,
 }
 
@@ -168,6 +201,11 @@ pub struct CryptoFunctionCandidate {
     pub crypto_insn_total: u32,
     pub software_shape_counts: BTreeMap<String, u32>,
     pub software_shape_total: u32,
+    pub software_signal_counts: BTreeMap<String, u32>,
+    pub software_signal_total: u32,
+    pub aes_sbox_distinct_indices: u32,
+    pub aes_sbox_bases: Vec<String>,
+    pub verification_status: Option<String>,
     pub implementation_hints: Vec<String>,
     pub io: CryptoFunctionIo,
     pub assessment: EvidenceAssessment,
@@ -181,6 +219,7 @@ pub struct CryptoFunctionReport {
     pub functions_with_signals: u32,
     pub magic_hit_count: u32,
     pub crypto_insn_count: u32,
+    pub software_signal_count: u32,
     pub candidates_truncated: bool,
     pub limitations: Vec<String>,
     pub coverage: Vec<String>,
@@ -254,6 +293,13 @@ struct Acc {
     insn_total: u32,
     shape_counts: BTreeMap<String, u32>,
     shape_total: u32,
+    software_counts: BTreeMap<String, u32>,
+    software_total: u32,
+    aes_sbox_indices: BTreeSet<u8>,
+    aes_sbox_bases: BTreeSet<u64>,
+    standard_aes128_schedule: bool,
+    semantic_aes_verified: bool,
+    verification_status: Option<String>,
 }
 
 fn push_unique(v: &mut Vec<String>, s: String) {
@@ -267,6 +313,16 @@ pub fn aggregate_signals(
     magic_hits: &[CryptoMagicHit],
     insn_hits: &[CryptoInsnHit],
     shape_hits: &[SoftwareShapeHit],
+    tree: &CallTree,
+) -> Vec<RawFunctionSignals> {
+    aggregate_all_signals(magic_hits, insn_hits, shape_hits, &[], tree)
+}
+
+pub fn aggregate_all_signals(
+    magic_hits: &[CryptoMagicHit],
+    insn_hits: &[CryptoInsnHit],
+    shape_hits: &[SoftwareShapeHit],
+    software_hits: &[CryptoSoftwareHit],
     tree: &CallTree,
 ) -> Vec<RawFunctionSignals> {
     let mut sorted: Vec<(u32, u32, u32)> = tree
@@ -305,6 +361,45 @@ pub fn aggregate_signals(
             *acc.shape_counts.entry(hit.class.to_string()).or_default() += 1;
         }
     }
+    for hit in software_hits {
+        if let Some(fid) = innermost_from_sorted(&sorted, hit.seq) {
+            let acc = by_func.entry(fid).or_default();
+            acc.software_total = acc.software_total.saturating_add(1);
+            *acc.software_counts
+                .entry(hit.signal.as_str().to_string())
+                .or_default() += 1;
+            push_unique(&mut acc.algorithms, "AES".to_string());
+            push_unique(&mut acc.base_families, "AES".to_string());
+            match hit.signal {
+                CryptoSoftwareSignal::AesSbox => {
+                    if let Some(index) = hit.table_index {
+                        acc.aes_sbox_indices.insert(index);
+                    }
+                    if let Some(base) = hit.table_base {
+                        acc.aes_sbox_bases.insert(base);
+                    }
+                }
+                CryptoSoftwareSignal::Aes128KeySchedule => {
+                    acc.standard_aes128_schedule = true;
+                }
+                CryptoSoftwareSignal::AesSemanticVerification => {
+                    acc.semantic_aes_verified = true;
+                    if let Some(status) = &hit.verification_status {
+                        let rank = |value: &str| match value {
+                            "VerifiedFull" => 3,
+                            "VerifiedPartial" => 2,
+                            "VerifiedBlock" => 1,
+                            _ => 0,
+                        };
+                        if acc.verification_status.as_deref().map(rank).unwrap_or(0) < rank(status)
+                        {
+                            acc.verification_status = Some(status.clone());
+                        }
+                    }
+                }
+            }
+        }
+    }
 
     let mut out = Vec::with_capacity(by_func.len());
     for (fid, acc) in by_func {
@@ -312,7 +407,11 @@ pub fn aggregate_signals(
         let mixing = acc.shape_counts.get("permutation").copied().unwrap_or(0)
             + acc.shape_counts.get("shift").copied().unwrap_or(0);
         let bitsliced_candidate = boolean >= 64 && mixing >= 16 && acc.insn_total == 0;
-        if acc.magic_hits == 0 && acc.insn_total == 0 && !bitsliced_candidate {
+        if acc.magic_hits == 0
+            && acc.insn_total == 0
+            && acc.software_total == 0
+            && !bitsliced_candidate
+        {
             continue;
         }
         let node = match tree.nodes.iter().find(|n| n.id == fid) {
@@ -324,6 +423,14 @@ pub fn aggregate_signals(
         if bitsliced_candidate {
             push_unique(&mut algorithms, "Bitsliced candidate".into());
             implementation_hints.push("BitslicedSoftware".into());
+        }
+        if acc.standard_aes128_schedule || acc.semantic_aes_verified {
+            implementation_hints.push("StandardSoftware".into());
+        } else if acc
+            .software_counts
+            .contains_key(CryptoSoftwareSignal::AesSbox.as_str())
+        {
+            implementation_hints.push("TableDrivenSoftware".into());
         }
         out.push(RawFunctionSignals {
             func_id: node.id,
@@ -340,6 +447,17 @@ pub fn aggregate_signals(
             crypto_insn_total: acc.insn_total,
             software_shape_counts: acc.shape_counts,
             software_shape_total: acc.shape_total,
+            software_signal_counts: acc.software_counts,
+            software_signal_total: acc.software_total,
+            aes_sbox_distinct_indices: acc.aes_sbox_indices.len() as u32,
+            aes_sbox_bases: acc
+                .aes_sbox_bases
+                .into_iter()
+                .map(|base| format!("0x{base:x}"))
+                .collect(),
+            standard_aes128_schedule: acc.standard_aes128_schedule,
+            semantic_aes_verified: acc.semantic_aes_verified,
+            verification_status: acc.verification_status,
             implementation_hints,
         });
     }
@@ -370,9 +488,14 @@ pub fn score_candidate(raw: &RawFunctionSignals) -> EvidenceAssessment {
         .unwrap_or(0)
         + raw.software_shape_counts.get("shift").copied().unwrap_or(0);
     let bitsliced_candidate = boolean_ops >= 64 && mixing_ops >= 16 && !has_insn;
-    // This analyzer only sees structural execution evidence. A verification gate
-    // may be opened only by a semantic analyzer that recomputes observed I/O.
-    let gate = false;
+    let sbox_reads = raw
+        .software_signal_counts
+        .get(CryptoSoftwareSignal::AesSbox.as_str())
+        .copied()
+        .unwrap_or(0);
+    let has_sbox = sbox_reads >= 32 && raw.aes_sbox_distinct_indices >= 16;
+    let broad_sbox = sbox_reads >= 64 && raw.aes_sbox_distinct_indices >= 32;
+    let gate = raw.semantic_aes_verified;
 
     let signals = vec![
         EvidenceScoreSignal::new(
@@ -439,6 +562,40 @@ pub fn score_candidate(raw: &RawFunctionSignals) -> EvidenceAssessment {
             single_constant,
             None,
         ),
+        EvidenceScoreSignal::new(
+            "dynamic_aes_sbox",
+            "Function performs coherent byte-indexed reads from a standard AES S-box.",
+            45,
+            has_sbox,
+            has_sbox.then(|| {
+                format!(
+                    "matching_reads={sbox_reads}, distinct_indices={}, bases={}",
+                    raw.aes_sbox_distinct_indices,
+                    raw.aes_sbox_bases.join(",")
+                )
+            }),
+        ),
+        EvidenceScoreSignal::new(
+            "broad_aes_sbox_coverage",
+            "AES S-box evidence covers many reads and distinct indices.",
+            10,
+            broad_sbox,
+            None,
+        ),
+        EvidenceScoreSignal::new(
+            "standard_aes128_schedule",
+            "Function contains a complete 44-word standard AES-128 key schedule.",
+            60,
+            raw.standard_aes128_schedule,
+            None,
+        ),
+        EvidenceScoreSignal::new(
+            "aes_semantic_recomputation",
+            "Observed key, input, and output bytes recompute exactly as AES.",
+            80,
+            raw.semantic_aes_verified,
+            raw.verification_status.clone(),
+        ),
     ];
 
     score_evidence(
@@ -453,6 +610,8 @@ pub fn score_candidate(raw: &RawFunctionSignals) -> EvidenceAssessment {
             "Function boundaries come from BL/BLR/RET reconstruction and may merge inlined or tail-called code."
                 .to_string(),
             "BitslicedSoftware is a structural candidate only; semantic input/output recomputation is required for algorithm verification."
+                .to_string(),
+            "S-box and key-schedule matches are structural evidence; only exact observed block recomputation opens the verification gate."
                 .to_string(),
         ],
     )
@@ -478,6 +637,11 @@ pub fn finalize_candidate(
         crypto_insn_total: raw.crypto_insn_total,
         software_shape_counts: raw.software_shape_counts,
         software_shape_total: raw.software_shape_total,
+        software_signal_counts: raw.software_signal_counts,
+        software_signal_total: raw.software_signal_total,
+        aes_sbox_distinct_indices: raw.aes_sbox_distinct_indices,
+        aes_sbox_bases: raw.aes_sbox_bases,
+        verification_status: raw.verification_status,
         implementation_hints: raw.implementation_hints,
         io,
         assessment,

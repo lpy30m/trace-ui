@@ -315,6 +315,38 @@ export default function WhiteBoxPanel({ sessionId, onJumpToSeq }: Props) {
               </Section>
             )}
 
+            {((report.aesSboxFingerprints?.length ?? 0) > 0
+              || (report.aesKeySchedules?.length ?? 0) > 0
+              || report.aesSemanticVerification) && (
+              <Section title="动态 AES 证据">
+                {report.aesSboxFingerprints?.map(fingerprint => (
+                  <div key={`${fingerprint.directionCandidate}-${fingerprint.baseAddr}`} style={{ marginBottom: 5, fontSize: 11 }}>
+                    <button type="button" onClick={() => onJumpToSeq(fingerprint.firstSeq)} style={{ marginRight: 6 }}>
+                      {fingerprint.baseAddr}
+                    </button>
+                    <span style={{ color: "var(--text-secondary)" }}>
+                      {fingerprint.directionCandidate} S-box · {fingerprint.matchingReads} reads · {fingerprint.distinctIndices}/256 indices · {(fingerprint.matchRatio * 100).toFixed(1)}%
+                    </span>
+                  </div>
+                ))}
+                {report.aesKeySchedules?.map(schedule => (
+                  <div key={schedule.scheduleAddress} style={{ marginBottom: 5, fontSize: 11 }}>
+                    <button type="button" onClick={() => onJumpToSeq(schedule.startSeq)} style={{ marginRight: 6 }}>
+                      {schedule.scheduleAddress}
+                    </button>
+                    <span style={{ color: "var(--text-secondary)" }}>
+                      AES-{schedule.verification.keyBits} schedule · {schedule.verification.wordsMatched}/{schedule.verification.wordsChecked} words
+                    </span>
+                  </div>
+                ))}
+                {report.aesSemanticVerification && (
+                  <div style={{ fontSize: 11, color: "#3fb950" }}>
+                    {report.aesSemanticVerification.status} · {report.aesSemanticVerification.direction} {report.aesSemanticVerification.mode} · {report.aesSemanticVerification.matchedBlocks}/{report.aesSemanticVerification.blocksChecked} blocks · {report.aesSemanticVerification.byteLen} bytes
+                  </div>
+                )}
+              </Section>
+            )}
+
             <Section title="中性 I/O 候选">
               {report.inputCandidates.map((block, i) => <IoRow key={`in-${i}`} label={`输入候选 ${i + 1}`} block={block} onJumpToSeq={onJumpToSeq} />)}
               {report.outputCandidates.map((block, i) => <IoRow key={`out-${i}`} label={`输出候选 ${i + 1}`} block={block} onJumpToSeq={onJumpToSeq} />)}

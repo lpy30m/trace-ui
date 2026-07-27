@@ -1,9 +1,12 @@
 use crate::error::{Result, TraceError};
 use crate::query::crypto_functions::{
-    aggregate_signals, crypto_insn_family, finalize_candidate, line_might_contain_crypto_insn,
+    aggregate_all_signals, crypto_insn_family, finalize_candidate, line_might_contain_crypto_insn,
     score_candidate, software_shape_class, CryptoCallAnnotation, CryptoFunctionIo,
     CryptoFunctionReport, CryptoFunctionsOptions, CryptoInsnHit, CryptoMagicHit, CryptoRegValue,
-    SoftwareShapeHit,
+    CryptoSoftwareHit, CryptoSoftwareSignal, SoftwareShapeHit,
+};
+use crate::query::software_aes::{
+    detect_dynamic_aes_sboxes, find_aes128_schedules, verify_observed_aes128_ecb, MemAccess,
 };
 use trace_parser::types::TraceFormat;
 use trace_parser::{gumtrace as gumtrace_parser, parser};
@@ -206,7 +209,70 @@ impl super::TraceEngine {
             };
 
         // 3+4. 聚合 + 评分
-        let raws = aggregate_signals(&magic_hits, &insn_hits, &shape_hits, &call_tree);
+        let (memory_reads, mut memory_writes) = {
+            let state = handle
+                .state
+                .read()
+                .map_err(|e| TraceError::Internal(e.to_string()))?;
+            let view = state.mem_accesses_view().ok_or(TraceError::IndexNotReady)?;
+            let mut reads = Vec::new();
+            let mut writes = Vec::new();
+            for (addr, record) in view.iter_all() {
+                let access = MemAccess {
+                    seq: record.seq,
+                    insn_addr: record.insn_addr,
+                    addr,
+                    value: record.data,
+                    size: record.size,
+                };
+                if record.is_read() {
+                    reads.push(access);
+                } else {
+                    writes.push(access);
+                }
+            }
+            (reads, writes)
+        };
+        memory_writes.extend(crate::query::software_crypto::raw_gumtrace_writes(data));
+        let sbox_scan = detect_dynamic_aes_sboxes(&memory_reads);
+        let schedules = find_aes128_schedules(&memory_writes);
+        let semantic_verification =
+            verify_observed_aes128_ecb(&memory_reads, &memory_writes, &schedules);
+        let mut software_hits = sbox_scan
+            .matches
+            .iter()
+            .map(|hit| CryptoSoftwareHit {
+                seq: hit.seq,
+                signal: CryptoSoftwareSignal::AesSbox,
+                table_base: Some(hit.table_base),
+                table_index: Some(hit.index),
+                verification_status: None,
+            })
+            .collect::<Vec<_>>();
+        software_hits.extend(schedules.iter().map(|schedule| CryptoSoftwareHit {
+            seq: schedule.start_seq,
+            signal: CryptoSoftwareSignal::Aes128KeySchedule,
+            table_base: None,
+            table_index: None,
+            verification_status: None,
+        }));
+        if let Some(verification) = &semantic_verification {
+            software_hits.push(CryptoSoftwareHit {
+                seq: verification.first_input_seq,
+                signal: CryptoSoftwareSignal::AesSemanticVerification,
+                table_base: None,
+                table_index: None,
+                verification_status: Some(verification.status.clone()),
+            });
+        }
+
+        let raws = aggregate_all_signals(
+            &magic_hits,
+            &insn_hits,
+            &shape_hits,
+            &software_hits,
+            &call_tree,
+        );
         let functions_with_signals = raws.len() as u32;
         let mut scored: Vec<_> = raws
             .into_iter()
@@ -220,6 +286,7 @@ impl super::TraceEngine {
             b.1.score
                 .cmp(&a.1.score)
                 .then(b.0.crypto_insn_total.cmp(&a.0.crypto_insn_total))
+                .then(b.0.software_signal_total.cmp(&a.0.software_signal_total))
                 .then(a.0.entry_seq.cmp(&b.0.entry_seq))
         });
 
@@ -236,11 +303,13 @@ impl super::TraceEngine {
             functions_with_signals,
             magic_hit_count: magic_hits.len() as u32,
             crypto_insn_count: insn_hits.len() as u32,
+            software_signal_count: software_hits.len() as u32,
             candidates_truncated: false,
             limitations: vec![
                 "Only executed instructions recorded in the trace are analyzed.".to_string(),
                 "Magic-constant hits are substring matches over line text and can be coincidental; confidence weighs corroborating signals.".to_string(),
                 "Dedicated crypto instructions are strong evidence but absent from software (table-based) implementations.".to_string(),
+                "Standard AES S-box and key-schedule matches are structural evidence; exact observed block recomputation is required for verified classification.".to_string(),
                 "Entry X0-X7 and return X0 are read from register checkpoints at function entry/exit and may not all be live arguments.".to_string(),
             ],
             coverage: vec![
@@ -248,9 +317,11 @@ impl super::TraceEngine {
                 "Configured magic constants in executed trace text".to_string(),
                 "Function-scoped aggregation of those signals".to_string(),
                 "Function-scoped boolean/permutation/shift shape analysis for bitsliced candidates".to_string(),
+                "Dynamic AES S-box and standard key-schedule fingerprinting".to_string(),
+                "Exact AES key/input/output semantic recomputation".to_string(),
             ],
             zero_result_explanation: (functions_with_signals == 0).then(||
-                "No dedicated crypto instructions or configured magic constants were observed. This does not exclude software, table-driven, bitsliced, obfuscated, or white-box implementations. Run the software crypto structural analyzer.".to_string()
+                "No dedicated crypto instructions, configured magic constants, coherent software shapes, or verified software-AES memory structures were observed. This does not exclude unexecuted or unsupported crypto implementations.".to_string()
             ),
         };
 

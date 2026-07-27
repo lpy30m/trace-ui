@@ -5,6 +5,7 @@
 - 前端安全与工作流收尾：Crypto Materials 和 Frida 材料索引默认遮罩 key/salt/digest 等完整字节，改为每条材料独立显示/隐藏；Frida 捕获列表支持元数据搜索、事件类型和 payload 筛选，并使用 `useVirtualizerNoSync` 虚拟滚动；Crypto 子页面按首次访问懒加载并保持已访问页签状态；Frida/OLLVM 页面提示所有脚本由用户手动执行；不支持独立窗口的页签已禁用拖出；`npm run check:ui-guards` 与 `npm run test:ui` 防止自动 Frida 行为、空浮动面板、关键旧文案和核心交互回归。
 
 - 新增 **Crypto Material Explorer**：统一索引 raw/derived key、password、salt、IV、nonce、counter、plaintext/ciphertext、digest/MAC、AAD、tag；支持 AES、MD5/SHA、HMAC、PBKDF2 确定性复算和跨 trace salt/nonce 候选隔离。
+- 软件 AES 分析补充动态内存证据：标准 S-box 地址/值指纹、AES-128 44-word 展开密钥验证、连续 input/output 重建和逐 block 语义复算；无 API 注释的 GumTrace 也可进入 Verified，现有 CBC/CTR/GCM 与 Crypto Materials/Frida/OLLVM 工作流保持不变。
 - 新增 **Frida 16 Hook Generator**：按 module export 或 module-relative offset 生成 X0-X7、SP/LR/PC、buffer/string、return、backtrace、Stalker 脚本，事件协议为 `trace-ui/frida-hook-v1`。产品边界固定为“只生成/保存脚本”，用户自行 attach、spawn、load 和执行 hook。
 - 新增 **Frida 16 Crypto API Recipes**：GUI/MCP 可列出并套用 OpenSSL/BoringSSL 与 Apple CommonCrypto 的 17 个常见 MD5/SHA、EVP、HMAC、PBKDF2、CCCrypt 配方；支持固定长度、X0-X7 长度寄存器和返回时 `*Xn` u32 输出长度。ABI 无法证明的算法、PRF、IV/栈参数均保留警告，长度指针读取失败不会降级为最大缓冲区读取。
 - 新增 **Frida Capture Import / angr State Seed**：导入用户手动捕获的 JSON/NDJSON/`TRACE_UI_JSON` CLI 日志，规范化 callId/module mapping，查看 registers/buffers/return/backtrace/Stalker batches，并生成 `trace-ui/angr-state-seed-v1` 的 `configure_state(state)`。

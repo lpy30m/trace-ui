@@ -20,6 +20,7 @@ pub mod mem_access;
 pub mod ollvm;
 pub mod registers;
 pub mod slice;
+pub mod software_aes;
 pub mod software_crypto;
 pub mod source_sink;
 pub mod strings;

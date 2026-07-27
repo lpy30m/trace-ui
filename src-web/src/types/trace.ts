@@ -314,6 +314,11 @@ export interface CryptoFunctionCandidate {
   cryptoInsnTotal: number;
   softwareShapeCounts: Record<string, number>;
   softwareShapeTotal: number;
+  softwareSignalCounts?: Record<string, number>;
+  softwareSignalTotal?: number;
+  aesSboxDistinctIndices?: number;
+  aesSboxBases?: string[];
+  verificationStatus?: "VerifiedBlock" | "VerifiedPartial" | "VerifiedFull" | null;
   implementationHints: string[];
   io: CryptoFunctionIo;
   assessment: EvidenceAssessment;
@@ -325,6 +330,7 @@ export interface CryptoFunctionReport {
   functionsWithSignals: number;
   magicHitCount: number;
   cryptoInsnCount: number;
+  softwareSignalCount?: number;
   candidatesTruncated: boolean;
   limitations: string[];
   coverage: string[];
@@ -1322,12 +1328,62 @@ export interface WhiteBoxAlgoVerdict {
   rationale: string;
 }
 
+export interface DynamicAesSboxFingerprint {
+  baseAddr: string;
+  directionCandidate: "Encrypt" | "Decrypt";
+  matchingReads: number;
+  totalReadsInRegion: number;
+  distinctIndices: number;
+  matchRatio: number;
+  firstSeq: number;
+  lastSeq: number;
+  instructionSites: string[];
+}
+
+export interface DynamicAesKeySchedule {
+  scheduleAddress: string;
+  rawKeyHex: string;
+  startSeq: number;
+  endSeq: number;
+  instructionSites: string[];
+  verification: {
+    wordsChecked: number;
+    wordsMatched: number;
+    firstMismatchWord: number | null;
+    keyBits: number;
+    scheduleBytes: number;
+    standardKeySchedule: boolean;
+    partialSchedule: boolean;
+  };
+}
+
+export interface DynamicAesSemanticVerification {
+  status: "VerifiedBlock" | "VerifiedPartial" | "VerifiedFull";
+  algorithm: string;
+  keyBits: number;
+  mode: string;
+  direction: "Encrypt" | "Decrypt";
+  padding: string | null;
+  blocksChecked: number;
+  matchedBlocks: number;
+  allMatched: boolean;
+  fullCallCoverage: boolean;
+  keyScheduleAddress: string;
+  inputAddress: string;
+  outputAddress: string;
+  byteLen: number;
+  firstInputSeq: number;
+  lastInputSeq: number;
+  firstOutputSeq: number;
+  lastOutputSeq: number;
+}
+
 export interface WhiteBoxReport {
   plaintext: WhiteBoxIoBlock | null;
   ciphertext: WhiteBoxIoBlock | null;
   inputCandidates: WhiteBoxIoBlock[];
   outputCandidates: WhiteBoxIoBlock[];
-  implementationKind: "ObfuscatedStandardSoftware" | "TableDrivenSoftware" | "BitslicedSoftware" | "KeyFusedTables" | "Unknown";
+  implementationKind: "StandardSoftware" | "ObfuscatedStandardSoftware" | "TableDrivenSoftware" | "BitslicedSoftware" | "KeyFusedTables" | "Unknown";
   keyExposure: "RawKeyObserved" | "ExpandedScheduleObserved" | "DerivedKeyObserved" | "KeyDependentTablesOnly" | "NotObserved" | "Unknown";
   whiteboxStatus: "NotWhiteBox" | "Candidate" | "Related" | "Verified" | "Unknown";
   tables: WhiteBoxTableRegion[];
@@ -1342,6 +1398,9 @@ export interface WhiteBoxReport {
   assessment: EvidenceAssessment;
   nextSteps: string[];
   softwareCrypto: SoftwareCryptoReport | null;
+  aesSboxFingerprints?: DynamicAesSboxFingerprint[];
+  aesKeySchedules?: DynamicAesKeySchedule[];
+  aesSemanticVerification?: DynamicAesSemanticVerification | null;
 }
 
 export interface TraceSessionInfo {
@@ -1451,7 +1510,7 @@ export interface SoftwareCryptoReport {
   implementationKind: string;
   keyExposure: string;
   whiteboxStatus: string;
-  verification: "Verified" | "VerifiedFull";
+  verification: "Verified" | "VerifiedBlock" | "VerifiedPartial" | "VerifiedFull";
   ciphertextSha256: string;
   reproducer: string;
 }

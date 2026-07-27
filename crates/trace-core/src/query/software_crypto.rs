@@ -640,6 +640,117 @@ fn verified_report(
     }
 }
 
+fn decode_hex_bytes(value: &str) -> Option<Vec<u8>> {
+    if value.len() % 2 != 0 {
+        return None;
+    }
+    (0..value.len())
+        .step_by(2)
+        .map(|index| u8::from_str_radix(&value[index..index + 2], 16).ok())
+        .collect()
+}
+
+fn pkcs7_unpadded_len(bytes: &[u8]) -> Option<usize> {
+    let padding = *bytes.last()? as usize;
+    ((1..=16).contains(&padding)
+        && padding <= bytes.len()
+        && bytes[bytes.len() - padding..]
+            .iter()
+            .all(|byte| *byte as usize == padding))
+    .then_some(bytes.len() - padding)
+}
+
+/// Adapt exact memory-level AES evidence into the existing software-crypto report.
+///
+/// This is a fallback for traces without API annotations. Existing ECB/CBC/CTR/GCM
+/// annotation analysis remains the primary path.
+pub fn report_from_dynamic_aes(
+    verification: &super::software_aes::AesSemanticVerification,
+    schedule: &super::software_aes::AesKeyScheduleEvidence,
+    writes: &[MemAccess],
+) -> Option<SoftwareCryptoReport> {
+    let input = decode_hex_bytes(&verification.input_hex)?;
+    let output = decode_hex_bytes(&verification.output_hex)?;
+    if input.len() < 16 || output.len() < 16 || input.len() != output.len() {
+        return None;
+    }
+
+    let encrypting = matches!(
+        verification.direction,
+        super::software_aes::AesDirection::Encrypt
+    );
+    let plaintext = if encrypting { &input } else { &output };
+    let unpadded_len = pkcs7_unpadded_len(plaintext);
+    let padding = if unpadded_len.is_some() {
+        "PKCS#7"
+    } else {
+        "None"
+    };
+    let ciphertext = if encrypting { &output } else { &input };
+    let operation = if encrypting { "encrypt" } else { "decrypt" };
+    let output_address =
+        u64::from_str_radix(verification.output_address.trim_start_matches("0x"), 16).ok()?;
+    let output_end = output_address.saturating_add(output.len() as u64);
+    let output_store_insn = writes
+        .iter()
+        .filter(|access| {
+            access.addr >= output_address
+                && access.addr < output_end
+                && access.seq >= verification.first_output_seq
+                && access.seq <= verification.last_output_seq
+        })
+        .min_by_key(|access| access.seq)
+        .map(|access| format!("0x{:x}", access.insn_addr))
+        .unwrap_or_else(|| "unknown".to_string());
+    let reproducer = format!(
+        "from Crypto.Cipher import AES\nkey=bytes.fromhex('{}')\ndata=bytes.fromhex('{}')\ncipher=AES.new(key,AES.MODE_ECB)\nresult=cipher.{}(data)\nassert result.hex()=='{}'\nprint(result.hex())\n",
+        schedule.raw_key_hex,
+        verification.input_hex,
+        operation,
+        verification.output_hex
+    );
+
+    Some(SoftwareCryptoReport {
+        algorithm: "AES-128".to_string(),
+        direction: verification.direction.as_str().to_string(),
+        mode: "ECB".to_string(),
+        padding: padding.to_string(),
+        key_hex: schedule.raw_key_hex.clone(),
+        key_ascii: ascii(&schedule.raw_key),
+        key_observation_seq: schedule.start_seq,
+        input_observation_seq: verification.first_input_seq,
+        input_hex: verification.input_hex.clone(),
+        output_hex: verification.output_hex.clone(),
+        iv_hex: None,
+        iv_observation_seq: None,
+        auth_tag_hex: None,
+        auth_tag_observation_seq: None,
+        aad_hex: None,
+        aad_observation_seq: None,
+        input_length: unpadded_len.unwrap_or(input.len()),
+        padded_length: input.len(),
+        block_count: verification.blocks_checked as usize,
+        output_base_addr: verification.output_address.clone(),
+        output_store_insn,
+        output_first_seq: verification.first_output_seq,
+        output_last_seq: verification.last_output_seq,
+        output_stride: 16,
+        first_cipher_block: hex(&ciphertext[..16]),
+        last_cipher_block: hex(&ciphertext[ciphertext.len() - 16..]),
+        schedule_verified: schedule.verification.standard_key_schedule,
+        state_layout: "CanonicalBytes".to_string(),
+        state_layout_evidence:
+            "Observed byte-addressed input/output buffers recompute exactly as canonical AES blocks."
+                .to_string(),
+        implementation_kind: "StandardSoftware".to_string(),
+        key_exposure: "ExpandedScheduleObserved".to_string(),
+        whitebox_status: "NotWhiteBox".to_string(),
+        verification: verification.status.clone(),
+        ciphertext_sha256: hex(&Sha256::digest(ciphertext)),
+        reproducer,
+    })
+}
+
 pub fn analyze(buffers: &[ObservedBuffer], writes: &[MemAccess]) -> Option<SoftwareCryptoReport> {
     let keys = buffers
         .iter()

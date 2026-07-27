@@ -16,17 +16,9 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::sync::OnceLock;
 
 use crate::query::evidence_score::{score_evidence, EvidenceAssessment, EvidenceScoreSignal};
+pub use crate::query::software_aes::MemAccess;
 
 // ── 引擎填充的输入信号（纯 struct，便于单测，不依赖 trace）──
-
-#[derive(Clone, Copy, Debug)]
-pub struct MemAccess {
-    pub seq: u32,
-    pub insn_addr: u64,
-    pub addr: u64,
-    pub value: u64,
-    pub size: u8,
-}
 
 // ── 选项 ──
 
@@ -189,6 +181,7 @@ pub struct AlgoVerdict {
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub enum ImplementationKind {
+    StandardSoftware,
     ObfuscatedStandardSoftware,
     TableDrivenSoftware,
     BitslicedSoftware,
@@ -240,6 +233,9 @@ pub struct WhiteBoxReport {
     pub assessment: EvidenceAssessment,
     pub next_steps: Vec<String>,
     pub software_crypto: Option<crate::query::software_crypto::SoftwareCryptoReport>,
+    pub aes_sbox_fingerprints: Vec<crate::query::software_aes::AesSboxFingerprint>,
+    pub aes_key_schedules: Vec<crate::query::software_aes::AesKeyScheduleEvidence>,
+    pub aes_semantic_verification: Option<crate::query::software_aes::AesSemanticVerification>,
 }
 
 // ── 小工具 ──
@@ -1357,6 +1353,9 @@ pub fn analyze(
             "只有复算一致后才升级为 verified；white-box 属性需独立证据。".to_string(),
         ],
         software_crypto: None,
+        aes_sbox_fingerprints: Vec::new(),
+        aes_key_schedules: Vec::new(),
+        aes_semantic_verification: None,
     }
 }
 

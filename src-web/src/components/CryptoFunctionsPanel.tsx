@@ -28,6 +28,9 @@ function CandidateRow({ c, onJumpToSeq, onCreateHook }: {
   const shapes = Object.entries(c.softwareShapeCounts)
     .map(([k, v]) => `${k}×${v}`)
     .join(" ");
+  const softwareSignals = Object.entries(c.softwareSignalCounts ?? {})
+    .map(([key, value]) => `${key}×${value}`)
+    .join(" ");
   return (
     <div style={{ borderBottom: "1px solid var(--border-color)" }}>
       <div
@@ -61,6 +64,7 @@ function CandidateRow({ c, onJumpToSeq, onCreateHook }: {
         <span style={{ color: "var(--text-tertiary)", fontSize: 11 }}>
           {c.magicHits > 0 && `${c.distinctMagics} const`}
           {c.cryptoInsnTotal > 0 && `  ${insn}`}
+          {(c.softwareSignalTotal ?? 0) > 0 && `  ${c.softwareSignalTotal} AES signals`}
           {`  ·${c.lineCount} ln`}
         </span>
       </div>
@@ -84,11 +88,19 @@ function CandidateRow({ c, onJumpToSeq, onCreateHook }: {
           {c.implementationHints.length > 0 && (
             <div style={{ marginBottom: 4 }}>
               implementation: {c.implementationHints.join(", ")}
+              {c.verificationStatus && <span style={{ color: "#3fb950" }}> · {c.verificationStatus}</span>}
             </div>
           )}
           {c.softwareShapeTotal > 0 && (
             <div style={{ marginBottom: 4 }}>
               software shape: {shapes} ({c.softwareShapeTotal} total)
+            </div>
+          )}
+          {(c.softwareSignalTotal ?? 0) > 0 && (
+            <div style={{ marginBottom: 4, fontFamily: "monospace", overflowWrap: "anywhere" }}>
+              AES evidence: {softwareSignals}
+              {(c.aesSboxDistinctIndices ?? 0) > 0 && ` · S-box ${c.aesSboxDistinctIndices}/256 indices`}
+              {(c.aesSboxBases?.length ?? 0) > 0 && ` · ${c.aesSboxBases!.join(", ")}`}
             </div>
           )}
           <div style={{ marginTop: 6, borderTop: "1px solid var(--border-color)", paddingTop: 6 }}>
@@ -146,6 +158,7 @@ export default function CryptoFunctionsPanel({ sessionId, onJumpToSeq, onCreateH
         {report && (
           <span style={{ color: "var(--text-tertiary)", fontSize: 11 }}>
             {report.candidates.length} 个候选 · {report.magicHitCount} 个常量命中 · {report.cryptoInsnCount} 条密码指令
+            {(report.softwareSignalCount ?? 0) > 0 && ` · ${report.softwareSignalCount} AES signals`}
             {report.candidatesTruncated && "（已截断）"}
           </span>
         )}
