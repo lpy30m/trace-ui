@@ -97,6 +97,11 @@ pub use query::ollvm::{
     OllvmVersionDispatcherMapping, OllvmVersionMapReport, OllvmVersionMapRequest,
     OllvmVersionSummary, OllvmVersionTargetMapping, OllvmVersionTraceCase, OpaqueBranchCandidate,
 };
+pub use query::software_aes::{
+    AesKeyScheduleEvidence, AesSboxFingerprint,
+    AesScheduleVerification as DynamicAesScheduleVerification,
+    AesSemanticVerification as DynamicAesSemanticVerification,
+};
 pub use query::source_sink::{
     apply_resource_validation, classify_flow_endpoints, CallResourceContext,
     FlowEndpointClassification, ResourceValidation,

@@ -131,14 +131,40 @@ impl super::TraceEngine {
                     .into(),
             );
         }
+        let sbox_scan = crate::query::software_aes::detect_dynamic_aes_sboxes(&reads);
+        let schedules = crate::query::software_aes::find_aes128_schedules(&writes);
+        let semantic_verification =
+            crate::query::software_aes::verify_observed_aes128_ecb(&reads, &writes, &schedules);
+        let dynamic_software = semantic_verification.as_ref().and_then(|verification| {
+            schedules
+                .iter()
+                .find(|schedule| schedule.schedule_address == verification.key_schedule_address)
+                .and_then(|schedule| {
+                    crate::query::software_crypto::report_from_dynamic_aes(
+                        verification,
+                        schedule,
+                        &writes,
+                    )
+                })
+        });
+        report.aes_sbox_fingerprints = sbox_scan.fingerprints;
+        report.aes_key_schedules = schedules;
+        report.aes_semantic_verification = semantic_verification;
         report.software_crypto =
-            crate::query::software_crypto::analyze(&annotation_buffers, &writes);
+            crate::query::software_crypto::analyze(&annotation_buffers, &writes)
+                .or(dynamic_software);
         if let Some(software) = &report.software_crypto {
-            report.key_exposure = whitebox_aes::KeyExposure::RawKeyObserved;
-            report.implementation_kind = if software.schedule_verified {
-                whitebox_aes::ImplementationKind::ObfuscatedStandardSoftware
-            } else {
-                whitebox_aes::ImplementationKind::TableDrivenSoftware
+            report.key_exposure = match software.key_exposure.as_str() {
+                "ExpandedScheduleObserved" => whitebox_aes::KeyExposure::ExpandedScheduleObserved,
+                "DerivedKeyObserved" => whitebox_aes::KeyExposure::DerivedKeyObserved,
+                _ => whitebox_aes::KeyExposure::RawKeyObserved,
+            };
+            report.implementation_kind = match software.implementation_kind.as_str() {
+                "StandardSoftware" => whitebox_aes::ImplementationKind::StandardSoftware,
+                "ObfuscatedStandardSoftware" => {
+                    whitebox_aes::ImplementationKind::ObfuscatedStandardSoftware
+                }
+                _ => whitebox_aes::ImplementationKind::TableDrivenSoftware,
             };
             report.whitebox_status = if software.schedule_verified {
                 whitebox_aes::WhiteBoxStatus::NotWhiteBox
@@ -169,11 +195,15 @@ impl super::TraceEngine {
                         Some(format!("{} blocks", software.block_count)),
                     ),
                     EvidenceScoreSignal::new(
-                        "raw_key_observed",
-                        "Runtime AES key bytes were directly observed",
+                        "key_material_observed",
+                        "Runtime AES key material was recovered from the trace",
                         20,
                         true,
-                        Some(format!("{}-bit key", software.key_hex.len() * 4)),
+                        Some(format!(
+                            "{}-bit key; {}",
+                            software.key_hex.len() * 4,
+                            software.key_exposure
+                        )),
                     ),
                     EvidenceScoreSignal::new(
                         "standard_key_schedule",
@@ -342,6 +372,95 @@ mod integration_tests {
             "98e234a6fb29bf721d7201f13f8952bc"
         );
         assert_eq!(software.verification, "VerifiedFull");
+    }
+
+    #[test]
+    #[ignore = "requires TRACE_AES_MEMORY_SAMPLE pointing to the sh_security trace"]
+    fn sh_security_trace_detects_standard_software_aes128() {
+        let path =
+            std::env::var("TRACE_AES_MEMORY_SAMPLE").expect("TRACE_AES_MEMORY_SAMPLE is required");
+        let engine = TraceEngine::new();
+        let session = engine.create_session(&path).unwrap();
+        engine
+            .build_index(
+                &session.session_id,
+                BuildOptions {
+                    force_rebuild: false,
+                    skip_strings: true,
+                },
+                None,
+            )
+            .unwrap();
+
+        let report = engine
+            .analyze_whitebox(&session.session_id, WhiteBoxOptions::default())
+            .unwrap();
+        assert!(matches!(
+            report.implementation_kind,
+            crate::query::whitebox_aes::ImplementationKind::StandardSoftware
+        ));
+        assert!(matches!(
+            report.key_exposure,
+            crate::query::whitebox_aes::KeyExposure::ExpandedScheduleObserved
+        ));
+        assert!(matches!(
+            report.whitebox_status,
+            crate::query::whitebox_aes::WhiteBoxStatus::NotWhiteBox
+        ));
+        assert!(report.assessment.verification_gate_met);
+
+        let sbox = report
+            .aes_sbox_fingerprints
+            .iter()
+            .find(|item| item.base_addr == "0x71cd18f3bc")
+            .expect("standard AES S-box fingerprint");
+        assert_eq!(sbox.matching_reads, 1_400);
+        assert_eq!(sbox.distinct_indices, 252);
+
+        let schedule = report
+            .aes_key_schedules
+            .iter()
+            .find(|item| item.schedule_address == "0x71cd1d6280")
+            .expect("AES-128 expanded schedule");
+        assert_eq!(schedule.verification.words_checked, 44);
+        assert_eq!(schedule.verification.words_matched, 44);
+        assert!(schedule.verification.standard_key_schedule);
+
+        let software = report
+            .software_crypto
+            .expect("verified software AES report");
+        assert_eq!(software.algorithm, "AES-128");
+        assert_eq!(software.direction, "Encrypt");
+        assert_eq!(software.mode, "ECB");
+        assert_eq!(software.padding, "PKCS#7");
+        assert_eq!(software.input_length, 105);
+        assert_eq!(software.padded_length, 112);
+        assert_eq!(software.block_count, 7);
+        assert_eq!(software.verification, "VerifiedFull");
+        assert_eq!(software.output_base_addr, "0x730794efc0");
+
+        let functions = engine
+            .analyze_crypto_functions(
+                &session.session_id,
+                crate::query::crypto_functions::CryptoFunctionsOptions::default(),
+            )
+            .unwrap();
+        let cipher = functions
+            .candidates
+            .iter()
+            .find(|candidate| candidate.func_addr == "0x71cd0da63c")
+            .expect("AES block function");
+        assert_eq!(cipher.verification_status.as_deref(), Some("VerifiedFull"));
+        assert!(cipher
+            .implementation_hints
+            .iter()
+            .any(|hint| hint == "StandardSoftware"));
+        assert!(functions.candidates.iter().any(|candidate| {
+            candidate.func_addr == "0x71cd0da6c0"
+                && candidate
+                    .software_signal_counts
+                    .contains_key("AES128_KEY_SCHEDULE")
+        }));
     }
 
     #[test]

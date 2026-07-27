@@ -18,6 +18,7 @@
 - **反向污点追踪** — 从寄存器或内存地址反向切片追踪数据依赖，支持数据依赖/控制依赖独立开关，过滤和高亮两种查看模式，结果可导出为 JSON/TXT
 - **数据依赖 DAG 图** — 从指定寄存器/内存地址构建依赖关系有向无环图，支持 C 风格表达式重建，直观展现数据流传播路径
 - **密码算法识别** — 自动扫描 trace 中的密码算法常量模式，覆盖 AES、DES、SM3、MD5、SHA、CRC32、TEA、RC4 等 28 种魔数模式
+- **动态软件 AES 验证** — 在没有 API 注释或硬件 AES 指令时，识别标准 forward/inverse S-box 的地址/值关系和 AES-128 展开密钥，并从内存访问重建 input/output；只有逐 block 精确复算一致才进入 Verified
 - **Crypto Materials 索引** — 统一索引 key、password、salt、IV、nonce、counter、明文/密文、digest/MAC、AAD 和 tag，并对可观察的 AES、MD5/SHA、HMAC、PBKDF2 做确定性复算
 - **Frida 16 Hook 与捕获回导** — 可套用常见 OpenSSL/CommonCrypto 配方，或按导出符号/module-relative offset 生成 ARM64 Interceptor/Stalker 脚本；寄存器快照覆盖 X0-X28、FP/LR/SP/PC 与可用的 NZCV，用户手动执行后可导回 JSON/NDJSON，索引密码材料并生成 angr state seed；应用不会 attach、spawn、load 或执行 Hook
 - **Frida OLLVM Dispatcher Atlas** — 从 OLLVM 报告一次生成最多 64 个 ranked dispatcher `startOffset` 的 Frida 16.x 手动脚本；用户自行运行后导入 `ollvm-dispatcher-hit`，按 capture session、线程、flow 和连续 hit sequence 汇总 dispatcher 节点、状态寄存器分布、相邻 transition 与候选执行路径。legacy 捕获使用 idle-gap 启发式分 flow，所有结果保持 Candidate/Related。
@@ -159,6 +160,8 @@ claude mcp add trace-ui --transport http http://127.0.0.1:19821/mcp
 - **其他**：HMAC、Poly1305、APLib
 
 扫描结果显示匹配的算法名称、魔数值、出现位置的指令地址和汇编内容。结果支持缓存，避免重复扫描。
+
+`analyze_crypto_implementations` 和 Functions 视图还会复用内存访问索引检测动态 AES S-box、44-word AES-128 key schedule，并验证观察到的 ECB Encrypt/Decrypt block。S-box 与 schedule 只作为结构证据；`VerifiedBlock`、`VerifiedPartial`、`VerifiedFull` 均要求观察到的 key/input/output 能被 AES 精确复算。现有基于调用注释的 ECB/CBC/CTR/GCM 分析保持优先，内存检测作为无注释 trace 的补充路径。
 
 ![image-20260323182741064](docs/images/README/image-20260323182741064.png)
 

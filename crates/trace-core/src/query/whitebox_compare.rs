@@ -459,6 +459,9 @@ mod tests {
             assessment: score_evidence("test", false, Vec::new(), Vec::new()),
             next_steps: Vec::new(),
             software_crypto: None,
+            aes_sbox_fingerprints: Vec::new(),
+            aes_key_schedules: Vec::new(),
+            aes_semantic_verification: None,
         }
     }
 
