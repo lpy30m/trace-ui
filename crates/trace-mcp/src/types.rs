@@ -1401,6 +1401,23 @@ pub struct InspectUnicornOllvmResultsRequest {
     pub file_path: String,
 }
 
+#[derive(Debug, Deserialize, JsonSchema)]
+pub struct GenerateFridaUnicornRecaptureHookRequest {
+    #[schemars(
+        description = "Absolute path to a validated trace-ui/unicorn-ollvm-v1 JSON result from a manually executed generated Unicorn script"
+    )]
+    pub unicorn_result_path: String,
+    #[schemars(
+        description = "One to 64 zero-based recaptureSuggestions indices. Every selected suggestion must use X0-X28 or SP with a bounded register-relative displacement."
+    )]
+    pub suggestion_indices: Vec<u32>,
+    #[schemars(
+        description = "Maximum hook-enter events emitted across all targets (1-50000, default: 5000)"
+    )]
+    #[serde(default = "default_frida_unicorn_recapture_events")]
+    pub max_events: u32,
+}
+
 fn default_ollvm_blocks() -> u32 {
     1_000
 }
@@ -1423,6 +1440,10 @@ fn default_unicorn_memory_writes() -> u64 {
 
 fn default_unicorn_recorded_offsets() -> u64 {
     50_000
+}
+
+fn default_frida_unicorn_recapture_events() -> u32 {
+    5_000
 }
 
 fn default_unicorn_loop_visits() -> u32 {

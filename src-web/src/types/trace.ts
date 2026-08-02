@@ -1287,6 +1287,39 @@ export interface UnicornRecaptureSuggestion {
   sourceEventIndices: number[];
 }
 
+export interface FridaUnicornRecaptureMemorySpec {
+  index: number;
+  label: string;
+  baseRegister: string;
+  displacement: number;
+  displacementHex: string;
+  byteLength: number;
+  missingPcOffsets: string[];
+  sourceEventIndices: number[];
+}
+
+export interface FridaUnicornRecaptureHookTarget {
+  hookId: string;
+  offset: string;
+  sourceEventIndices: number[];
+  missingPcOffsets: string[];
+  captures: FridaUnicornRecaptureMemorySpec[];
+}
+
+export interface FridaUnicornRecaptureHookScript {
+  schemaVersion: string;
+  moduleName: string;
+  fileName: string;
+  expectedBinarySha256: string;
+  selectedSuggestionIndices: number[];
+  targets: FridaUnicornRecaptureHookTarget[];
+  maxEvents: number;
+  script: string;
+  warnings: string[];
+  protocolVersion: string;
+  fridaApiVersion: string;
+}
+
 export interface UnicornOllvmResultBundle {
   schema: string;
   moduleName: string;

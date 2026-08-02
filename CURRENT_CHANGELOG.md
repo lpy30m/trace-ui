@@ -13,6 +13,9 @@ AES 集成提交：`887968e fix: detect software AES from memory traces`
 - 生成的独立 Python 使用 Unicorn 2.x、Capstone 和 pyelftools，支持 next-dispatcher、return、call、loop、missing-memory/register、SIMD/system-state、timeout 和 instruction-limit 等显式停止原因。
 - 新增 seed 完整度、dispatcher 转移矩阵、寄存器变化、内存写入和 `baseRegister + displacement` Frida 重捕获建议。
 - OLLVM GUI 新增“模拟增强”页签；MCP 新增 `generate_unicorn_ollvm_script` 与 `inspect_unicorn_ollvm_results`。Trace UI 仍只生成/保存脚本并导入结果，不自动执行模拟器。
+- 新增 `trace-ui/frida-unicorn-recapture-hook-v1` 与 MCP `generate_frida_unicorn_recapture_hook`：从 Unicorn `recaptureSuggestions` 选择最多 64 条 X0-X28/SP 正负位移窗口，聚合到最多 32 个原 exact seed offset，生成兼容 `trace-ui/frida-hook-v1` 的 Frida 16.x `hook-enter` 捕获。
+- GUI“模拟增强”新增“Frida 精确重捕获”阶段，可筛选建议、生成/保存/复制 `.js`。窗口限制 1–4096 字节，空指针或不可读内存输出 `readError`，绝不补零；absolute、X29/X30 等建议明确保留为手动项。
+- 新增协议闭环回归：构造重捕获 `hook-enter`，经 `parse_frida_capture_bundle` 与 `generate_angr_state_seed` 后验证原 `captureOffset`、`X19+0x20` 和 `SP-0x10` 内存区域均被保留。
 - Dispatcher Frida 捕获扩展为可选 X0-X28 pointer snapshot 与从 SP 开始的 0–16 KiB 栈窗口；默认均关闭，读取失败保持 `readError`。
 - Frida 捕获导入同步接受 X8-X28 和合成 SP 栈 capture index，避免新增内存在生成 angr/Unicorn seed 时被旧 X0-X7 过滤器静默丢弃。
 - Release Action 从真实 `src-tauri` 应用目录启动 Tauri，和本地 Windows MSI/NSIS 成功构建路径保持一致。
@@ -22,8 +25,9 @@ AES 集成提交：`887968e fix: detect software AES from memory traces`
 1. 先用窄函数或窄 sequence 范围运行 `analyze_ollvm`，只把 dispatcher、state register 和 opaque branch 当作候选。
 2. 对精确 module-relative offset 生成 Frida dispatcher/branch Hook，由用户手动运行；优先捕获完整 GPR/NZCV，再按缺失状态提示补充少量 X0-X28 pointer 或 SP 栈窗口。
 3. 优先使用 Unicorn“模拟增强”做 exact-seed 具体重放。它速度快、路径确定，适合确认下一 dispatcher、循环、调用边界、寄存器变化和缺失内存。
-4. 只有需要探索未观测分支时再生成 angr bridge，保持默认有界深度/状态数，避免严重混淆样本发生状态爆炸。
-5. 将 Unicorn/angr 结果导回 Trace UI，再用 IDA 注释和多运行对比人工确认。AI/MCP 负责选择候选、组织证据和生成脚本，不自动 attach Frida，也不把结构候选表述为已完成去混淆。
+4. 遇到 `missing-memory` 时，优先勾选可自动生成的建议创建精确 Frida 重捕获 Hook；用户在相同构建/受控输入下手动运行，并把新捕获再次作为 Unicorn 或 angr seed。寄存器在 seed 点到缺失点之间若已变化，可能需要继续迭代或选择更近的人工捕获点。
+5. 只有需要探索未观测分支时再生成 angr bridge，保持默认有界深度/状态数，避免严重混淆样本发生状态爆炸。
+6. 将 Unicorn/angr 结果导回 Trace UI，再用 IDA 注释和多运行对比人工确认。AI/MCP 负责选择候选、组织证据和生成脚本，不自动 attach Frida，也不把结构候选表述为已完成去混淆。
 
 ## 本轮 AES 与 Frida 语义验证增强
 
@@ -33,7 +37,7 @@ AES 集成提交：`887968e fix: detect software AES from memory traces`
 - 新增 `Native candidate · AES block X0/X1/X2` Frida 配方；从 Crypto Functions 候选进入时保留已预填的 module-relative offset。
 - 真实 nativeInfo trace 回归识别为 AES-128-ECB Encrypt、PKCS#7、7 blocks、112/112 bytes、`VerifiedFull`；动态证据包含 1400 次 S-box read、252 个 distinct index 和 44/44 schedule words。
 - 没有独立 OLLVM 控制流证据时，AES 实现仍保持 `StandardSoftware`，不会仅因查表或复杂代码误标为 `ObfuscatedStandardSoftware`。
-- 2026-08-02 回归已通过 `cargo fmt --all -- --check`、`cargo test --workspace`、真实日志 ignored test、UI guards、Vitest、TypeScript/Vite production build 和 `cargo tauri build --ci`；本地成功生成 Windows MSI 与 NSIS 安装包。
+- 2026-08-02 当前工作树回归已通过 `cargo fmt --all -- --check`、`cargo test --workspace`、Frida 重捕获闭环测试 5/5、UI guards、Vitest 3/3、TypeScript/Vite production build 和 `cargo tauri build --ci`；本地成功生成 Windows MSI 与 NSIS 安装包。
 
 ## 本轮 MCP 大捕获检索
 

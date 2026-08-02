@@ -76,6 +76,11 @@ pub use query::frida_ollvm::{
     FridaOllvmDispatcherHookTarget, FridaOllvmDispatcherNode, FridaOllvmDispatcherTransition,
     FridaOllvmRegisterValueSummary, FridaOllvmStateChange, FridaOllvmStateValueCount,
 };
+pub use query::frida_recapture::{
+    generate_frida_unicorn_recapture_hook, FridaUnicornRecaptureHookOptions,
+    FridaUnicornRecaptureHookScript, FridaUnicornRecaptureHookTarget,
+    FridaUnicornRecaptureMemorySpec,
+};
 pub use query::frida_recipe::{list_frida_hook_recipes, FridaHookRecipe};
 pub use query::function_inspect::{
     FunctionCallAnnotation, FunctionInspection, FunctionRef, MemTouch, RegValue,

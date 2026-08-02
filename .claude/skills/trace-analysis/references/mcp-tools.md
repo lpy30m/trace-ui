@@ -90,6 +90,13 @@ Line numbers in taint `@LINE` specs are **1-based**; `start_seq`/`end_seq`/`seq`
   and 200000 hits. Dedicated `ollvm-dispatcher-hit` events include full ARM64 GPRs,
   `dispatcherOffset`, `captureSessionId`, `flowId`, `hitSequence`, candidate state registers, and
   optional bounded byteArray pointer snapshots/readError records. Trace UI never runs the script.
+- **generate_frida_unicorn_recapture_hook** `{unicorn_result_path,suggestion_indices,max_events?=5000}`
+  strictly validates a manually produced `trace-ui/unicorn-ollvm-v1` result and converts one to 64
+  selected register-relative suggestions into one bounded Frida 16.x script. Supported bases are X0-X28
+  and SP, signed displacement is limited to +/-1 MiB, each memory window is 1-4096 bytes, and the script
+  contains at most 32 exact seed targets and 256 windows. It hooks the original seed `captureOffset`,
+  emits full GPR/NZCV plus `byteArray`/`readError` captures using `trace-ui/frida-hook-v1`, and never
+  attaches, spawns, loads, or executes Frida. The embedded ELF SHA-256 is prior-replay provenance only.
 - **inspect_frida_capture** `{file_path}` reads user-captured JSON objects/arrays, Frida send envelopes,
   NDJSON, or `TRACE_UI_JSON`-prefixed CLI logs. It normalizes call IDs, module metadata, registers,
   buffers, returns, backtraces, and Stalker batch counts without running Frida.
@@ -191,7 +198,9 @@ Line numbers in taint `@LINE` specs are **1-based**; `start_seq`/`end_seq`/`seq`
 - **inspect_unicorn_ollvm_results** `{file_path}` strictly validates
   `trace-ui/unicorn-ollvm-v1`, including exact ELF identity, per-event concrete replay runs,
   dispatcher transition groups, register changes, memory writes, missing-state evidence, and bounded
-  register-relative Frida recapture suggestions. Results remain Candidate/Related.
+  register-relative Frida recapture suggestions. Supported suggestions can be passed to
+  `generate_frida_unicorn_recapture_hook`, then the resulting user-captured exact-seed `hook-enter` can
+  be selected in another Unicorn/angr generation request. Results remain Candidate/Related.
 
 ## Taint (data-flow slicing)
 

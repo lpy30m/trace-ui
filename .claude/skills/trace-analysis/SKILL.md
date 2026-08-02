@@ -5,7 +5,7 @@ description: >
   Use for native/.so reverse engineering, crypto key/IV/nonce/salt/material identification,
   MD5/SHA/HMAC/PBKDF2 input matching, backward or forward taint, function I/O inspection, cross-run
   diffing, static ELF-to-trace table reconciliation, software/table-driven/obfuscated/white-box crypto
-  classification, Frida 16 hook generation/capture import, angr state seeding, dynamic IDA/angr/OLLVM analysis, and cross-version dispatcher/state structural mapping. Trigger on requests
+  classification, Frida 16 hook generation/capture import, angr state seeding, dynamic IDA/angr/Unicorn/OLLVM analysis, missing-memory recapture, and cross-version dispatcher/state structural mapping. Trigger on requests
   such as analyze this trace, reverse this native function, inspect this .so with its trace, find the key
   or algorithm, isolate a salt, generate a Frida hook, inspect OLLVM, map OLLVM across versions, where did this value come from, or
   分析 trace / 逆向 so / 污点 / 加密分析 / Frida hook / OLLVM.
@@ -152,7 +152,11 @@ Call `generate_unicorn_ollvm_script` with one to 32 exact events and the mandato
 The user runs the Python manually; inspect `trace-ui/unicorn-ollvm-v1` with
 `inspect_unicorn_ollvm_results`. Prioritize next-dispatcher transitions, state-register changes,
 explicit missing-memory stops, and register-relative recapture suggestions. Unicorn follows concrete
-captured states only; it does not explore alternate branches or recover a complete CFG.
+captured states only; it does not explore alternate branches or recover a complete CFG. For supported
+X0-X28/SP register-relative suggestions, call `generate_frida_unicorn_recapture_hook` with one to 64
+suggestion indices. Return/save the Frida 16.x script for manual execution, then import its exact-seed
+`hook-enter` event as a new Unicorn or angr seed. Never fill unreadable memory with zeros; unsupported
+absolute/X29/X30 suggestions remain manual work.
 
 **"Does this dispatcher or opaque branch stay stable across runs?"**
 → open two to sixteen controlled traces, then `compare_ollvm_traces{cases:[...]}` with a scope and
@@ -217,7 +221,7 @@ recomputes to a known digest.
 | Taint | `taint_analysis` (backward), `forward_taint_analysis`, `get_tainted_lines`, `start_forward_taint_analysis` |
 | Functions | `analyze_function` (node_id / name / list) |
 | Diff | `compare_traces`, `start_trace_diff` |
-| Frida | `list_frida_hook_recipes`, `generate_frida_hook`, `generate_frida_ollvm_dispatcher_hook`, `inspect_frida_capture`, `search_frida_capture_events`, `get_frida_capture_event`, `analyze_frida_crypto_materials`, `analyze_frida_ollvm_dispatcher_capture`, `generate_angr_state_seed` (user executes hooks manually) |
+| Frida | `list_frida_hook_recipes`, `generate_frida_hook`, `generate_frida_ollvm_dispatcher_hook`, `generate_frida_unicorn_recapture_hook`, `inspect_frida_capture`, `search_frida_capture_events`, `get_frida_capture_event`, `analyze_frida_crypto_materials`, `analyze_frida_ollvm_dispatcher_capture`, `generate_angr_state_seed` (user executes hooks manually) |
 | IDA / angr / Unicorn / OLLVM | `analyze_ollvm`, `compare_ollvm_traces`, `map_ollvm_versions`, `generate_ida_ollvm_script`, `inspect_ida_annotations`, `generate_angr_ollvm_script`, `inspect_angr_ollvm_results`, `generate_unicorn_ollvm_script`, `inspect_unicorn_ollvm_results` |
 | Orchestration | `auto_investigate`, `start_auto_investigation`, `start_crypto_investigation` |
 | Evidence store | `list_analyses`, `get_analysis`, `compare_analyses`, `export_analysis_report`, `delete_analysis` |

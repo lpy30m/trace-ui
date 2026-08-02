@@ -3,8 +3,10 @@ import { invoke } from "@tauri-apps/api/core";
 import type {
   FridaCaptureBundle,
   FridaCaptureEvent,
+  FridaUnicornRecaptureHookScript,
   OllvmReport,
   UnicornOllvmResultBundle,
+  UnicornRecaptureSuggestion,
   UnicornOllvmScript,
 } from "../types/trace";
 
@@ -54,6 +56,13 @@ function stateText(values: Array<{ register: string; status: string; value: stri
   return values.map(value => `${value.register}=${value.value || value.status}`).join(", ") || "no state register";
 }
 
+function automaticRecaptureSupported(suggestion: UnicornRecaptureSuggestion): boolean {
+  if (!suggestion.baseRegister) return false;
+  if (!/^(?:X(?:[0-9]|1[0-9]|2[0-8])|SP)$/i.test(suggestion.baseRegister)) return false;
+  const displacement = suggestion.displacement || "0";
+  return /^[+-]?(?:0x[0-9a-f]+|[0-9]+)$/i.test(displacement);
+}
+
 export default function OllvmUnicornPanel({ report }: Props) {
   const [binaryPath, setBinaryPath] = useState<string | null>(null);
   const [capturePath, setCapturePath] = useState<string | null>(null);
@@ -67,8 +76,13 @@ export default function OllvmUnicornPanel({ report }: Props) {
   const [stopOnCall, setStopOnCall] = useState(true);
   const [generated, setGenerated] = useState<UnicornOllvmScript | null>(null);
   const [results, setResults] = useState<UnicornOllvmResultBundle | null>(null);
+  const [resultsPath, setResultsPath] = useState<string | null>(null);
+  const [selectedRecaptureSuggestions, setSelectedRecaptureSuggestions] = useState<number[]>([]);
+  const [recaptureMaxEvents, setRecaptureMaxEvents] = useState("5000");
+  const [recaptureHook, setRecaptureHook] = useState<FridaUnicornRecaptureHookScript | null>(null);
+  const [recaptureSavedPath, setRecaptureSavedPath] = useState<string | null>(null);
   const [savedPath, setSavedPath] = useState<string | null>(null);
-  const [display, setDisplay] = useState<"script" | "results">("script");
+  const [display, setDisplay] = useState<"script" | "results" | "recapture">("script");
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
@@ -109,6 +123,9 @@ export default function OllvmUnicornPanel({ report }: Props) {
       setBinaryPath(path);
       setGenerated(null);
       setResults(null);
+      setResultsPath(null);
+      setSelectedRecaptureSuggestions([]);
+      setRecaptureHook(null);
     }
   };
 
@@ -135,6 +152,9 @@ export default function OllvmUnicornPanel({ report }: Props) {
       setSelectedEvents(eligible.slice(0, 1).map(event => event.index));
       setGenerated(null);
       setResults(null);
+      setResultsPath(null);
+      setSelectedRecaptureSuggestions([]);
+      setRecaptureHook(null);
     } catch (reason) {
       setError(String(reason));
     } finally {
@@ -150,6 +170,9 @@ export default function OllvmUnicornPanel({ report }: Props) {
     });
     setGenerated(null);
     setResults(null);
+    setResultsPath(null);
+    setSelectedRecaptureSuggestions([]);
+    setRecaptureHook(null);
   };
 
   const generateScript = async (): Promise<UnicornOllvmScript | null> => {
@@ -214,7 +237,91 @@ export default function OllvmUnicornPanel({ report }: Props) {
         throw new Error(`Unicorn result module ${bundle.moduleName} does not match ${report.scope.moduleName}`);
       }
       setResults(bundle);
+      setResultsPath(path);
+      setSelectedRecaptureSuggestions(bundle.recaptureSuggestions
+        .map((suggestion, index) => automaticRecaptureSupported(suggestion) ? index : -1)
+        .filter(index => index >= 0)
+        .slice(0, 1));
+      setRecaptureHook(null);
+      setRecaptureSavedPath(null);
       setDisplay("results");
+    } catch (reason) {
+      setError(String(reason));
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const toggleRecaptureSuggestion = (index: number) => {
+    setSelectedRecaptureSuggestions(current => {
+      if (current.includes(index)) return current.filter(value => value !== index);
+      if (current.length >= 64) return current;
+      return [...current, index].sort((left, right) => left - right);
+    });
+    setRecaptureHook(null);
+    setRecaptureSavedPath(null);
+  };
+
+  const selectSupportedRecaptureSuggestions = () => {
+    if (!results) return;
+    setSelectedRecaptureSuggestions(results.recaptureSuggestions
+      .map((suggestion, index) => automaticRecaptureSupported(suggestion) ? index : -1)
+      .filter(index => index >= 0)
+      .slice(0, 64));
+    setRecaptureHook(null);
+    setRecaptureSavedPath(null);
+  };
+
+  const recaptureRequestArgs = () => ({
+    unicornResultPath: resultsPath || "",
+    suggestionIndices: selectedRecaptureSuggestions,
+    maxEvents: positiveInteger(recaptureMaxEvents, 5_000),
+  });
+
+  const generateRecaptureHook = async (): Promise<FridaUnicornRecaptureHookScript | null> => {
+    if (!results || !resultsPath) {
+      setError("请先导入 Unicorn 结果 JSON。");
+      return null;
+    }
+    if (selectedRecaptureSuggestions.length === 0) {
+      setError("请选择至少一条支持自动生成的 register-relative 重捕获建议。");
+      return null;
+    }
+    setBusy(true);
+    setError(null);
+    try {
+      const value = await invoke<FridaUnicornRecaptureHookScript>(
+        "generate_frida_unicorn_recapture_hook",
+        recaptureRequestArgs(),
+      );
+      setRecaptureHook(value);
+      setDisplay("recapture");
+      return value;
+    } catch (reason) {
+      setError(String(reason));
+      return null;
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const saveRecaptureHook = async () => {
+    const value = recaptureHook || await generateRecaptureHook();
+    if (!value) return;
+    const { save } = await import("@tauri-apps/plugin-dialog");
+    const path = await save({
+      defaultPath: value.fileName,
+      filters: [{ name: "Frida JavaScript", extensions: ["js"] }],
+    });
+    if (typeof path !== "string") return;
+    setBusy(true);
+    setError(null);
+    try {
+      const written = await invoke<string>("save_frida_unicorn_recapture_hook", {
+        path,
+        ...recaptureRequestArgs(),
+      });
+      setRecaptureSavedPath(written);
     } catch (reason) {
       setError(String(reason));
     } finally {
@@ -232,7 +339,7 @@ export default function OllvmUnicornPanel({ report }: Props) {
         <div style={{ marginTop: 10, fontWeight: 600 }}>1. 精确 ELF</div>
         <div style={{ display: "flex", gap: 6, marginTop: 5 }}>
           <button type="button" style={buttonStyle} onClick={selectBinary}>选择 ELF</button>
-          {binaryPath && <button type="button" style={buttonStyle} onClick={() => { setBinaryPath(null); setGenerated(null); }}>清除</button>}
+          {binaryPath && <button type="button" style={buttonStyle} onClick={() => { setBinaryPath(null); setGenerated(null); setResults(null); setResultsPath(null); setSelectedRecaptureSuggestions([]); setRecaptureHook(null); }}>清除</button>}
         </div>
         <div title={binaryPath || ""} style={{ marginTop: 5, color: binaryPath ? "var(--text-secondary)" : "#d29922", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
           {binaryPath || "必须选择与 Frida 捕获相同构建的 AArch64 ELF"}
@@ -241,7 +348,7 @@ export default function OllvmUnicornPanel({ report }: Props) {
         <div style={{ marginTop: 12, fontWeight: 600 }}>2. Frida 精确事件</div>
         <div style={{ display: "flex", gap: 6, marginTop: 5 }}>
           <button type="button" style={buttonStyle} onClick={importCapture}>导入捕获</button>
-          {capture && <button type="button" style={buttonStyle} onClick={() => { setCapture(null); setCapturePath(null); setSelectedEvents([]); setGenerated(null); }}>清除</button>}
+          {capture && <button type="button" style={buttonStyle} onClick={() => { setCapture(null); setCapturePath(null); setSelectedEvents([]); setGenerated(null); setResults(null); setResultsPath(null); setSelectedRecaptureSuggestions([]); setRecaptureHook(null); }}>清除</button>}
         </div>
         {capturePath && <div title={capturePath} style={{ marginTop: 5, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", color: "var(--text-secondary)" }}>{capturePath.split(/[\\/]/).pop()}</div>}
         {capture && (
@@ -297,6 +404,34 @@ export default function OllvmUnicornPanel({ report }: Props) {
           </div>
         )}
         {generated?.warnings.map((warning, index) => <div key={`generated-${index}`} style={{ marginTop: 5, color: "#d29922" }}>{warning}</div>)}
+
+        {results && results.recaptureSuggestions.length > 0 && (
+          <div style={{ marginTop: 12, paddingTop: 10, borderTop: "1px solid var(--border-color)" }}>
+            <div style={{ fontWeight: 600 }}>4. Frida 精确重捕获</div>
+            <div style={{ marginTop: 4, color: "var(--text-secondary)", lineHeight: 1.5 }}>
+              从下次捕获建议生成 X0-X28/SP 正负位移窗口。Hook 仍落在原 exact seed offset，捕获结果可以再次导入 Unicorn/angr。
+            </div>
+            <div style={{ display: "grid", gridTemplateColumns: "165px minmax(0,1fr)", gap: 6, alignItems: "center", marginTop: 6 }}>
+              <label>最大重捕获事件</label>
+              <input style={inputStyle} value={recaptureMaxEvents} onChange={event => { setRecaptureMaxEvents(event.target.value); setRecaptureHook(null); }} />
+            </div>
+            <div style={{ marginTop: 5, color: "var(--text-tertiary)" }}>{selectedRecaptureSuggestions.length} selected / 64 maximum</div>
+            <div style={{ display: "flex", gap: 6, flexWrap: "wrap", marginTop: 6 }}>
+              <button type="button" style={buttonStyle} disabled={busy} onClick={selectSupportedRecaptureSuggestions}>全选可自动项</button>
+              <button type="button" style={buttonStyle} disabled={busy} onClick={() => { setSelectedRecaptureSuggestions([]); setRecaptureHook(null); }}>清除选择</button>
+              <button type="button" style={{ ...buttonStyle, background: "var(--btn-primary)", color: "#fff", border: "none", opacity: busy ? 0.6 : 1 }} disabled={busy} onClick={generateRecaptureHook}>生成重捕获 Hook</button>
+              <button type="button" style={buttonStyle} disabled={busy} onClick={saveRecaptureHook}>保存 .js</button>
+              <button type="button" style={{ ...buttonStyle, opacity: recaptureHook ? 1 : 0.5 }} disabled={!recaptureHook} onClick={() => recaptureHook && navigator.clipboard.writeText(recaptureHook.script)}>复制 Hook</button>
+            </div>
+            {recaptureSavedPath && <div title={recaptureSavedPath} style={{ marginTop: 5, color: "#3fb950", overflow: "hidden", textOverflow: "ellipsis" }}>已保存：{recaptureSavedPath}</div>}
+            {recaptureHook && (
+              <div style={{ marginTop: 6, padding: 6, background: "var(--bg-secondary)", borderRadius: 4 }}>
+                {recaptureHook.targets.length} exact seed targets · {recaptureHook.targets.reduce((count, target) => count + target.captures.length, 0)} bounded windows · max {recaptureHook.maxEvents} events
+              </div>
+            )}
+            {recaptureHook?.warnings.map((warning, index) => <div key={`recapture-warning-${index}`} style={{ marginTop: 4, color: "#d29922" }}>{warning}</div>)}
+          </div>
+        )}
         {error && <div style={{ marginTop: 8, color: "#e5484d", whiteSpace: "pre-wrap" }}>{error}</div>}
       </div>
 
@@ -304,9 +439,13 @@ export default function OllvmUnicornPanel({ report }: Props) {
         <div style={{ display: "flex", gap: 5, padding: 7, borderBottom: "1px solid var(--border-color)" }}>
           <button type="button" style={{ ...buttonStyle, background: display === "script" ? "var(--bg-selected)" : "var(--bg-input)" }} onClick={() => setDisplay("script")}>脚本</button>
           <button type="button" style={{ ...buttonStyle, background: display === "results" ? "var(--bg-selected)" : "var(--bg-input)", opacity: results ? 1 : 0.5 }} disabled={!results} onClick={() => setDisplay("results")}>模拟结果</button>
+          <button type="button" style={{ ...buttonStyle, background: display === "recapture" ? "var(--bg-selected)" : "var(--bg-input)", opacity: recaptureHook ? 1 : 0.5 }} disabled={!recaptureHook} onClick={() => setDisplay("recapture")}>重捕获 Hook</button>
         </div>
         {display === "script" && (
           <pre style={{ flex: 1, margin: 0, padding: 10, overflow: "auto", background: "var(--bg-primary)", color: "var(--text-primary)", fontSize: 10, lineHeight: 1.45, whiteSpace: "pre" }}>{generated?.script || ""}</pre>
+        )}
+        {display === "recapture" && (
+          <pre style={{ flex: 1, margin: 0, padding: 10, overflow: "auto", background: "var(--bg-primary)", color: "var(--text-primary)", fontSize: 10, lineHeight: 1.45, whiteSpace: "pre" }}>{recaptureHook?.script || ""}</pre>
         )}
         {display === "results" && results && (
           <div style={{ flex: 1, overflow: "auto", fontSize: 11 }}>
@@ -324,12 +463,18 @@ export default function OllvmUnicornPanel({ report }: Props) {
             ))}
 
             {results.recaptureSuggestions.length > 0 && <div style={{ padding: "8px 9px", fontWeight: 600, borderBottom: "1px solid var(--border-color)", color: "#d29922" }}>缺失状态 / 下次 Frida 捕获建议</div>}
-            {results.recaptureSuggestions.map((suggestion, index) => (
-              <div key={`${suggestion.pcOffset}-${index}`} style={{ padding: 8, borderBottom: "1px solid var(--border-color)" }}>
-                <code>{suggestion.pcOffset}</code> · {suggestion.baseRegister || "absolute"}{suggestion.displacement || ""} · {suggestion.byteLength} bytes
-                <div style={{ color: "var(--text-secondary)" }}>{suggestion.reason} Events: {suggestion.sourceEventIndices.join(", ")}</div>
-              </div>
-            ))}
+            {results.recaptureSuggestions.map((suggestion, index) => {
+              const supported = automaticRecaptureSupported(suggestion);
+              return (
+                <div key={`${suggestion.pcOffset}-${index}`} style={{ padding: 8, borderBottom: "1px solid var(--border-color)", display: "grid", gridTemplateColumns: "22px minmax(0,1fr)", gap: 6 }}>
+                  <input type="checkbox" disabled={!supported} checked={selectedRecaptureSuggestions.includes(index)} onChange={() => toggleRecaptureSuggestion(index)} title={supported ? "加入重捕获 Hook" : "该建议需要手工验证/捕获"} />
+                  <div>
+                    <code>{suggestion.pcOffset}</code> · {suggestion.baseRegister || "absolute"}{suggestion.displacement || ""} · {suggestion.byteLength} bytes · <span style={{ color: supported ? "#3fb950" : "#d29922" }}>{supported ? "可自动生成" : "需手动捕获"}</span>
+                    <div style={{ color: "var(--text-secondary)" }}>{suggestion.reason} Events: {suggestion.sourceEventIndices.join(", ")}</div>
+                  </div>
+                </div>
+              );
+            })}
 
             <div style={{ padding: "8px 9px", fontWeight: 600, borderBottom: "1px solid var(--border-color)" }}>具体重放</div>
             {results.runs.map(run => (

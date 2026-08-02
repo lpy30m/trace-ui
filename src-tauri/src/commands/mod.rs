@@ -1370,14 +1370,78 @@ pub async fn save_unicorn_ollvm_script(
 pub async fn load_unicorn_ollvm_results(
     path: String,
 ) -> Result<trace_core::UnicornOllvmResultBundle, String> {
+    tauri::async_runtime::spawn_blocking(move || read_unicorn_ollvm_results(&path))
+        .await
+        .map_err(|error| format!("Task execution failed: {error}"))?
+}
+
+fn read_unicorn_ollvm_results(path: &str) -> Result<trace_core::UnicornOllvmResultBundle, String> {
+    let trimmed = path.trim();
+    if trimmed.is_empty() {
+        return Err("Unicorn result path must not be empty".to_string());
+    }
+    let bytes = std::fs::read(trimmed)
+        .map_err(|error| format!("failed to read Unicorn results: {error}"))?;
+    trace_core::parse_unicorn_ollvm_result_bundle(&bytes)
+}
+
+#[tauri::command]
+pub async fn generate_frida_unicorn_recapture_hook(
+    unicorn_result_path: String,
+    suggestion_indices: Vec<u32>,
+    max_events: Option<u32>,
+) -> Result<trace_core::FridaUnicornRecaptureHookScript, String> {
     tauri::async_runtime::spawn_blocking(move || {
+        let bundle = read_unicorn_ollvm_results(&unicorn_result_path)?;
+        trace_core::generate_frida_unicorn_recapture_hook(
+            &bundle,
+            &suggestion_indices,
+            &trace_core::FridaUnicornRecaptureHookOptions {
+                max_events: max_events.unwrap_or(5_000),
+            },
+        )
+    })
+    .await
+    .map_err(|error| format!("Task execution failed: {error}"))?
+}
+
+#[tauri::command]
+pub async fn save_frida_unicorn_recapture_hook(
+    path: String,
+    unicorn_result_path: String,
+    suggestion_indices: Vec<u32>,
+    max_events: Option<u32>,
+) -> Result<String, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        let bundle = read_unicorn_ollvm_results(&unicorn_result_path)?;
+        let generated = trace_core::generate_frida_unicorn_recapture_hook(
+            &bundle,
+            &suggestion_indices,
+            &trace_core::FridaUnicornRecaptureHookOptions {
+                max_events: max_events.unwrap_or(5_000),
+            },
+        )?;
         let trimmed = path.trim();
         if trimmed.is_empty() {
-            return Err("Unicorn result path must not be empty".to_string());
+            return Err("output path must not be empty".to_string());
         }
-        let bytes = std::fs::read(trimmed)
-            .map_err(|error| format!("failed to read Unicorn results: {error}"))?;
-        trace_core::parse_unicorn_ollvm_result_bundle(&bytes)
+        let mut output_path = std::path::PathBuf::from(trimmed);
+        if output_path.extension().and_then(|value| value.to_str()) != Some("js") {
+            output_path.set_extension("js");
+        }
+        let parent = output_path
+            .parent()
+            .filter(|value| !value.as_os_str().is_empty())
+            .ok_or_else(|| "output path must include a parent directory".to_string())?;
+        if !parent.is_dir() {
+            return Err(format!(
+                "output directory does not exist: {}",
+                parent.display()
+            ));
+        }
+        std::fs::write(&output_path, generated.script.as_bytes())
+            .map_err(|error| format!("failed to save Frida recapture hook: {error}"))?;
+        Ok(output_path.to_string_lossy().into_owned())
     })
     .await
     .map_err(|error| format!("Task execution failed: {error}"))?

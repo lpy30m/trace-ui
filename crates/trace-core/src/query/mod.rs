@@ -13,6 +13,7 @@ pub mod forward_slice;
 pub mod frida_capture;
 pub mod frida_hook;
 pub mod frida_ollvm;
+pub mod frida_recapture;
 pub mod frida_recipe;
 pub mod function_inspect;
 pub mod hash_match;

@@ -8,8 +8,9 @@ description: Analyze ARM64 dynamic traces for OLLVM control-flow-flattening and 
 Use `mcp__trace-ui__analyze_ollvm`, `mcp__trace-ui__compare_ollvm_traces`, `mcp__trace-ui__map_ollvm_versions`, `mcp__trace-ui__generate_ida_ollvm_script`,
 `mcp__trace-ui__inspect_ida_annotations`, `mcp__trace-ui__generate_angr_ollvm_script`,
 `mcp__trace-ui__inspect_angr_ollvm_results`, `mcp__trace-ui__inspect_frida_capture`, and
-`mcp__trace-ui__generate_angr_state_seed`, `mcp__trace-ui__generate_unicorn_ollvm_script`, and
-`mcp__trace-ui__inspect_unicorn_ollvm_results`. For multi-dispatcher manual capture, also use
+`mcp__trace-ui__generate_angr_state_seed`, `mcp__trace-ui__generate_unicorn_ollvm_script`,
+`mcp__trace-ui__inspect_unicorn_ollvm_results`, and
+`mcp__trace-ui__generate_frida_unicorn_recapture_hook`. For multi-dispatcher manual capture, also use
 `mcp__trace-ui__generate_frida_ollvm_dispatcher_hook` and
 `mcp__trace-ui__analyze_frida_ollvm_dispatcher_capture`.
 
@@ -51,7 +52,10 @@ Use `mcp__trace-ui__analyze_ollvm`, `mcp__trace-ui__compare_ollvm_traces`, `mcp_
    For a fast concrete confirmation, pass the same exact event and exact ELF to
    `generate_unicorn_ollvm_script`. Prefer a bounded SP stack capture and only the X0-X28 pointer
    snapshots justified by missing-memory evidence. Review next-dispatcher transition groups,
-   register changes, missing-memory stops, and recapture suggestions before escalating to angr.
+   register changes, missing-memory stops, and recapture suggestions before escalating to angr. When a
+   suggestion uses X0-X28 or SP plus a bounded signed displacement, call
+   `generate_frida_unicorn_recapture_hook` for up to 64 suggestions, let the user run the generated
+   exact-seed-offset Frida 16.x script, then reuse the new `hook-enter` as another Unicorn/angr seed.
 10. To observe several ranked dispatchers in one user-controlled run, call
     `generate_frida_ollvm_dispatcher_hook`, return/save the Frida 16.x script, and stop until the user
     supplies its capture. Then call `analyze_frida_ollvm_dispatcher_capture` on the same OLLVM scope.
@@ -110,6 +114,9 @@ Use `mcp__trace-ui__analyze_ollvm`, `mcp__trace-ui__compare_ollvm_traces`, `mcp_
   calls, loops, timeouts, and instruction bounds must remain explicit stop reasons.
 - Writable ELF segment bytes are not assumed to equal runtime state. Prefer exact Frida byteArray regions;
   use register-relative recapture suggestions to improve a partial seed instead of silently filling zeros.
+- Unicorn recapture hooks run at the original exact seed offset, not the later missing-memory PC. This
+  preserves the existing seed gate, but a base register that changes between those points may still
+  require another iteration or a closer manually selected capture point.
 
 ## IDA bridge boundary
 
@@ -130,6 +137,8 @@ Trace UI generates a standalone Python script but does not install or execute Un
 AArch64 ELF and at least one exact-offset Frida event. Keep instructions within 1-2,000,000 and timeout
 within 1-60,000 ms; begin with 50,000 instructions and 5,000 ms. Stop on calls by default. Treat the
 transition matrix as grouped exact-seed replay evidence, never a complete state machine or recovered CFG.
+Trace UI may generate a bounded Frida 16.x recapture script from validated Unicorn suggestions, but the
+user still controls attach/spawn/load/run and must confirm the runtime module is the same ELF build.
 
 ## Reporting
 

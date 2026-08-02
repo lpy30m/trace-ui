@@ -99,6 +99,8 @@ fn main() {
             commands::generate_unicorn_ollvm_script,
             commands::save_unicorn_ollvm_script,
             commands::load_unicorn_ollvm_results,
+            commands::generate_frida_unicorn_recapture_hook,
+            commands::save_frida_unicorn_recapture_hook,
             commands::analyze_whitebox_crypto,
             commands::compare_whitebox_traces,
             commands::list_trace_sessions,

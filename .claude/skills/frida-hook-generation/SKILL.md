@@ -1,6 +1,6 @@
 ---
 name: frida-hook-generation
-description: Generate bounded ARM64 Frida 16.x JavaScript hook scripts, inspect user-captured trace-ui/frida-hook-v1 JSON or NDJSON, index captured crypto materials, and turn exact-offset register/buffer captures into manual angr or OLLVM state seeds through the trace-ui MCP server. Use for native exports or module-relative offsets, X0-X7 arguments, full ARM64 GPR snapshots, key/salt/digest buffers, strings, returns, backtraces, Stalker events, capture review, or Frida-to-angr handoff. Trace UI never attaches, spawns, loads, or executes Frida; the user controls runtime execution.
+description: Generate bounded ARM64 Frida 16.x JavaScript hook scripts, inspect user-captured trace-ui/frida-hook-v1 JSON or NDJSON, index captured crypto materials, and turn exact-offset register/buffer captures into manual angr, Unicorn, or OLLVM state seeds through the trace-ui MCP server. Use for native exports or module-relative offsets, X0-X7 arguments, full ARM64 GPR snapshots, key/salt/digest buffers, strings, returns, backtraces, Stalker events, capture review, missing-memory recapture, or Frida-to-simulator handoff. Trace UI never attaches, spawns, loads, or executes Frida; the user controls runtime execution.
 ---
 
 # Generate Frida 16 hooks with trace-ui
@@ -9,8 +9,9 @@ Use `mcp__trace-ui__list_frida_hook_recipes`, `mcp__trace-ui__generate_frida_hoo
 `mcp__trace-ui__generate_frida_ollvm_dispatcher_hook`, `mcp__trace-ui__inspect_frida_capture`,
 `mcp__trace-ui__search_frida_capture_events`, `mcp__trace-ui__get_frida_capture_event`,
 `mcp__trace-ui__analyze_frida_crypto_materials`, `mcp__trace-ui__analyze_frida_ollvm_dispatcher_capture`, and
-`mcp__trace-ui__generate_angr_state_seed`, `mcp__trace-ui__generate_unicorn_ollvm_script`, and
-`mcp__trace-ui__inspect_unicorn_ollvm_results`. Generated hooks target Frida 16.x JavaScript APIs and emit
+`mcp__trace-ui__generate_angr_state_seed`, `mcp__trace-ui__generate_unicorn_ollvm_script`,
+`mcp__trace-ui__inspect_unicorn_ollvm_results`, and
+`mcp__trace-ui__generate_frida_unicorn_recapture_hook`. Generated hooks target Frida 16.x JavaScript APIs and emit
 `trace-ui/frida-hook-v1` messages with `send()` plus `TRACE_UI_JSON` strict-JSON log lines.
 
 ## Workflow
@@ -51,7 +52,10 @@ Use `mcp__trace-ui__list_frida_hook_recipes`, `mcp__trace-ui__generate_frida_hoo
 12. For concrete OLLVM replay, select one to 32 exact branch/condition-source/dispatcher events and call
     `generate_unicorn_ollvm_script` with the mandatory exact AArch64 ELF. The user runs the Python
     manually and imports the JSON with `inspect_unicorn_ollvm_results`. Use missing-memory
-    `baseRegister`/`displacement` suggestions to refine the next bounded Frida capture.
+    `baseRegister`/`displacement` suggestions to refine the next bounded Frida capture. When the
+    suggestion uses X0-X28 or SP, call `generate_frida_unicorn_recapture_hook` with one to 64 selected
+    indices. The generated Hook remains at the original exact seed offset and reads only 1-4096 bytes per
+    signed-displacement window; the user runs it manually and reimports its `hook-enter` as a new seed.
 
 ## Request fields
 
@@ -94,6 +98,9 @@ Use `mcp__trace-ui__list_frida_hook_recipes`, `mcp__trace-ui__generate_frida_hoo
   current report dispatcher `startOffset`. Connect events only inside one capture session, thread, and
   flow; when both events have `hitSequence`, require consecutive values. These checks do not attest the
   loaded binary build or turn adjacent hits into a complete CFG.
+- For Unicorn recapture, reject absolute-address, X29, and X30 suggestions. Preserve `readError` for null
+  or unreadable windows and never substitute zero bytes. The embedded expected SHA-256 is provenance from
+  the prior replay, not runtime module attestation.
 
 ## Frida 16 boundary
 

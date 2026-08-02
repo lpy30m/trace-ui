@@ -17,6 +17,7 @@ use trace_core::{
     generate_angr_ollvm_script_with_seeds_flow_and_identity,
     generate_angr_state_seed as build_angr_state_seed, generate_frida_hook as build_frida_hook,
     generate_frida_ollvm_dispatcher_hook as build_frida_ollvm_dispatcher_hook,
+    generate_frida_unicorn_recapture_hook as build_frida_unicorn_recapture_hook,
     generate_ida_ollvm_script, generate_unicorn_ollvm_script as build_unicorn_ollvm_script,
     get_frida_capture_event as build_frida_capture_event, inspect_elf_binary,
     list_frida_hook_recipes as build_frida_hook_recipes, parse_angr_ollvm_result_bundle,
@@ -28,11 +29,11 @@ use trace_core::{
     CryptoMaterialTraceCase, DepTreeOptions, EvidenceScoreSignal, ForwardSliceOptions,
     FridaArgumentKind, FridaArgumentSpec, FridaCaptureDirection, FridaCaptureSearchOptions,
     FridaHookRequest, FridaOllvmDispatcherAtlasOptions, FridaOllvmDispatcherHookOptions,
-    FridaStalkerMode, HashAlgorithm, HashMatchRequest, HashTransformOptions, OllvmAnalysisOptions,
-    OllvmMultiTraceRequest, OllvmTraceCase, OllvmVersionMapRequest, OllvmVersionTraceCase,
-    SearchOptions, SliceOptions, StringQueryOptions, TraceDiffOptions, TraceEngine,
-    UnicornOllvmConfig, ValueEndian, ValueSearchKind, ValueSearchRequest,
-    WhiteBoxMultiTraceRequest, WhiteBoxOptions, WhiteBoxTraceCaseRequest,
+    FridaStalkerMode, FridaUnicornRecaptureHookOptions, HashAlgorithm, HashMatchRequest,
+    HashTransformOptions, OllvmAnalysisOptions, OllvmMultiTraceRequest, OllvmTraceCase,
+    OllvmVersionMapRequest, OllvmVersionTraceCase, SearchOptions, SliceOptions, StringQueryOptions,
+    TraceDiffOptions, TraceEngine, UnicornOllvmConfig, ValueEndian, ValueSearchKind,
+    ValueSearchRequest, WhiteBoxMultiTraceRequest, WhiteBoxOptions, WhiteBoxTraceCaseRequest,
 };
 
 fn decode_hex_bytes(value: &str) -> Result<Vec<u8>, String> {
@@ -4864,6 +4865,29 @@ impl TraceToolHandler {
             let bytes = std::fs::read(&req.file_path)
                 .map_err(|error| format!("failed to read Unicorn results: {error}"))?;
             Ok(json(&parse_unicorn_ollvm_result_bundle(&bytes)?))
+        })
+        .await
+    }
+
+    #[tool(
+        name = "generate_frida_unicorn_recapture_hook",
+        description = "Read and strictly validate a trace-ui/unicorn-ollvm-v1 result, then turn one to 64 selected register-relative recaptureSuggestions into a bounded Frida 16.x exact-seed-offset hook. The generated hook captures full ARM64 GPR/NZCV plus precise X0-X28/SP +/- displacement byte windows and emits hook-enter events that can be imported as another Unicorn/angr seed. Absolute-address and unsupported-register suggestions are rejected. Trace UI never executes Frida; all evidence remains Candidate/Related."
+    )]
+    async fn generate_frida_unicorn_recapture_hook(
+        &self,
+        Parameters(req): Parameters<GenerateFridaUnicornRecaptureHookRequest>,
+    ) -> Result<String, String> {
+        blocking(move || {
+            let bytes = std::fs::read(&req.unicorn_result_path)
+                .map_err(|error| format!("failed to read Unicorn results: {error}"))?;
+            let bundle = parse_unicorn_ollvm_result_bundle(&bytes)?;
+            Ok(json(&build_frida_unicorn_recapture_hook(
+                &bundle,
+                &req.suggestion_indices,
+                &FridaUnicornRecaptureHookOptions {
+                    max_events: req.max_events,
+                },
+            )?))
         })
         .await
     }

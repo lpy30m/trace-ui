@@ -23,15 +23,16 @@
 - 增强 **Dispatcher pointer/stack-memory capture**：multi-dispatcher 脚本允许用户显式选择 X0-X28、每个指针的最大读取字节数，以及从 SP 开始的可选 0-16 KiB 栈窗口；捕获结果复用 `byteArray`/`readError` 协议，可直接生成后续 angr/Unicorn memory seed。默认不读取任何指针或栈，所有读取有界且由用户手动运行脚本。
 - 增强 **angr exact ELF guard / multi-seed handoff**：`generate_angr_ollvm_script` 可选绑定 exact AArch64 ELF SHA-256，生成的 Python 在建立 angr Project 前拒绝哈希不一致的文件；同一 Frida 捕获可一次嵌入最多 32 个精确匹配的 branch/condition-source/dispatcher 事件，并在结果中保留全部 provenance。该哈希只验证用户选择的文件，不证明原 trace 的运行时映像。
 - 新增 **Unicorn exact-seed concrete replay**：`generate_unicorn_ollvm_script` 强制绑定 exact AArch64 ELF 和 1–32 个精确 Frida 事件，生成独立 Python 进行 bounded concrete replay；`inspect_unicorn_ollvm_results` 严格导回 next-dispatcher/return/call/loop/missing-state 等停止结果、状态寄存器变化、内存写、dispatcher 转移矩阵和 register-relative recapture suggestion。缺失运行时内存、SIMD、TLS/系统状态不会静默补零，所有结果保持 Candidate/Related。
+- 新增 **Unicorn missing-memory → Frida 精确重捕获闭环**：`generate_frida_unicorn_recapture_hook` 与 GUI“Frida 精确重捕获”阶段可把最多 64 条 X0-X28/SP 正负位移建议聚合到最多 32 个原始 exact seed offset；每个窗口限制 1–4096 字节，读取失败保留 `readError`，新 `hook-enter` 可直接再次生成 angr/Unicorn seed。Trace UI 仍不 attach/spawn/load/run Frida，嵌入的 ELF SHA-256 仅作为上一轮 provenance。
 - Frida capture parser 已同步保留 X8-X28 pointer snapshot 与 SP 栈窗口，相关 byteArray 会进入 angr/Unicorn state seed；有端到端回归防止退回旧 X0-X7 导入限制。
 - 增强 **OLLVM condition-state profile**：条件分支报告聚合已捕获/缺失观察、distinct 条件值、按 outcome 的值分布及 NZCV 的 N/Z/C/V set/clear 计数；profile 不完整时明确标记，仍仅作为 Candidate/Related 证据。
 - GUI 入口位于 `Crypto > Materials`、`Crypto > Frida Hook`、`Crypto > IDA / OLLVM`，其中 OLLVM 面板包含 IDA 与 angr bridge；Tauri 和 MCP 已完整接线。
-- MCP 覆盖 `analyze_crypto_materials`、`compare_crypto_material_traces`、`list_frida_hook_recipes`、`generate_frida_hook`、`generate_frida_ollvm_dispatcher_hook`、`inspect_frida_capture`、`search_frida_capture_events`、`get_frida_capture_event`、`analyze_frida_crypto_materials`、`analyze_frida_ollvm_dispatcher_capture`、`generate_angr_state_seed`、`analyze_ollvm`、`compare_ollvm_traces`、`map_ollvm_versions`、`generate_ida_ollvm_script`、`inspect_ida_annotations`、`generate_angr_ollvm_script`、`inspect_angr_ollvm_results`、`generate_unicorn_ollvm_script`、`inspect_unicorn_ollvm_results`。
+- MCP 覆盖 `analyze_crypto_materials`、`compare_crypto_material_traces`、`list_frida_hook_recipes`、`generate_frida_hook`、`generate_frida_ollvm_dispatcher_hook`、`generate_frida_unicorn_recapture_hook`、`inspect_frida_capture`、`search_frida_capture_events`、`get_frida_capture_event`、`analyze_frida_crypto_materials`、`analyze_frida_ollvm_dispatcher_capture`、`generate_angr_state_seed`、`analyze_ollvm`、`compare_ollvm_traces`、`map_ollvm_versions`、`generate_ida_ollvm_script`、`inspect_ida_annotations`、`generate_angr_ollvm_script`、`inspect_angr_ollvm_results`、`generate_unicorn_ollvm_script`、`inspect_unicorn_ollvm_results`。当前 MCP 共 62 个工具，Tauri invoke handler 共 80 个命令。
 - Skills：更新 `trace-analysis`、`frida-hook-generation`、`ida-ollvm-analysis`。Frida skill 会优先检查审计配方，并明确禁止自动执行脚本；angr bridge 同样只生成脚本，由用户手动运行。
 - `main` push 会触发 `.github/workflows/macos.yml`，构建 macOS arm64 与 x64 DMG artifacts。
 
 > 用途：让 AI（Claude / Codex）快速理解当前项目状态再继续干活，也给作者自己当记忆锚点。
-> 最近更新：2026-07-22。当前代码变更与交接先读 `CURRENT_CHANGELOG.md`；历史设计见 `AI_ANALYSIS_ROADMAP.md` / `OPTIMIZATION_ROADMAP.md`，实施细节见 `CRYPTO_FUNCTIONS_IMPL.md`，macOS 构建见 `MACOS_SOURCE_BUILD.md`。
+> 最近更新：2026-08-02。当前代码变更与交接先读 `CURRENT_CHANGELOG.md`；历史设计见 `AI_ANALYSIS_ROADMAP.md` / `OPTIMIZATION_ROADMAP.md`，实施细节见 `CRYPTO_FUNCTIONS_IMPL.md`，macOS 构建见 `MACOS_SOURCE_BUILD.md`。
 
 ## 1. 这是什么
 
