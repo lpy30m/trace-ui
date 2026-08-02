@@ -206,6 +206,13 @@ Line numbers in taint `@LINE` specs are **1-based**; `start_seq`/`end_seq`/`seq`
   bounded windows. Supported suggestions can be passed to
   `generate_frida_unicorn_recapture_hook`, then the resulting user-captured exact-seed `hook-enter` can
   be selected in another Unicorn/angr generation request. Results remain Candidate/Related.
+- **compare_unicorn_ollvm_rounds** `{rounds:[{round_id,file_path,source_label?}, ...]}` strictly
+  validates two to 16 ordered `trace-ui/unicorn-ollvm-v1` files for the same module and exact ELF
+  SHA-256. It aggregates runs by exact seed `captureOffset`, reports cumulative and adjacent-round
+  new/lost instruction/block offsets, new dispatchers, moved or repeated missing-memory signatures,
+  seed additions/removals, configuration drift, truncation, and bounded next-step recommendations.
+  The first round is baseline coverage rather than iterative progress. Trace UI only compares imported
+  files; every progress/stall/regression classification remains Candidate/Related.
 
 ## Taint (data-flow slicing)
 

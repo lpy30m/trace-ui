@@ -1402,6 +1402,24 @@ pub struct InspectUnicornOllvmResultsRequest {
 }
 
 #[derive(Debug, Deserialize, JsonSchema)]
+pub struct UnicornOllvmRoundFileRequest {
+    #[schemars(description = "Unique printable round label, such as round-1 or recapture-2")]
+    pub round_id: String,
+    #[schemars(
+        description = "Absolute path to one validated trace-ui/unicorn-ollvm-v1 result JSON"
+    )]
+    pub file_path: String,
+}
+
+#[derive(Debug, Deserialize, JsonSchema)]
+pub struct CompareUnicornOllvmRoundsRequest {
+    #[schemars(
+        description = "Two to 16 ordered Unicorn result rounds for the same module and exact ELF. Order must reflect the actual recapture/replay sequence."
+    )]
+    pub rounds: Vec<UnicornOllvmRoundFileRequest>,
+}
+
+#[derive(Debug, Deserialize, JsonSchema)]
 pub struct GenerateFridaUnicornRecaptureHookRequest {
     #[schemars(
         description = "Absolute path to a validated trace-ui/unicorn-ollvm-v1 JSON result from a manually executed generated Unicorn script"

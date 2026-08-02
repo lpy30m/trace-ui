@@ -1,6 +1,6 @@
 # 项目状态与交接（先读这个）
 
-## 2026-07-22 当前增量
+## 2026-08-02 当前增量
 
 - 前端安全与工作流收尾：Crypto Materials 和 Frida 材料索引默认遮罩 key/salt/digest 等完整字节，改为每条材料独立显示/隐藏；Frida 捕获列表支持元数据搜索、事件类型和 payload 筛选，并使用 `useVirtualizerNoSync` 虚拟滚动；Crypto 子页面按首次访问懒加载并保持已访问页签状态；Frida/OLLVM 页面提示所有脚本由用户手动执行；不支持独立窗口的页签已禁用拖出；`npm run check:ui-guards` 与 `npm run test:ui` 防止自动 Frida 行为、空浮动面板、关键旧文案和核心交互回归。
 
@@ -24,10 +24,11 @@
 - 增强 **angr exact ELF guard / multi-seed handoff**：`generate_angr_ollvm_script` 可选绑定 exact AArch64 ELF SHA-256，生成的 Python 在建立 angr Project 前拒绝哈希不一致的文件；同一 Frida 捕获可一次嵌入最多 32 个精确匹配的 branch/condition-source/dispatcher 事件，并在结果中保留全部 provenance。该哈希只验证用户选择的文件，不证明原 trace 的运行时映像。
 - 新增 **Unicorn exact-seed concrete replay**：`generate_unicorn_ollvm_script` 强制绑定 exact AArch64 ELF 和 1–32 个精确 Frida 事件，生成独立 Python 进行 bounded concrete replay；`inspect_unicorn_ollvm_results` 严格导回 next-dispatcher/return/call/loop/missing-state 等停止结果、状态寄存器变化、内存写、dispatcher 转移矩阵和 register-relative recapture suggestion。缺失运行时内存、SIMD、TLS/系统状态不会静默补零，所有结果保持 Candidate/Related。
 - 增强 **Unicorn missing-memory → Frida 精确重捕获闭环**：每个 Unicorn seed 现在携带经过 runtime register/pointer 校验的 `seedRecapturePlans`；大于 4096 字节的 exact byteArray 自动拆窗。`generate_frida_unicorn_recapture_hook` 与 GUI 可把最多 64 条 X0-X28/SP 正负位移建议聚合到最多 32 个原始 exact seed offset，并重新读取上一轮可安全携带的 key/input/stack 等窗口；旧窗口和新建议按 register/displacement/length 去重，无法验证相对关系或达到窗口上限时明确 warning。新 `hook-enter` 可再次生成 angr/Unicorn seed，实现逐轮补全而不复制绝对地址、陈旧字节或静默补零。Trace UI 仍不 attach/spawn/load/run Frida，嵌入的 ELF SHA-256 仅作为上一轮 provenance。
+- 新增 **Unicorn/OLLVM 多轮重放进度比较**：核心协议 `trace-ui/unicorn-ollvm-round-comparison-v1`、MCP/Tauri `compare_unicorn_ollvm_rounds` 和 GUI“对比多轮 JSON”统一读取 2–16 轮严格校验结果。只允许相同 module 与 exact ELF SHA-256，按 `captureOffset` 聚合 seed，报告累计新增 offset/block、新 dispatcher、缺页前移、同点停滞、路径分歧、覆盖回退、seed 增删、配置漂移和截断证据；建议继续重捕获、选择更近人工 checkpoint 或转有界 angr。所有分类保持 Candidate/Related，Trace UI 不自动执行模拟器。
 - Frida capture parser 已同步保留 X8-X28 pointer snapshot 与 SP 栈窗口，相关 byteArray 会进入 angr/Unicorn state seed；有端到端回归防止退回旧 X0-X7 导入限制。
 - 增强 **OLLVM condition-state profile**：条件分支报告聚合已捕获/缺失观察、distinct 条件值、按 outcome 的值分布及 NZCV 的 N/Z/C/V set/clear 计数；profile 不完整时明确标记，仍仅作为 Candidate/Related 证据。
 - GUI 入口位于 `Crypto > Materials`、`Crypto > Frida Hook`、`Crypto > IDA / OLLVM`，其中 OLLVM 面板包含 IDA 与 angr bridge；Tauri 和 MCP 已完整接线。
-- MCP 覆盖 `analyze_crypto_materials`、`compare_crypto_material_traces`、`list_frida_hook_recipes`、`generate_frida_hook`、`generate_frida_ollvm_dispatcher_hook`、`generate_frida_unicorn_recapture_hook`、`inspect_frida_capture`、`search_frida_capture_events`、`get_frida_capture_event`、`analyze_frida_crypto_materials`、`analyze_frida_ollvm_dispatcher_capture`、`generate_angr_state_seed`、`analyze_ollvm`、`compare_ollvm_traces`、`map_ollvm_versions`、`generate_ida_ollvm_script`、`inspect_ida_annotations`、`generate_angr_ollvm_script`、`inspect_angr_ollvm_results`、`generate_unicorn_ollvm_script`、`inspect_unicorn_ollvm_results`。当前 MCP 共 62 个工具，Tauri invoke handler 共 80 个命令。
+- MCP 覆盖 `analyze_crypto_materials`、`compare_crypto_material_traces`、`list_frida_hook_recipes`、`generate_frida_hook`、`generate_frida_ollvm_dispatcher_hook`、`generate_frida_unicorn_recapture_hook`、`inspect_frida_capture`、`search_frida_capture_events`、`get_frida_capture_event`、`analyze_frida_crypto_materials`、`analyze_frida_ollvm_dispatcher_capture`、`generate_angr_state_seed`、`analyze_ollvm`、`compare_ollvm_traces`、`map_ollvm_versions`、`generate_ida_ollvm_script`、`inspect_ida_annotations`、`generate_angr_ollvm_script`、`inspect_angr_ollvm_results`、`generate_unicorn_ollvm_script`、`inspect_unicorn_ollvm_results`、`compare_unicorn_ollvm_rounds`。当前 MCP 共 63 个工具，Tauri invoke handler 共 81 个命令。
 - Skills：更新 `trace-analysis`、`frida-hook-generation`、`ida-ollvm-analysis`。Frida skill 会优先检查审计配方，并明确禁止自动执行脚本；angr bridge 同样只生成脚本，由用户手动运行。
 - `main` push 会触发 `.github/workflows/macos.yml`，构建 macOS arm64 与 x64 DMG artifacts。
 
@@ -71,9 +72,9 @@ AI/MCP 建的分析（磁盘持久化、按 trace 内容校验）现在能在 ap
 Rust workspace 5 crate：
 - `trace-parser` — 行解析、数据模型（`RegId`/`ParsedLine`/`MemOp`）、指令分类 `insn_class.rs`（**ARM64 密码指令已分类**）、格式检测 `gumtrace::detect_format`
 - `trace-core` — 分析引擎。`engine/`（build/slice/forward_slice/search/query/source_sink/trace_diff/crypto_functions/function_inspect）、`query/`（纯逻辑+DTO）、`flat/`（bincode 缓存）、`analysis.rs`（分析记录）、`session.rs`（SessionState）
-- `trace-mcp` — MCP 协议层，`tools.rs` ~33 个 `#[tool]`，HTTP/SSE + stdio 双传输
+- `trace-mcp` — MCP 协议层，当前 63 个 `#[tool]`，HTTP/SSE + stdio 双传输
 - `trace-cli` — 独立 stdio MCP 二进制
-- `src-tauri` — Tauri 胶水，`commands/mod.rs`（~47 命令）、`mcp.rs`（内置 MCP :19821）
+- `src-tauri` — Tauri 胶水，invoke handler 当前 81 个命令、`mcp.rs`（内置 MCP :19821）
 
 前端 `src-web/src`：`App.tsx` + `TraceTable.tsx`(Canvas) 为核心；面板系统在 `components/TabPanel.tsx`（8 个页签：Memory/Accesses/Taint State/Search/Strings/Crypto/Analyses/Function）；状态 `hooks/useTraceStore.ts`；类型 `types/trace.ts`。
 

@@ -117,6 +117,11 @@ pub use query::unicorn::{
     UnicornOllvmScript, UnicornRecaptureSuggestion, UnicornRegisterChange, UnicornReplayRun,
     UnicornSeedQuality, UnicornStateValue, UnicornTransitionEvidence,
 };
+pub use query::unicorn_compare::{
+    compare_unicorn_ollvm_rounds, UnicornOllvmRoundComparisonReport, UnicornOllvmRoundDelta,
+    UnicornOllvmRoundInput, UnicornOllvmRoundSummary, UnicornOllvmSeedRoundComparison,
+    UnicornOllvmSeedRoundObservation,
+};
 pub use query::value_search::{
     ValueEndian, ValueInterpretation, ValueSearchKind, ValueSearchMatch, ValueSearchRequest,
     ValueSearchResponse, ValueSearchSource,

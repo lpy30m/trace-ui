@@ -160,7 +160,10 @@ suggestion indices. Return/save the Frida 16.x script for manual execution, then
 `baseRegister + displacement` relation was verified against the original runtime registers and pointer,
 then merge/deduplicate the selected new windows. Never reuse prior absolute addresses or stale bytes,
 never fill unreadable memory with zeros, and keep unsupported absolute/X29/X30 or unverifiable prior
-regions as explicit manual work.
+regions as explicit manual work. After two to sixteen ordered result rounds from the same exact ELF, call
+`compare_unicorn_ollvm_rounds`. Align conclusions by exact capture offset, not event index; continue
+recapture only for new coverage, a new dispatcher, or a forward-moving missing-state stop. Prefer a closer
+checkpoint or bounded angr for repeated stalls, divergence, or regression.
 
 **"Does this dispatcher or opaque branch stay stable across runs?"**
 → open two to sixteen controlled traces, then `compare_ollvm_traces{cases:[...]}` with a scope and
@@ -226,7 +229,7 @@ recomputes to a known digest.
 | Functions | `analyze_function` (node_id / name / list) |
 | Diff | `compare_traces`, `start_trace_diff` |
 | Frida | `list_frida_hook_recipes`, `generate_frida_hook`, `generate_frida_ollvm_dispatcher_hook`, `generate_frida_unicorn_recapture_hook`, `inspect_frida_capture`, `search_frida_capture_events`, `get_frida_capture_event`, `analyze_frida_crypto_materials`, `analyze_frida_ollvm_dispatcher_capture`, `generate_angr_state_seed` (user executes hooks manually) |
-| IDA / angr / Unicorn / OLLVM | `analyze_ollvm`, `compare_ollvm_traces`, `map_ollvm_versions`, `generate_ida_ollvm_script`, `inspect_ida_annotations`, `generate_angr_ollvm_script`, `inspect_angr_ollvm_results`, `generate_unicorn_ollvm_script`, `inspect_unicorn_ollvm_results` |
+| IDA / angr / Unicorn / OLLVM | `analyze_ollvm`, `compare_ollvm_traces`, `map_ollvm_versions`, `generate_ida_ollvm_script`, `inspect_ida_annotations`, `generate_angr_ollvm_script`, `inspect_angr_ollvm_results`, `generate_unicorn_ollvm_script`, `inspect_unicorn_ollvm_results`, `compare_unicorn_ollvm_rounds` |
 | Orchestration | `auto_investigate`, `start_auto_investigation`, `start_crypto_investigation` |
 | Evidence store | `list_analyses`, `get_analysis`, `compare_analyses`, `export_analysis_report`, `delete_analysis` |
 | Recipes | `list_analysis_recipes`, `run_analysis_recipe`, `save_analysis_recipe`, `delete_analysis_recipe` |

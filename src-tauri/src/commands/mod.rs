@@ -1375,6 +1375,71 @@ pub async fn load_unicorn_ollvm_results(
         .map_err(|error| format!("Task execution failed: {error}"))?
 }
 
+#[tauri::command]
+pub async fn compare_unicorn_ollvm_rounds(
+    paths: Vec<String>,
+    round_ids: Option<Vec<String>>,
+) -> Result<trace_core::UnicornOllvmRoundComparisonReport, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        if !(2..=16).contains(&paths.len()) {
+            return Err(
+                "Unicorn round comparison requires between 2 and 16 result files".to_string(),
+            );
+        }
+        let round_ids = match round_ids {
+            Some(values) if values.len() == paths.len() => values,
+            Some(_) => {
+                return Err("Unicorn round comparison roundIds count must match paths".to_string())
+            }
+            None => paths
+                .iter()
+                .enumerate()
+                .map(|(index, _)| format!("round-{}", index + 1))
+                .collect(),
+        };
+        let mut total_bytes = 0u64;
+        let mut loaded = Vec::with_capacity(paths.len());
+        for (index, path) in paths.iter().enumerate() {
+            let trimmed = path.trim();
+            if trimmed.is_empty() {
+                return Err(format!(
+                    "Unicorn comparison path {} must not be empty",
+                    index + 1
+                ));
+            }
+            let metadata = std::fs::metadata(trimmed)
+                .map_err(|error| format!("failed to inspect Unicorn result {trimmed}: {error}"))?;
+            total_bytes = total_bytes.saturating_add(metadata.len());
+            if total_bytes > 256 * 1024 * 1024 {
+                return Err(
+                    "Unicorn round comparison input files exceed the 256 MiB aggregate limit"
+                        .to_string(),
+                );
+            }
+            let bundle = read_unicorn_ollvm_results(trimmed)?;
+            let source_label = std::path::Path::new(trimmed)
+                .file_name()
+                .and_then(|value| value.to_str())
+                .unwrap_or(trimmed)
+                .to_string();
+            loaded.push((round_ids[index].clone(), source_label, bundle));
+        }
+        let inputs = loaded
+            .iter()
+            .map(
+                |(round_id, source_label, bundle)| trace_core::UnicornOllvmRoundInput {
+                    round_id,
+                    source_label: Some(source_label),
+                    bundle,
+                },
+            )
+            .collect::<Vec<_>>();
+        trace_core::compare_unicorn_ollvm_rounds(&inputs)
+    })
+    .await
+    .map_err(|error| format!("Task execution failed: {error}"))?
+}
+
 fn read_unicorn_ollvm_results(path: &str) -> Result<trace_core::UnicornOllvmResultBundle, String> {
     let trimmed = path.trim();
     if trimmed.is_empty() {

@@ -2,7 +2,7 @@
 
 最后更新：2026-08-02
 当前分支：`feat/aes-unicorn-integration`
-Unicorn/OLLVM 基线提交：`457353f feat: add exact-seed Unicorn OLLVM replay`
+Unicorn/OLLVM 基线提交：`f19d850 feat: preserve Unicorn seed memory across recaptures`
 AES 集成提交：`887968e fix: detect software AES from memory traces`
 
 这份文档是后续 Codex/开发者进入项目时的快速入口。它记录当前已经实现的 Frida 16、OLLVM、IDA、angr 和密码材料分析能力，以及每项能力对应的代码位置和边界。
@@ -21,6 +21,9 @@ AES 集成提交：`887968e fix: detect software AES from memory traces`
 - 新增伪造相对地址元数据拒绝、plan 严格解析、窗口拆分、旧结果兼容及第二轮 seed 同时保留旧/新内存的回归。
 - Dispatcher Frida 捕获扩展为可选 X0-X28 pointer snapshot 与从 SP 开始的 0–16 KiB 栈窗口；默认均关闭，读取失败保持 `readError`。
 - Frida 捕获导入同步接受 X8-X28 和合成 SP 栈 capture index，避免新增内存在生成 angr/Unicorn seed 时被旧 X0-X7 过滤器静默丢弃。
+- 新增 `trace-ui/unicorn-ollvm-round-comparison-v1`、MCP/Tauri `compare_unicorn_ollvm_rounds` 与 GUI“对比多轮 JSON”：严格比较 2–16 轮同 module、同 exact ELF SHA-256 的结果，按 exact `captureOffset` 聚合而不依赖跨文件不稳定的 event index。
+- 多轮报告区分基线覆盖和后续首次新增，按 seed 输出新/丢失 offset/block、新 dispatcher、缺页前移、同点停滞、路径分歧、覆盖回退、seed 增删、配置漂移与截断警告，并建议继续有界重捕获、改用更近 checkpoint 或转 angr。回退优先级高于重复缺页停滞，所有分类保持 Candidate/Related。
+- 核心比较器新增 7 个定向测试，覆盖进度、停滞、回退、新 dispatcher、ELF 不匹配、seed 集变化、配置漂移、截断、重复 seed、绝对地址缺页、round ID 和 2/16 边界。
 - Release Action 从真实 `src-tauri` 应用目录启动 Tauri，和本地 Windows MSI/NSIS 成功构建路径保持一致。
 
 ### 严重 OLLVM 样本的推荐顺序
@@ -29,8 +32,9 @@ AES 集成提交：`887968e fix: detect software AES from memory traces`
 2. 对精确 module-relative offset 生成 Frida dispatcher/branch Hook，由用户手动运行；优先捕获完整 GPR/NZCV，再按缺失状态提示补充少量 X0-X28 pointer 或 SP 栈窗口。
 3. 优先使用 Unicorn“模拟增强”做 exact-seed 具体重放。它速度快、路径确定，适合确认下一 dispatcher、循环、调用边界、寄存器变化和缺失内存。
 4. 遇到 `missing-memory` 时，优先勾选可自动生成的建议创建精确 Frida 重捕获 Hook；用户在相同构建/受控输入下手动运行，并把新捕获再次作为 Unicorn 或 angr seed。寄存器在 seed 点到缺失点之间若已变化，可能需要继续迭代或选择更近的人工捕获点。
-5. 只有需要探索未观测分支时再生成 angr bridge，保持默认有界深度/状态数，避免严重混淆样本发生状态爆炸。
-6. 将 Unicorn/angr 结果导回 Trace UI，再用 IDA 注释和多运行对比人工确认。AI/MCP 负责选择候选、组织证据和生成脚本，不自动 attach Frida，也不把结构候选表述为已完成去混淆。
+5. 至少完成两轮后，用 GUI“对比多轮 JSON”或 MCP `compare_unicorn_ollvm_rounds` 按时间顺序比较；只有新增覆盖、新 dispatcher 或缺页前移时继续重捕获。相同缺页/终点重复时改用更近的人工 checkpoint。
+6. 只有需要探索未观测分支或具体重放持续停滞时再生成 angr bridge，保持默认有界深度/状态数，避免严重混淆样本发生状态爆炸。
+7. 将 Unicorn/angr 结果导回 Trace UI，再用 IDA 注释和多运行对比人工确认。AI/MCP 负责选择候选、组织证据和生成脚本，不自动 attach Frida，也不把结构候选表述为已完成去混淆。
 
 ## 本轮 AES 与 Frida 语义验证增强
 
@@ -244,6 +248,9 @@ GUI 的 `angr` 页面可以选择 exact AArch64 ELF。生成脚本时保存 SHA-
 | `trace-ui/angr-state-seed-v1` | 单个 Frida 事件的 angr state seed | Trace UI |
 | `trace-ui/angr-ollvm-v1` | angr 静动态对账与 bounded probes | 用户手动运行生成的 Python |
 | `trace-ui/ida-ollvm-v1` | IDA 注释/颜色/xref 导出 | 用户手动运行生成的 IDAPython |
+| `trace-ui/unicorn-ollvm-v1` | exact-seed Unicorn bounded concrete replay | 用户手动运行生成的 Python |
+| `trace-ui/frida-unicorn-recapture-hook-v1` | 累积补全 Unicorn seed 内存的有界 Hook 元数据 | Trace UI |
+| `trace-ui/unicorn-ollvm-round-comparison-v1` | 2–16 轮同 ELF Unicorn 结果的进度/停滞比较 | Trace UI |
 
 修改协议字段时，必须同步：
 
@@ -267,9 +274,11 @@ open trace
   -> import JSON/NDJSON
   -> inspect dispatcher atlas or crypto materials
   -> select exact ELF and one/multiple Frida events
-  -> generate angr Python
-  -> user runs angr manually
-  -> import trace-ui/angr-ollvm-v1 JSON
+  -> generate Unicorn Python and run it manually
+  -> import trace-ui/unicorn-ollvm-v1 JSON
+  -> recapture explicit missing memory and replay again while coverage advances
+  -> compare 2-16 Unicorn rounds by exact seed offset
+  -> use a closer checkpoint or bounded angr for stalled/diverged seeds
 ```
 
 跨版本时不能复制旧版本的 source offset、concrete state、Frida capture 或 angr seed；必须为目标 ELF 重新生成 exact-offset Hook 和 seed。

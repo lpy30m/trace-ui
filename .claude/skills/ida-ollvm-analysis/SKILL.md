@@ -10,7 +10,8 @@ Use `mcp__trace-ui__analyze_ollvm`, `mcp__trace-ui__compare_ollvm_traces`, `mcp_
 `mcp__trace-ui__inspect_angr_ollvm_results`, `mcp__trace-ui__inspect_frida_capture`, and
 `mcp__trace-ui__generate_angr_state_seed`, `mcp__trace-ui__generate_unicorn_ollvm_script`,
 `mcp__trace-ui__inspect_unicorn_ollvm_results`, and
-`mcp__trace-ui__generate_frida_unicorn_recapture_hook`. For multi-dispatcher manual capture, also use
+`mcp__trace-ui__generate_frida_unicorn_recapture_hook`, and
+`mcp__trace-ui__compare_unicorn_ollvm_rounds`. For multi-dispatcher manual capture, also use
 `mcp__trace-ui__generate_frida_ollvm_dispatcher_hook` and
 `mcp__trace-ui__analyze_frida_ollvm_dispatcher_capture`.
 
@@ -58,7 +59,11 @@ Use `mcp__trace-ui__analyze_ollvm`, `mcp__trace-ui__compare_ollvm_traces`, `mcp_
    exact-seed-offset Frida 16.x script, then reuse the new `hook-enter` as another Unicorn/angr seed.
    The generated Hook should cumulatively re-read verified prior seed windows and merge them with the new
    missing-memory request, so a second replay keeps the prior key/input/stack context instead of merely
-   moving the missing-memory stop. Never carry an old absolute address or stale bytes across runs.
+   moving the missing-memory stop. Never carry an old absolute address or stale bytes across runs. After
+   two or more ordered replays, call `compare_unicorn_ollvm_rounds` with two to sixteen result files from
+   the same exact ELF. Review per-seed new/lost offsets and blocks, new dispatchers, moved/repeated missing
+   signatures, configuration drift, and truncation. Continue recapture only while bounded coverage advances;
+   prefer a closer manual checkpoint or bounded angr when the same seed stalls.
 10. To observe several ranked dispatchers in one user-controlled run, call
     `generate_frida_ollvm_dispatcher_hook`, return/save the Frida 16.x script, and stop until the user
     supplies its capture. Then call `analyze_frida_ollvm_dispatcher_capture` on the same OLLVM scope.
@@ -122,6 +127,10 @@ Use `mcp__trace-ui__analyze_ollvm`, `mcp__trace-ui__compare_ollvm_traces`, `mcp_
   require another iteration or a closer manually selected capture point. Only byteArray regions with a
   runtime-verified X0-X28/SP `baseRegister + displacement` relation may be carried automatically; large
   regions are split into bounded windows, while unverifiable/truncated regions remain explicit warnings.
+- Unicorn round comparison is valid only for two to sixteen ordered results with the same module and exact
+  ELF SHA-256. It aligns seeds by exact capture offset rather than cross-file event index. New coverage or
+  a new dispatcher remains Candidate/Related; repeated missing memory, lost coverage, configuration drift,
+  or truncated recordings must remain explicit and must not be described as proof of reachability.
 
 ## IDA bridge boundary
 
@@ -143,7 +152,8 @@ AArch64 ELF and at least one exact-offset Frida event. Keep instructions within 
 within 1-60,000 ms; begin with 50,000 instructions and 5,000 ms. Stop on calls by default. Treat the
 transition matrix as grouped exact-seed replay evidence, never a complete state machine or recovered CFG.
 Trace UI may generate a bounded Frida 16.x recapture script from validated Unicorn suggestions, but the
-user still controls attach/spawn/load/run and must confirm the runtime module is the same ELF build.
+user still controls attach/spawn/load/run and must confirm the runtime module is the same ELF build. It may
+compare user-produced replay JSON files, but it never launches Unicorn or angr during that comparison.
 
 ## Reporting
 

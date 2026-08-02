@@ -14,6 +14,7 @@ use trace_core::{
     analyze_frida_crypto_materials as build_frida_crypto_materials,
     analyze_frida_ollvm_dispatcher_capture as build_frida_ollvm_dispatcher_capture,
     api_types::TraceLine, apply_resource_validation, classify_flow_endpoints,
+    compare_unicorn_ollvm_rounds as build_unicorn_round_comparison,
     generate_angr_ollvm_script_with_seeds_flow_and_identity,
     generate_angr_state_seed as build_angr_state_seed, generate_frida_hook as build_frida_hook,
     generate_frida_ollvm_dispatcher_hook as build_frida_ollvm_dispatcher_hook,
@@ -32,8 +33,9 @@ use trace_core::{
     FridaStalkerMode, FridaUnicornRecaptureHookOptions, HashAlgorithm, HashMatchRequest,
     HashTransformOptions, OllvmAnalysisOptions, OllvmMultiTraceRequest, OllvmTraceCase,
     OllvmVersionMapRequest, OllvmVersionTraceCase, SearchOptions, SliceOptions, StringQueryOptions,
-    TraceDiffOptions, TraceEngine, UnicornOllvmConfig, ValueEndian, ValueSearchKind,
-    ValueSearchRequest, WhiteBoxMultiTraceRequest, WhiteBoxOptions, WhiteBoxTraceCaseRequest,
+    TraceDiffOptions, TraceEngine, UnicornOllvmConfig, UnicornOllvmRoundInput, ValueEndian,
+    ValueSearchKind, ValueSearchRequest, WhiteBoxMultiTraceRequest, WhiteBoxOptions,
+    WhiteBoxTraceCaseRequest,
 };
 
 fn decode_hex_bytes(value: &str) -> Result<Vec<u8>, String> {
@@ -4865,6 +4867,59 @@ impl TraceToolHandler {
             let bytes = std::fs::read(&req.file_path)
                 .map_err(|error| format!("failed to read Unicorn results: {error}"))?;
             Ok(json(&parse_unicorn_ollvm_result_bundle(&bytes)?))
+        })
+        .await
+    }
+
+    #[tool(
+        name = "compare_unicorn_ollvm_rounds",
+        description = "Read and strictly validate two to 16 ordered trace-ui/unicorn-ollvm-v1 result files for the same module and exact ELF, then compare cumulative concrete-replay coverage per exact seed offset. Reports newly reached offsets/blocks/dispatchers, moved or repeated missing-memory signatures, lost coverage, configuration drift, and bounded recommendations such as continue recapture, use a closer manual checkpoint, or switch selected seeds to angr. It never executes Unicorn, angr, or Frida; every progress classification remains Candidate/Related."
+    )]
+    async fn compare_unicorn_ollvm_rounds(
+        &self,
+        Parameters(req): Parameters<CompareUnicornOllvmRoundsRequest>,
+    ) -> Result<String, String> {
+        blocking(move || {
+            if !(2..=16).contains(&req.rounds.len()) {
+                return Err(
+                    "compare_unicorn_ollvm_rounds requires between 2 and 16 rounds".to_string(),
+                );
+            }
+            let mut total_bytes = 0u64;
+            let mut loaded = Vec::with_capacity(req.rounds.len());
+            for round in req.rounds {
+                let path = round.file_path.trim();
+                if path.is_empty() {
+                    return Err("Unicorn round file_path must not be empty".to_string());
+                }
+                let metadata = std::fs::metadata(path)
+                    .map_err(|error| format!("failed to inspect Unicorn result {path}: {error}"))?;
+                total_bytes = total_bytes.saturating_add(metadata.len());
+                if total_bytes > 256 * 1024 * 1024 {
+                    return Err(
+                        "Unicorn round comparison inputs exceed the 256 MiB aggregate limit"
+                            .to_string(),
+                    );
+                }
+                let bytes = std::fs::read(path)
+                    .map_err(|error| format!("failed to read Unicorn results: {error}"))?;
+                let bundle = parse_unicorn_ollvm_result_bundle(&bytes)?;
+                let source_label = std::path::Path::new(path)
+                    .file_name()
+                    .and_then(|value| value.to_str())
+                    .unwrap_or(path)
+                    .to_string();
+                loaded.push((round.round_id, source_label, bundle));
+            }
+            let inputs = loaded
+                .iter()
+                .map(|(round_id, source_label, bundle)| UnicornOllvmRoundInput {
+                    round_id,
+                    source_label: Some(source_label),
+                    bundle,
+                })
+                .collect::<Vec<_>>();
+            Ok(json(&build_unicorn_round_comparison(&inputs)?))
         })
         .await
     }

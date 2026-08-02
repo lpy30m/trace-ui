@@ -5,6 +5,7 @@ import type {
   FridaCaptureEvent,
   FridaUnicornRecaptureHookScript,
   OllvmReport,
+  UnicornOllvmRoundComparisonReport,
   UnicornOllvmResultBundle,
   UnicornRecaptureSuggestion,
   UnicornOllvmScript,
@@ -63,6 +64,25 @@ function automaticRecaptureSupported(suggestion: UnicornRecaptureSuggestion): bo
   return /^[+-]?(?:0x[0-9a-f]+|[0-9]+)$/i.test(displacement);
 }
 
+function roundStatusColor(status: string): string {
+  if (["reached-new-dispatcher", "resolved-prior-stop", "missing-memory-moved-forward", "advanced-coverage", "candidate-progress-observed"].includes(status)) return "#3fb950";
+  if (["stalled-same-missing-memory", "stalled-same-terminal", "longer-same-coverage", "unchanged", "stalled-seeds-present"].includes(status)) return "#d29922";
+  if (["regressed-coverage", "regression-present"].includes(status)) return "#e5484d";
+  return "var(--text-secondary)";
+}
+
+function countMapText(values: Record<string, number>): string {
+  return Object.entries(values)
+    .sort(([left], [right]) => left.localeCompare(right))
+    .map(([name, count]) => `${name}=${count}`)
+    .join(" · ") || "none";
+}
+
+function offsetList(values: string[], truncated = false): string {
+  if (values.length === 0) return "none";
+  return `${values.join(", ")}${truncated ? ", …" : ""}`;
+}
+
 export default function OllvmUnicornPanel({ report }: Props) {
   const [binaryPath, setBinaryPath] = useState<string | null>(null);
   const [capturePath, setCapturePath] = useState<string | null>(null);
@@ -77,12 +97,14 @@ export default function OllvmUnicornPanel({ report }: Props) {
   const [generated, setGenerated] = useState<UnicornOllvmScript | null>(null);
   const [results, setResults] = useState<UnicornOllvmResultBundle | null>(null);
   const [resultsPath, setResultsPath] = useState<string | null>(null);
+  const [roundComparison, setRoundComparison] = useState<UnicornOllvmRoundComparisonReport | null>(null);
+  const [roundComparisonPaths, setRoundComparisonPaths] = useState<string[]>([]);
   const [selectedRecaptureSuggestions, setSelectedRecaptureSuggestions] = useState<number[]>([]);
   const [recaptureMaxEvents, setRecaptureMaxEvents] = useState("5000");
   const [recaptureHook, setRecaptureHook] = useState<FridaUnicornRecaptureHookScript | null>(null);
   const [recaptureSavedPath, setRecaptureSavedPath] = useState<string | null>(null);
   const [savedPath, setSavedPath] = useState<string | null>(null);
-  const [display, setDisplay] = useState<"script" | "results" | "recapture">("script");
+  const [display, setDisplay] = useState<"script" | "results" | "recapture" | "comparison">("script");
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
@@ -270,6 +292,45 @@ export default function OllvmUnicornPanel({ report }: Props) {
     }
   };
 
+  const compareRoundResults = async () => {
+    const { open } = await import("@tauri-apps/plugin-dialog");
+    const selected = await open({
+      multiple: true,
+      directory: false,
+      title: "选择按时间顺序排列的 2–16 轮 Unicorn 结果",
+      filters: [{ name: "Trace UI Unicorn results", extensions: ["json"] }],
+    });
+    const paths = Array.isArray(selected)
+      ? selected
+      : typeof selected === "string"
+        ? [selected]
+        : [];
+    if (paths.length === 0) return;
+    if (paths.length < 2 || paths.length > 16) {
+      setError(`多轮比较需要选择 2–16 个结果 JSON，当前选择了 ${paths.length} 个。`);
+      return;
+    }
+    setBusy(true);
+    setError(null);
+    try {
+      const roundIds = paths.map((_, index) => `round-${index + 1}`);
+      const value = await invoke<UnicornOllvmRoundComparisonReport>(
+        "compare_unicorn_ollvm_rounds",
+        { paths, roundIds },
+      );
+      if (value.moduleName !== report.scope.moduleName) {
+        throw new Error(`Unicorn comparison module ${value.moduleName} does not match ${report.scope.moduleName}`);
+      }
+      setRoundComparison(value);
+      setRoundComparisonPaths(paths);
+      setDisplay("comparison");
+    } catch (reason) {
+      setError(String(reason));
+    } finally {
+      setBusy(false);
+    }
+  };
+
   const toggleRecaptureSuggestion = (index: number) => {
     setSelectedRecaptureSuggestions(current => {
       if (current.includes(index)) return current.filter(value => value !== index);
@@ -397,6 +458,7 @@ export default function OllvmUnicornPanel({ report }: Props) {
           <button type="button" style={{ ...buttonStyle, background: "var(--btn-primary)", color: "#fff", border: "none", opacity: busy ? 0.6 : 1 }} disabled={busy} onClick={generateScript}>{busy ? "处理中…" : "生成 Unicorn Python"}</button>
           <button type="button" style={buttonStyle} disabled={busy} onClick={saveScript}>保存 .py</button>
           <button type="button" style={buttonStyle} disabled={busy} onClick={importResults}>导入结果 JSON</button>
+          <button type="button" style={buttonStyle} disabled={busy} onClick={compareRoundResults}>对比多轮 JSON</button>
           <button type="button" style={{ ...buttonStyle, opacity: generated ? 1 : 0.5 }} disabled={!generated} onClick={() => generated && navigator.clipboard.writeText(generated.script)}>复制脚本</button>
         </div>
         {savedPath && <div title={savedPath} style={{ marginTop: 6, color: "#3fb950", overflow: "hidden", textOverflow: "ellipsis" }}>已保存：{savedPath}</div>}
@@ -471,6 +533,7 @@ export default function OllvmUnicornPanel({ report }: Props) {
           <button type="button" style={{ ...buttonStyle, background: display === "script" ? "var(--bg-selected)" : "var(--bg-input)" }} onClick={() => setDisplay("script")}>脚本</button>
           <button type="button" style={{ ...buttonStyle, background: display === "results" ? "var(--bg-selected)" : "var(--bg-input)", opacity: results ? 1 : 0.5 }} disabled={!results} onClick={() => setDisplay("results")}>模拟结果</button>
           <button type="button" style={{ ...buttonStyle, background: display === "recapture" ? "var(--bg-selected)" : "var(--bg-input)", opacity: recaptureHook ? 1 : 0.5 }} disabled={!recaptureHook} onClick={() => setDisplay("recapture")}>重捕获 Hook</button>
+          <button type="button" style={{ ...buttonStyle, background: display === "comparison" ? "var(--bg-selected)" : "var(--bg-input)", opacity: roundComparison ? 1 : 0.5 }} disabled={!roundComparison} onClick={() => setDisplay("comparison")}>轮次对比</button>
         </div>
         {display === "script" && (
           <pre style={{ flex: 1, margin: 0, padding: 10, overflow: "auto", background: "var(--bg-primary)", color: "var(--text-primary)", fontSize: 10, lineHeight: 1.45, whiteSpace: "pre" }}>{generated?.script || ""}</pre>
@@ -533,6 +596,114 @@ export default function OllvmUnicornPanel({ report }: Props) {
               </div>
             ))}
             {results.warnings.map((warning, index) => <div key={`result-warning-${index}`} style={{ padding: "4px 9px", color: "#d29922" }}>{warning}</div>)}
+          </div>
+        )}
+        {display === "comparison" && roundComparison && (
+          <div style={{ flex: 1, overflow: "auto", fontSize: 11 }}>
+            <div style={{ padding: 10, borderBottom: "1px solid var(--border-color)", background: "var(--bg-secondary)", lineHeight: 1.55 }}>
+              <div style={{ display: "flex", gap: 10, alignItems: "center", flexWrap: "wrap" }}>
+                <strong style={{ color: roundStatusColor(roundComparison.overallStatus) }}>{roundComparison.overallStatus}</strong>
+                <span>{roundComparison.roundCount} rounds</span>
+                <span>{roundComparison.seedOffsetCount} exact seeds</span>
+                <span>{roundComparison.totalUniqueExecutedOffsetCount} unique instructions</span>
+                <span>{roundComparison.totalUniqueBlockOffsetCount} unique blocks</span>
+              </div>
+              <div style={{ marginTop: 4 }}>{roundComparison.overallRecommendation}</div>
+              <div style={{ marginTop: 4, color: "var(--text-secondary)" }}>
+                progress {roundComparison.progressedSeedCount} · stalled {roundComparison.stalledSeedCount} · regressed {roundComparison.regressedSeedCount} · changed {roundComparison.changedSeedCount} · incomplete {roundComparison.incompleteSeedCount}
+              </div>
+              <div style={{ marginTop: 4, color: "var(--text-tertiary)" }}>
+                Module {roundComparison.moduleName} · exact ELF SHA-256 <code>{roundComparison.binarySha256}</code>
+              </div>
+            </div>
+
+            <div style={{ padding: "8px 10px", fontWeight: 600, borderBottom: "1px solid var(--border-color)" }}>轮次覆盖趋势</div>
+            {roundComparison.rounds.map((round, index) => (
+              <div key={round.roundId} style={{ padding: 9, borderBottom: "1px solid var(--border-color)", lineHeight: 1.5 }}>
+                <div style={{ display: "flex", gap: 9, flexWrap: "wrap", alignItems: "center" }}>
+                  <strong>{index === 0 ? `基线 · ${round.roundId}` : round.roundId}</strong>
+                  <span title={roundComparisonPaths[index] || round.sourceLabel || ""} style={{ color: "var(--text-secondary)" }}>{round.sourceLabel || roundComparisonPaths[index]?.split(/[\\/]/).pop()}</span>
+                  <span>{round.runCount} runs / {round.seedOffsetCount} seeds</span>
+                  <span>{round.totalInstructionCount} instructions</span>
+                  <span>{round.uniqueExecutedOffsetCount} unique offsets / {round.uniqueBlockOffsetCount} blocks</span>
+                </div>
+                <div style={{ marginTop: 3, color: index === 0 ? "var(--text-secondary)" : round.newExecutedOffsetCount > 0 || round.newBlockOffsetCount > 0 ? "#3fb950" : "#d29922" }}>
+                  {index === 0 ? "基线覆盖" : "相对之前全部轮次首次新增"}：{round.newExecutedOffsetCount} offsets / {round.newBlockOffsetCount} blocks
+                </div>
+                <div style={{ marginTop: 3, color: "var(--text-secondary)" }}>
+                  stop reasons: {countMapText(round.stopReasonCounts)} · missing {round.missingMemoryCount} ({round.registerRelativeMissingCount} register-relative) · suggestions {round.recaptureSuggestionCount}
+                </div>
+                <div style={{ marginTop: 3, color: round.unsupportedSeedRegionCount > 0 ? "#d29922" : "var(--text-secondary)" }}>
+                  carry-forward {round.carryForwardWindowCount} windows / {round.carryForwardBytes} bytes · unsupported regions {round.unsupportedSeedRegionCount} · dispatchers {offsetList(round.matchedDispatcherOffsets)}
+                </div>
+                {(round.newExecutedOffsets.length > 0 || round.newBlockOffsets.length > 0) && (
+                  <div style={{ marginTop: 3, color: "var(--text-tertiary)" }}>
+                    offsets: {offsetList(round.newExecutedOffsets, round.newExecutedOffsetsTruncated)}<br />
+                    blocks: {offsetList(round.newBlockOffsets, round.newBlockOffsetsTruncated)}
+                  </div>
+                )}
+                {!round.configMatchesBaseline && <div style={{ marginTop: 3, color: "#d29922" }}>本轮执行上限或配置与基线不同，差异不能只归因于重捕获状态。</div>}
+                {round.executionDataTruncated && <div style={{ marginTop: 3, color: "#d29922" }}>执行偏移或重捕获计划已截断；没有看到新增不等于没有前进。</div>}
+                {(round.errorRunCount > 0 || round.warningCount > 0) && <div style={{ marginTop: 3, color: "#d29922" }}>{round.errorRunCount} error runs · {round.warningCount} warnings</div>}
+              </div>
+            ))}
+
+            <div style={{ padding: "8px 10px", fontWeight: 600, borderBottom: "1px solid var(--border-color)" }}>按 exact seed offset 诊断</div>
+            {roundComparison.seeds.map(seed => (
+              <details key={seed.captureOffset} style={{ borderBottom: "1px solid var(--border-color)" }}>
+                <summary style={{ padding: 9, cursor: "pointer", display: "flex", gap: 10, flexWrap: "wrap", alignItems: "center" }}>
+                  <code>{seed.captureOffset}</code>
+                  <strong style={{ color: roundStatusColor(seed.latestStatus) }}>{seed.latestStatus}</strong>
+                  <span style={{ color: "var(--text-secondary)" }}>{seed.latestRecommendation}</span>
+                </summary>
+                <div style={{ padding: "0 10px 10px" }}>
+                  {seed.matchedProbeOffsets.length > 0 && <div style={{ color: "var(--text-tertiary)" }}>matched probes: {seed.matchedProbeOffsets.join(", ")}</div>}
+                  <div style={{ marginTop: 7, fontWeight: 600 }}>轮次观测</div>
+                  {seed.observations.map(observation => (
+                    <div key={`${seed.captureOffset}-${observation.roundId}`} style={{ marginTop: 5, padding: 7, background: "var(--bg-secondary)", borderRadius: 4, lineHeight: 1.5, opacity: observation.present ? 1 : 0.65 }}>
+                      <strong>{observation.roundId}</strong>
+                      {!observation.present ? (
+                        <span style={{ marginLeft: 7, color: "#d29922" }}>seed 不存在</span>
+                      ) : (
+                        <>
+                          <span> · events {observation.sourceEventIndices.join(", ")} · {observation.runCount} runs · {observation.totalInstructionCount} instructions</span>
+                          <div>stop: {observation.stopReasons.join(", ") || "none"} · terminal: {offsetList(observation.terminalOffsets)} · blocks {observation.blockOffsetCount} · offsets {observation.executedOffsetCount}</div>
+                          <div style={{ color: observation.missingMemoryCount > 0 ? "#d29922" : "var(--text-secondary)" }}>missing {observation.missingMemoryCount} ({observation.registerRelativeMissingCount} register-relative) at {offsetList(observation.missingPcOffsets)} · dispatchers {offsetList(observation.matchedDispatcherOffsets)}</div>
+                          <div style={{ color: "var(--text-secondary)" }}>carry-forward {observation.carryForwardWindowCount} windows / {observation.carryForwardBytes} bytes · unsupported {observation.unsupportedSeedRegionCount} · suggestions {observation.recaptureSuggestionCount}</div>
+                          {observation.executionDataTruncated && <div style={{ color: "#d29922" }}>该轮观测数据已截断。</div>}
+                          {observation.errorRunCount > 0 && <div style={{ color: "#e5484d" }}>{observation.errorRunCount} replay run(s) reported errors.</div>}
+                        </>
+                      )}
+                    </div>
+                  ))}
+
+                  <div style={{ marginTop: 8, fontWeight: 600 }}>相邻轮次变化</div>
+                  {seed.deltas.map(delta => (
+                    <div key={`${seed.captureOffset}-${delta.fromRoundId}-${delta.toRoundId}`} style={{ marginTop: 5, padding: 7, border: "1px solid var(--border-color)", borderRadius: 4, lineHeight: 1.5 }}>
+                      <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
+                        <strong>{delta.fromRoundId} → {delta.toRoundId}</strong>
+                        <span style={{ color: roundStatusColor(delta.status) }}>{delta.status}</span>
+                        <span>{delta.evidenceLevel}</span>
+                        <span>instructions {delta.instructionDelta >= 0 ? "+" : ""}{delta.instructionDelta}</span>
+                      </div>
+                      <div>{delta.detail}</div>
+                      <div style={{ color: "var(--text-secondary)" }}>new offsets {delta.newExecutedOffsetCount} · lost offsets {delta.lostExecutedOffsetCount} · new blocks {delta.newBlockOffsetCount} · lost blocks {delta.lostBlockOffsetCount}</div>
+                      {delta.newExecutedOffsets.length > 0 && <div style={{ color: "var(--text-tertiary)" }}>new offsets: {offsetList(delta.newExecutedOffsets, delta.newExecutedOffsetsTruncated)}</div>}
+                      {delta.newBlockOffsets.length > 0 && <div style={{ color: "var(--text-tertiary)" }}>new blocks: {offsetList(delta.newBlockOffsets, delta.newBlockOffsetsTruncated)}</div>}
+                      <div style={{ color: "var(--text-secondary)" }}>stop changed {delta.stopReasonChanged ? "yes" : "no"} · terminal changed {delta.terminalChanged ? "yes" : "no"} · missing changed {delta.missingMemoryChanged ? "yes" : "no"}</div>
+                      <div style={{ marginTop: 2 }}>{delta.recommendation}</div>
+                    </div>
+                  ))}
+                  {seed.warnings.map((warning, index) => <div key={`${seed.captureOffset}-warning-${index}`} style={{ marginTop: 4, color: "#d29922" }}>{warning}</div>)}
+                </div>
+              </details>
+            ))}
+
+            {roundComparison.warnings.length > 0 && <div style={{ padding: "8px 10px", fontWeight: 600 }}>比较警告</div>}
+            {roundComparison.warnings.map((warning, index) => <div key={`comparison-warning-${index}`} style={{ padding: "3px 10px", color: "#d29922" }}>{warning}</div>)}
+            <div style={{ padding: "8px 10px", fontWeight: 600 }}>限制</div>
+            {roundComparison.limitations.map((limitation, index) => <div key={`comparison-limitation-${index}`} style={{ padding: "3px 10px", color: "var(--text-secondary)" }}>{limitation}</div>)}
+            <div style={{ height: 10 }} />
           </div>
         )}
       </div>

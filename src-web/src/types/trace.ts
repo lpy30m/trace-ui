@@ -1368,6 +1368,114 @@ export interface UnicornOllvmResultBundle {
   warnings: string[];
 }
 
+export interface UnicornOllvmRoundSummary {
+  roundIndex: number;
+  roundId: string;
+  sourceLabel?: string | null;
+  runCount: number;
+  seedOffsetCount: number;
+  totalInstructionCount: number;
+  uniqueExecutedOffsetCount: number;
+  uniqueBlockOffsetCount: number;
+  newExecutedOffsetCount: number;
+  newExecutedOffsets: string[];
+  newExecutedOffsetsTruncated: boolean;
+  newBlockOffsetCount: number;
+  newBlockOffsets: string[];
+  newBlockOffsetsTruncated: boolean;
+  stopReasonCounts: Record<string, number>;
+  matchedDispatcherOffsets: string[];
+  missingMemoryCount: number;
+  registerRelativeMissingCount: number;
+  recaptureSuggestionCount: number;
+  carryForwardWindowCount: number;
+  carryForwardBytes: number;
+  unsupportedSeedRegionCount: number;
+  configMatchesBaseline: boolean;
+  executionDataTruncated: boolean;
+  errorRunCount: number;
+  warningCount: number;
+}
+
+export interface UnicornOllvmSeedRoundObservation {
+  roundIndex: number;
+  roundId: string;
+  present: boolean;
+  sourceEventIndices: number[];
+  runCount: number;
+  stopReasons: string[];
+  totalInstructionCount: number;
+  maxInstructionCount: number;
+  terminalOffsets: string[];
+  matchedDispatcherOffsets: string[];
+  executedOffsetCount: number;
+  blockOffsetCount: number;
+  missingMemoryCount: number;
+  registerRelativeMissingCount: number;
+  missingPcOffsets: string[];
+  missingSignatures: string[];
+  recaptureSuggestionCount: number;
+  carryForwardWindowCount: number;
+  carryForwardBytes: number;
+  unsupportedSeedRegionCount: number;
+  executionDataTruncated: boolean;
+  errorRunCount: number;
+}
+
+export interface UnicornOllvmRoundDelta {
+  fromRoundIndex: number;
+  fromRoundId: string;
+  toRoundIndex: number;
+  toRoundId: string;
+  status: string;
+  evidenceLevel: string;
+  instructionDelta: number;
+  newExecutedOffsetCount: number;
+  newExecutedOffsets: string[];
+  newExecutedOffsetsTruncated: boolean;
+  lostExecutedOffsetCount: number;
+  newBlockOffsetCount: number;
+  newBlockOffsets: string[];
+  newBlockOffsetsTruncated: boolean;
+  lostBlockOffsetCount: number;
+  stopReasonChanged: boolean;
+  terminalChanged: boolean;
+  missingMemoryChanged: boolean;
+  detail: string;
+  recommendation: string;
+}
+
+export interface UnicornOllvmSeedRoundComparison {
+  captureOffset: string;
+  matchedProbeOffsets: string[];
+  observations: UnicornOllvmSeedRoundObservation[];
+  deltas: UnicornOllvmRoundDelta[];
+  latestStatus: string;
+  latestRecommendation: string;
+  warnings: string[];
+}
+
+export interface UnicornOllvmRoundComparisonReport {
+  schemaVersion: string;
+  moduleName: string;
+  binarySha256: string;
+  roundCount: number;
+  seedOffsetCount: number;
+  totalUniqueExecutedOffsetCount: number;
+  totalUniqueBlockOffsetCount: number;
+  progressedSeedCount: number;
+  stalledSeedCount: number;
+  regressedSeedCount: number;
+  changedSeedCount: number;
+  incompleteSeedCount: number;
+  overallStatus: string;
+  overallRecommendation: string;
+  rounds: UnicornOllvmRoundSummary[];
+  seeds: UnicornOllvmSeedRoundComparison[];
+  warnings: string[];
+  limitations: string[];
+}
+
 export interface WhiteBoxIoBlock {
   baseAddr: string;
   byteLen: number;
