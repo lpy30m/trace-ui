@@ -102,6 +102,8 @@ fn main() {
             commands::compare_unicorn_ollvm_rounds,
             commands::generate_frida_unicorn_recapture_hook,
             commands::save_frida_unicorn_recapture_hook,
+            commands::generate_frida_unicorn_checkpoint_hook,
+            commands::save_frida_unicorn_checkpoint_hook,
             commands::analyze_whitebox_crypto,
             commands::compare_whitebox_traces,
             commands::list_trace_sessions,

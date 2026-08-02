@@ -1,3 +1,5 @@
+use std::collections::BTreeSet;
+
 use serde::{Deserialize, Serialize};
 
 use crate::query::elf_identity::ElfBinaryIdentity;
@@ -265,6 +267,14 @@ pub(crate) fn prepare_frida_seed(
     report: &OllvmReport,
     seed: &AngrStateSeed,
 ) -> Result<(serde_json::Value, AngrOllvmFridaSeedProvenance), String> {
+    prepare_frida_seed_with_allowed_offsets(report, seed, &BTreeSet::new())
+}
+
+pub(crate) fn prepare_frida_seed_with_allowed_offsets(
+    report: &OllvmReport,
+    seed: &AngrStateSeed,
+    allowed_exact_offsets: &BTreeSet<String>,
+) -> Result<(serde_json::Value, AngrOllvmFridaSeedProvenance), String> {
     if seed.schema_version != "trace-ui/angr-state-seed-v1" {
         return Err(format!(
             "unsupported Frida angr seed schema: {}",
@@ -316,6 +326,10 @@ pub(crate) fn prepare_frida_seed(
         .collect::<Vec<_>>();
     matched_dispatcher_offsets.sort_by_key(|value| parse_hex_addr(value).unwrap_or(u64::MAX));
     matched_dispatcher_offsets.dedup();
+    let matched_allowed_offset = allowed_exact_offsets
+        .iter()
+        .find(|offset| offset.eq_ignore_ascii_case(&capture_offset))
+        .cloned();
     if seed.source_event != "hook-enter"
         && !(seed.source_event == "ollvm-dispatcher-hit" && !matched_dispatcher_offsets.is_empty())
     {
@@ -329,11 +343,14 @@ pub(crate) fn prepare_frida_seed(
         .chain(&matched_dispatcher_offsets)
         .cloned()
         .collect::<Vec<_>>();
+    if let Some(offset) = matched_allowed_offset {
+        matched_probe_offsets.push(offset);
+    }
     matched_probe_offsets.sort_by_key(|value| parse_hex_addr(value).unwrap_or(u64::MAX));
     matched_probe_offsets.dedup();
     if matched_probe_offsets.is_empty() {
         return Err(format!(
-            "Frida capture offset {} does not exactly match an opaque branch, its condition-source offset, or a dispatcher entry",
+            "Frida capture offset {} does not exactly match an opaque branch, its condition-source offset, a dispatcher entry, or an authorized Unicorn checkpoint",
             capture_offset
         ));
     }

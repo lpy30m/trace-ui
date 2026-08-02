@@ -1269,6 +1269,7 @@ pub fn generate_unicorn_ollvm_script(
     frida_event_index: Option<u64>,
     frida_event_indices: Option<Vec<u64>>,
     static_binary_path: String,
+    checkpoint_result_path: Option<String>,
 ) -> Result<trace_core::UnicornOllvmScript, String> {
     let seeds = build_angr_frida_seeds(
         frida_bundle.as_ref(),
@@ -1283,7 +1284,12 @@ pub fn generate_unicorn_ollvm_script(
         );
     }
     let identity = inspect_required_unicorn_elf(&static_binary_path)?;
-    trace_core::generate_unicorn_ollvm_script(
+    let checkpoint_result = checkpoint_result_path
+        .as_deref()
+        .filter(|path| !path.trim().is_empty())
+        .map(read_unicorn_ollvm_results)
+        .transpose()?;
+    trace_core::generate_unicorn_ollvm_script_with_checkpoint_result(
         &report,
         seeds.iter().collect(),
         trace_core::UnicornOllvmConfig {
@@ -1295,6 +1301,7 @@ pub fn generate_unicorn_ollvm_script(
             loop_visit_limit: loop_visit_limit.unwrap_or(2),
         },
         &identity,
+        checkpoint_result.as_ref(),
     )
 }
 
@@ -1312,6 +1319,7 @@ pub async fn save_unicorn_ollvm_script(
     frida_event_index: Option<u64>,
     frida_event_indices: Option<Vec<u64>>,
     static_binary_path: String,
+    checkpoint_result_path: Option<String>,
 ) -> Result<String, String> {
     tauri::async_runtime::spawn_blocking(move || {
         let seeds = build_angr_frida_seeds(
@@ -1327,7 +1335,12 @@ pub async fn save_unicorn_ollvm_script(
             );
         }
         let identity = inspect_required_unicorn_elf(&static_binary_path)?;
-        let generated = trace_core::generate_unicorn_ollvm_script(
+        let checkpoint_result = checkpoint_result_path
+            .as_deref()
+            .filter(|path| !path.trim().is_empty())
+            .map(read_unicorn_ollvm_results)
+            .transpose()?;
+        let generated = trace_core::generate_unicorn_ollvm_script_with_checkpoint_result(
             &report,
             seeds.iter().collect(),
             trace_core::UnicornOllvmConfig {
@@ -1339,6 +1352,7 @@ pub async fn save_unicorn_ollvm_script(
                 loop_visit_limit: loop_visit_limit.unwrap_or(2),
             },
             &identity,
+            checkpoint_result.as_ref(),
         )?;
         let trimmed = path.trim();
         if trimmed.is_empty() {
@@ -1506,6 +1520,68 @@ pub async fn save_frida_unicorn_recapture_hook(
         }
         std::fs::write(&output_path, generated.script.as_bytes())
             .map_err(|error| format!("failed to save Frida recapture hook: {error}"))?;
+        Ok(output_path.to_string_lossy().into_owned())
+    })
+    .await
+    .map_err(|error| format!("Task execution failed: {error}"))?
+}
+
+#[tauri::command]
+pub async fn generate_frida_unicorn_checkpoint_hook(
+    unicorn_result_path: String,
+    seed_capture_offsets: Vec<String>,
+    max_events: Option<u32>,
+) -> Result<trace_core::FridaUnicornCheckpointHookScript, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        let bundle = read_unicorn_ollvm_results(&unicorn_result_path)?;
+        trace_core::generate_frida_unicorn_checkpoint_hook(
+            &bundle,
+            &seed_capture_offsets,
+            &trace_core::FridaUnicornCheckpointHookOptions {
+                max_events: max_events.unwrap_or(5_000),
+            },
+        )
+    })
+    .await
+    .map_err(|error| format!("Task execution failed: {error}"))?
+}
+
+#[tauri::command]
+pub async fn save_frida_unicorn_checkpoint_hook(
+    path: String,
+    unicorn_result_path: String,
+    seed_capture_offsets: Vec<String>,
+    max_events: Option<u32>,
+) -> Result<String, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        let bundle = read_unicorn_ollvm_results(&unicorn_result_path)?;
+        let generated = trace_core::generate_frida_unicorn_checkpoint_hook(
+            &bundle,
+            &seed_capture_offsets,
+            &trace_core::FridaUnicornCheckpointHookOptions {
+                max_events: max_events.unwrap_or(5_000),
+            },
+        )?;
+        let trimmed = path.trim();
+        if trimmed.is_empty() {
+            return Err("output path must not be empty".to_string());
+        }
+        let mut output_path = std::path::PathBuf::from(trimmed);
+        if output_path.extension().and_then(|value| value.to_str()) != Some("js") {
+            output_path.set_extension("js");
+        }
+        let parent = output_path
+            .parent()
+            .filter(|value| !value.as_os_str().is_empty())
+            .ok_or_else(|| "output path must include a parent directory".to_string())?;
+        if !parent.is_dir() {
+            return Err(format!(
+                "output directory does not exist: {}",
+                parent.display()
+            ));
+        }
+        std::fs::write(&output_path, generated.script.as_bytes())
+            .map_err(|error| format!("failed to save Frida checkpoint hook: {error}"))?;
         Ok(output_path.to_string_lossy().into_owned())
     })
     .await

@@ -18,8 +18,10 @@ use trace_core::{
     generate_angr_ollvm_script_with_seeds_flow_and_identity,
     generate_angr_state_seed as build_angr_state_seed, generate_frida_hook as build_frida_hook,
     generate_frida_ollvm_dispatcher_hook as build_frida_ollvm_dispatcher_hook,
+    generate_frida_unicorn_checkpoint_hook as build_frida_unicorn_checkpoint_hook,
     generate_frida_unicorn_recapture_hook as build_frida_unicorn_recapture_hook,
-    generate_ida_ollvm_script, generate_unicorn_ollvm_script as build_unicorn_ollvm_script,
+    generate_ida_ollvm_script,
+    generate_unicorn_ollvm_script_with_checkpoint_result as build_unicorn_ollvm_script,
     get_frida_capture_event as build_frida_capture_event, inspect_elf_binary,
     list_frida_hook_recipes as build_frida_hook_recipes, parse_angr_ollvm_result_bundle,
     parse_frida_capture_bundle, parse_hex_addr, parse_ida_annotation_bundle,
@@ -30,12 +32,12 @@ use trace_core::{
     CryptoMaterialTraceCase, DepTreeOptions, EvidenceScoreSignal, ForwardSliceOptions,
     FridaArgumentKind, FridaArgumentSpec, FridaCaptureDirection, FridaCaptureSearchOptions,
     FridaHookRequest, FridaOllvmDispatcherAtlasOptions, FridaOllvmDispatcherHookOptions,
-    FridaStalkerMode, FridaUnicornRecaptureHookOptions, HashAlgorithm, HashMatchRequest,
-    HashTransformOptions, OllvmAnalysisOptions, OllvmMultiTraceRequest, OllvmTraceCase,
-    OllvmVersionMapRequest, OllvmVersionTraceCase, SearchOptions, SliceOptions, StringQueryOptions,
-    TraceDiffOptions, TraceEngine, UnicornOllvmConfig, UnicornOllvmRoundInput, ValueEndian,
-    ValueSearchKind, ValueSearchRequest, WhiteBoxMultiTraceRequest, WhiteBoxOptions,
-    WhiteBoxTraceCaseRequest,
+    FridaStalkerMode, FridaUnicornCheckpointHookOptions, FridaUnicornRecaptureHookOptions,
+    HashAlgorithm, HashMatchRequest, HashTransformOptions, OllvmAnalysisOptions,
+    OllvmMultiTraceRequest, OllvmTraceCase, OllvmVersionMapRequest, OllvmVersionTraceCase,
+    SearchOptions, SliceOptions, StringQueryOptions, TraceDiffOptions, TraceEngine,
+    UnicornOllvmConfig, UnicornOllvmRoundInput, ValueEndian, ValueSearchKind, ValueSearchRequest,
+    WhiteBoxMultiTraceRequest, WhiteBoxOptions, WhiteBoxTraceCaseRequest,
 };
 
 fn decode_hex_bytes(value: &str) -> Result<Vec<u8>, String> {
@@ -4781,7 +4783,7 @@ impl TraceToolHandler {
 
     #[tool(
         name = "generate_unicorn_ollvm_script",
-        description = "Analyze a trace-scoped ARM64 function/range and generate a standalone Python Unicorn concrete-replay bridge for manual execution. One to 32 exact-offset user-captured Frida hook-enter or ollvm-dispatcher-hit events seed full GPR/NZCV state and captured byteArray memory. The exact AArch64 ELF is mandatory and embedded with a SHA-256 guard. Replays stop at the next dispatcher, return, call boundary, loop, missing state, timeout, or configured bound and emit transition groups plus register-relative recapture suggestions. Trace UI never executes Frida or Unicorn; results remain Candidate/Related."
+        description = "Analyze a trace-scoped ARM64 function/range and generate a standalone Python Unicorn concrete-replay bridge for manual execution. One to 32 exact-offset user-captured Frida hook-enter or ollvm-dispatcher-hit events seed full GPR/NZCV state and captured byteArray memory. Events must match a branch, condition source, dispatcher, or a closer checkpoint authorized by an optional strictly validated prior result from the same module and exact ELF SHA-256. The exact AArch64 ELF is mandatory and embedded with a SHA-256 guard. Replays stop at the next dispatcher, return, call boundary, loop, missing state, timeout, or configured bound and emit transition groups plus register-relative recapture suggestions. Trace UI never executes Frida or Unicorn; results remain Candidate/Related."
     )]
     async fn generate_unicorn_ollvm_script(
         &self,
@@ -4838,6 +4840,17 @@ impl TraceToolHandler {
                     identity.architecture
                 ));
             }
+            let checkpoint_result = req
+                .checkpoint_result_path
+                .as_deref()
+                .filter(|path| !path.trim().is_empty())
+                .map(|path| {
+                    let bytes = std::fs::read(path).map_err(|error| {
+                        format!("failed to read prior Unicorn checkpoint result: {error}")
+                    })?;
+                    parse_unicorn_ollvm_result_bundle(&bytes)
+                })
+                .transpose()?;
             Ok(json(&build_unicorn_ollvm_script(
                 &report,
                 seeds.iter().collect(),
@@ -4850,6 +4863,7 @@ impl TraceToolHandler {
                     loop_visit_limit: req.loop_visit_limit,
                 },
                 &identity,
+                checkpoint_result.as_ref(),
             )?))
         })
         .await
@@ -4940,6 +4954,29 @@ impl TraceToolHandler {
                 &bundle,
                 &req.suggestion_indices,
                 &FridaUnicornRecaptureHookOptions {
+                    max_events: req.max_events,
+                },
+            )?))
+        })
+        .await
+    }
+
+    #[tool(
+        name = "generate_frida_unicorn_checkpoint_hook",
+        description = "Read and strictly validate a trace-ui/unicorn-ollvm-v1 result, then generate a bounded Frida 16.x hook at supported closer checkpoint PCs for one to 32 selected original seed offsets. Missing-memory runs prefer the reported missing PC; loop, timeout, instruction-limit, and missing-register runs use the terminal offset. The hook captures full ARM64 GPR/NZCV plus only safe X0-X28/SP-relative suggested windows. The user runs Frida manually, and the resulting hook-enter capture can seed another Unicorn replay only when the same prior result and exact ELF authorize that checkpoint. Trace UI never executes Frida or Unicorn; all evidence remains Candidate/Related."
+    )]
+    async fn generate_frida_unicorn_checkpoint_hook(
+        &self,
+        Parameters(req): Parameters<GenerateFridaUnicornCheckpointHookRequest>,
+    ) -> Result<String, String> {
+        blocking(move || {
+            let bytes = std::fs::read(&req.unicorn_result_path)
+                .map_err(|error| format!("failed to read Unicorn results: {error}"))?;
+            let bundle = parse_unicorn_ollvm_result_bundle(&bytes)?;
+            Ok(json(&build_frida_unicorn_checkpoint_hook(
+                &bundle,
+                &req.seed_capture_offsets,
+                &FridaUnicornCheckpointHookOptions {
                     max_events: req.max_events,
                 },
             )?))

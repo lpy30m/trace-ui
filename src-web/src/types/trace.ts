@@ -1349,6 +1349,41 @@ export interface FridaUnicornRecaptureHookScript {
   fridaApiVersion: string;
 }
 
+export interface FridaUnicornCheckpointMemorySpec {
+  index: number;
+  label: string;
+  baseRegister: string;
+  displacement: number;
+  displacementHex: string;
+  byteLength: number;
+  sourceEventIndices: number[];
+  sourceSeedOffsets: string[];
+}
+
+export interface FridaUnicornCheckpointHookTarget {
+  hookId: string;
+  offset: string;
+  sourceEventIndices: number[];
+  sourceSeedOffsets: string[];
+  stopReasons: string[];
+  captures: FridaUnicornCheckpointMemorySpec[];
+}
+
+export interface FridaUnicornCheckpointHookScript {
+  schemaVersion: string;
+  moduleName: string;
+  fileName: string;
+  expectedBinarySha256: string;
+  selectedSeedOffsets: string[];
+  targets: FridaUnicornCheckpointHookTarget[];
+  captureWindowCount: number;
+  maxEvents: number;
+  script: string;
+  warnings: string[];
+  protocolVersion: string;
+  fridaApiVersion: string;
+}
+
 export interface UnicornOllvmResultBundle {
   schema: string;
   moduleName: string;

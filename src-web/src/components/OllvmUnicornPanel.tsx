@@ -3,6 +3,7 @@ import { invoke } from "@tauri-apps/api/core";
 import type {
   FridaCaptureBundle,
   FridaCaptureEvent,
+  FridaUnicornCheckpointHookScript,
   FridaUnicornRecaptureHookScript,
   OllvmReport,
   UnicornOllvmRoundComparisonReport,
@@ -64,6 +65,45 @@ function automaticRecaptureSupported(suggestion: UnicornRecaptureSuggestion): bo
   return /^[+-]?(?:0x[0-9a-f]+|[0-9]+)$/i.test(displacement);
 }
 
+const checkpointStopReasons = new Set([
+  "missing-memory",
+  "missing-register",
+  "loop-detected",
+  "instruction-limit",
+  "timeout",
+]);
+
+function checkpointSeedOffsets(bundle: UnicornOllvmResultBundle): string[] {
+  const seedsByEvent = new Map(bundle.seeds.map(seed => [seed.sourceEventIndex, seed.captureOffset]));
+  return Array.from(new Set(bundle.runs
+    .filter(run => {
+      if (!checkpointStopReasons.has(run.stopReason)) return false;
+      const start = run.startOffset.toLowerCase();
+      const missingOffsets = run.stopReason === "missing-memory"
+        ? run.missingMemory.map(missing => missing.pcOffset).filter((offset): offset is string => Boolean(offset))
+        : [];
+      if (missingOffsets.length > 0) return missingOffsets.some(offset => offset.toLowerCase() !== start);
+      return Boolean(run.terminalOffset && run.terminalOffset.toLowerCase() !== start);
+    })
+    .map(run => seedsByEvent.get(run.sourceEventIndex))
+    .filter((offset): offset is string => Boolean(offset))))
+    .slice(0, 32);
+}
+
+function comparisonCheckpointSeedOffsets(report: UnicornOllvmRoundComparisonReport): string[] {
+  const latestRoundId = report.rounds[report.rounds.length - 1]?.roundId;
+  if (!latestRoundId) return [];
+  return report.seeds.filter(seed => {
+    const observation = seed.observations.find(value => value.roundId === latestRoundId);
+    if (!observation?.present || !observation.stopReasons.some(reason => checkpointStopReasons.has(reason))) return false;
+    const start = seed.captureOffset.toLowerCase();
+    if (observation.stopReasons.includes("missing-memory") && observation.missingPcOffsets.length > 0) {
+      return observation.missingPcOffsets.some(offset => offset.toLowerCase() !== start);
+    }
+    return observation.terminalOffsets.some(offset => offset.toLowerCase() !== start);
+  }).map(seed => seed.captureOffset).slice(0, 32);
+}
+
 function roundStatusColor(status: string): string {
   if (["reached-new-dispatcher", "resolved-prior-stop", "missing-memory-moved-forward", "advanced-coverage", "candidate-progress-observed"].includes(status)) return "#3fb950";
   if (["stalled-same-missing-memory", "stalled-same-terminal", "longer-same-coverage", "unchanged", "stalled-seeds-present"].includes(status)) return "#d29922";
@@ -103,8 +143,13 @@ export default function OllvmUnicornPanel({ report }: Props) {
   const [recaptureMaxEvents, setRecaptureMaxEvents] = useState("5000");
   const [recaptureHook, setRecaptureHook] = useState<FridaUnicornRecaptureHookScript | null>(null);
   const [recaptureSavedPath, setRecaptureSavedPath] = useState<string | null>(null);
+  const [checkpointResultPath, setCheckpointResultPath] = useState<string | null>(null);
+  const [selectedCheckpointSeedOffsets, setSelectedCheckpointSeedOffsets] = useState<string[]>([]);
+  const [checkpointMaxEvents, setCheckpointMaxEvents] = useState("5000");
+  const [checkpointHook, setCheckpointHook] = useState<FridaUnicornCheckpointHookScript | null>(null);
+  const [checkpointSavedPath, setCheckpointSavedPath] = useState<string | null>(null);
   const [savedPath, setSavedPath] = useState<string | null>(null);
-  const [display, setDisplay] = useState<"script" | "results" | "recapture" | "comparison">("script");
+  const [display, setDisplay] = useState<"script" | "results" | "recapture" | "checkpoint" | "comparison">("script");
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
@@ -150,6 +195,7 @@ export default function OllvmUnicornPanel({ report }: Props) {
     fridaEventIndex: null,
     fridaEventIndices: selectedEvents,
     staticBinaryPath: binaryPath || "",
+    checkpointResultPath,
   });
 
   const selectBinary = async () => {
@@ -166,6 +212,10 @@ export default function OllvmUnicornPanel({ report }: Props) {
       setResultsPath(null);
       setSelectedRecaptureSuggestions([]);
       setRecaptureHook(null);
+      setCheckpointResultPath(null);
+      setSelectedCheckpointSeedOffsets([]);
+      setCheckpointHook(null);
+      setCheckpointSavedPath(null);
     }
   };
 
@@ -278,12 +328,16 @@ export default function OllvmUnicornPanel({ report }: Props) {
       }
       setResults(bundle);
       setResultsPath(path);
+      setCheckpointResultPath(path);
+      setSelectedCheckpointSeedOffsets(checkpointSeedOffsets(bundle).slice(0, 1));
       setSelectedRecaptureSuggestions(bundle.recaptureSuggestions
         .map((suggestion, index) => automaticRecaptureSupported(suggestion) ? index : -1)
         .filter(index => index >= 0)
         .slice(0, 1));
       setRecaptureHook(null);
       setRecaptureSavedPath(null);
+      setCheckpointHook(null);
+      setCheckpointSavedPath(null);
       setDisplay("results");
     } catch (reason) {
       setError(String(reason));
@@ -323,6 +377,15 @@ export default function OllvmUnicornPanel({ report }: Props) {
       }
       setRoundComparison(value);
       setRoundComparisonPaths(paths);
+      setCheckpointResultPath(paths[paths.length - 1]);
+      const supportedCheckpointOffsets = new Set(comparisonCheckpointSeedOffsets(value));
+      setSelectedCheckpointSeedOffsets(value.seeds
+        .filter(seed => supportedCheckpointOffsets.has(seed.captureOffset)
+          && (seed.latestStatus.includes("stalled") || seed.latestStatus.includes("regressed")))
+        .map(seed => seed.captureOffset)
+        .slice(0, 1));
+      setCheckpointHook(null);
+      setCheckpointSavedPath(null);
       setDisplay("comparison");
     } catch (reason) {
       setError(String(reason));
@@ -408,6 +471,81 @@ export default function OllvmUnicornPanel({ report }: Props) {
     }
   };
 
+  const checkpointSeedChoices = useMemo(() => {
+    if (results && resultsPath === checkpointResultPath) return checkpointSeedOffsets(results);
+    if (roundComparison && roundComparisonPaths[roundComparisonPaths.length - 1] === checkpointResultPath) {
+      return comparisonCheckpointSeedOffsets(roundComparison);
+    }
+    return selectedCheckpointSeedOffsets;
+  }, [checkpointResultPath, results, resultsPath, roundComparison, roundComparisonPaths, selectedCheckpointSeedOffsets]);
+
+  const toggleCheckpointSeed = (offset: string) => {
+    setSelectedCheckpointSeedOffsets(current => {
+      if (current.includes(offset)) return current.filter(value => value !== offset);
+      if (current.length >= 32) return current;
+      return [...current, offset];
+    });
+    setCheckpointHook(null);
+    setCheckpointSavedPath(null);
+  };
+
+  const checkpointRequestArgs = () => ({
+    unicornResultPath: checkpointResultPath || "",
+    seedCaptureOffsets: selectedCheckpointSeedOffsets,
+    maxEvents: positiveInteger(checkpointMaxEvents, 5_000),
+  });
+
+  const generateCheckpointHook = async (): Promise<FridaUnicornCheckpointHookScript | null> => {
+    if (!checkpointResultPath) {
+      setError("请先导入一轮 Unicorn 结果，或完成多轮结果比较。");
+      return null;
+    }
+    if (selectedCheckpointSeedOffsets.length === 0) {
+      setError("请选择至少一个停滞或回退的原 seed offset。");
+      return null;
+    }
+    setBusy(true);
+    setError(null);
+    try {
+      const value = await invoke<FridaUnicornCheckpointHookScript>(
+        "generate_frida_unicorn_checkpoint_hook",
+        checkpointRequestArgs(),
+      );
+      setCheckpointHook(value);
+      setDisplay("checkpoint");
+      return value;
+    } catch (reason) {
+      setError(String(reason));
+      return null;
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const saveCheckpointHook = async () => {
+    const value = checkpointHook || await generateCheckpointHook();
+    if (!value) return;
+    const { save } = await import("@tauri-apps/plugin-dialog");
+    const path = await save({
+      defaultPath: value.fileName,
+      filters: [{ name: "Frida JavaScript", extensions: ["js"] }],
+    });
+    if (typeof path !== "string") return;
+    setBusy(true);
+    setError(null);
+    try {
+      const written = await invoke<string>("save_frida_unicorn_checkpoint_hook", {
+        path,
+        ...checkpointRequestArgs(),
+      });
+      setCheckpointSavedPath(written);
+    } catch (reason) {
+      setError(String(reason));
+    } finally {
+      setBusy(false);
+    }
+  };
+
   return (
     <div style={{ display: "flex", flex: 1, minHeight: 0, overflow: "hidden" }}>
       <div style={{ width: 440, padding: 10, borderRight: "1px solid var(--border-color)", overflow: "auto", fontSize: 11 }}>
@@ -418,7 +556,7 @@ export default function OllvmUnicornPanel({ report }: Props) {
         <div style={{ marginTop: 10, fontWeight: 600 }}>1. 精确 ELF</div>
         <div style={{ display: "flex", gap: 6, marginTop: 5 }}>
           <button type="button" style={buttonStyle} onClick={selectBinary}>选择 ELF</button>
-          {binaryPath && <button type="button" style={buttonStyle} onClick={() => { setBinaryPath(null); setGenerated(null); setResults(null); setResultsPath(null); setSelectedRecaptureSuggestions([]); setRecaptureHook(null); }}>清除</button>}
+          {binaryPath && <button type="button" style={buttonStyle} onClick={() => { setBinaryPath(null); setGenerated(null); setResults(null); setResultsPath(null); setSelectedRecaptureSuggestions([]); setRecaptureHook(null); setCheckpointResultPath(null); setSelectedCheckpointSeedOffsets([]); setCheckpointHook(null); setCheckpointSavedPath(null); }}>清除</button>}
         </div>
         <div title={binaryPath || ""} style={{ marginTop: 5, color: binaryPath ? "var(--text-secondary)" : "#d29922", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
           {binaryPath || "必须选择与 Frida 捕获相同构建的 AArch64 ELF"}
@@ -525,6 +663,48 @@ export default function OllvmUnicornPanel({ report }: Props) {
             {recaptureHook?.warnings.map((warning, index) => <div key={`recapture-warning-${index}`} style={{ marginTop: 4, color: "#d29922" }}>{warning}</div>)}
           </div>
         )}
+        {checkpointResultPath && (
+          <div style={{ marginTop: 12, paddingTop: 10, borderTop: "1px solid var(--border-color)" }}>
+            <div style={{ fontWeight: 600 }}>5. 更近 checkpoint 捕获</div>
+            <div style={{ marginTop: 4, color: "var(--text-secondary)", lineHeight: 1.5 }}>
+              当原 seed 在缺页、缺寄存器、循环、超时或指令上限处停滞时，把 Frida Hook 前移到实际 missing-memory PC 或 terminal PC，重新捕获完整 ARM64 状态后再继续 Unicorn。
+            </div>
+            <div style={{ marginTop: 4, color: "var(--text-tertiary)", lineHeight: 1.5 }}>
+              上一轮结果只授权同模块、同 ELF SHA-256 的 checkpoint offset，不证明运行时就是该构建。Hook 和 Unicorn 都由用户手动执行，结果仍是 Candidate/Related。
+            </div>
+            <div title={checkpointResultPath} style={{ marginTop: 5, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", color: "var(--text-secondary)" }}>
+              授权结果：{checkpointResultPath.split(/[\\/]/).pop()}
+            </div>
+            <div style={{ maxHeight: 130, overflow: "auto", marginTop: 6, border: "1px solid var(--border-color)" }}>
+              {checkpointSeedChoices.map(offset => (
+                <label key={offset} style={{ display: "grid", gridTemplateColumns: "20px minmax(0,1fr)", gap: 5, padding: "4px 5px", borderBottom: "1px solid var(--border-color)", alignItems: "center" }}>
+                  <input type="checkbox" checked={selectedCheckpointSeedOffsets.includes(offset)} onChange={() => toggleCheckpointSeed(offset)} />
+                  <span>原 seed <code>{offset}</code></span>
+                </label>
+              ))}
+              {checkpointSeedChoices.length === 0 && <div style={{ padding: 6, color: "#d29922" }}>当前结果没有支持自动前移的停滞 seed。</div>}
+            </div>
+            <div style={{ display: "grid", gridTemplateColumns: "165px minmax(0,1fr)", gap: 6, alignItems: "center", marginTop: 6 }}>
+              <label>最大 checkpoint 事件</label>
+              <input style={inputStyle} value={checkpointMaxEvents} onChange={event => { setCheckpointMaxEvents(event.target.value); setCheckpointHook(null); }} />
+            </div>
+            <div style={{ marginTop: 5, color: "var(--text-tertiary)" }}>{selectedCheckpointSeedOffsets.length} selected / 32 maximum</div>
+            <div style={{ display: "flex", gap: 6, flexWrap: "wrap", marginTop: 6 }}>
+              <button type="button" style={{ ...buttonStyle, background: "var(--btn-primary)", color: "#fff", border: "none", opacity: busy ? 0.6 : 1 }} disabled={busy} onClick={generateCheckpointHook}>生成更近 checkpoint Hook</button>
+              <button type="button" style={buttonStyle} disabled={busy} onClick={saveCheckpointHook}>保存 checkpoint .js</button>
+              <button type="button" style={{ ...buttonStyle, opacity: checkpointHook ? 1 : 0.5 }} disabled={!checkpointHook} onClick={() => checkpointHook && navigator.clipboard.writeText(checkpointHook.script)}>复制 checkpoint Hook</button>
+            </div>
+            {checkpointSavedPath && <div title={checkpointSavedPath} style={{ marginTop: 5, color: "#3fb950", overflow: "hidden", textOverflow: "ellipsis" }}>已保存：{checkpointSavedPath}</div>}
+            {checkpointHook && (
+              <div style={{ marginTop: 6, padding: 6, background: "var(--bg-secondary)", borderRadius: 4, lineHeight: 1.5 }}>
+                {checkpointHook.targets.length} 个更近目标 · {checkpointHook.captureWindowCount} 个安全内存窗口 · max {checkpointHook.maxEvents} events
+                <div style={{ color: "var(--text-tertiary)" }}>目标：{checkpointHook.targets.map(target => `${target.offset} (${target.stopReasons.join("/")})`).join(", ")}</div>
+                <div style={{ marginTop: 3 }}>手动执行后，用上面的“导入捕获”载入新 hook-enter；生成 Unicorn Python 时会自动携带这份授权结果。</div>
+              </div>
+            )}
+            {checkpointHook?.warnings.map((warning, index) => <div key={`checkpoint-warning-${index}`} style={{ marginTop: 4, color: "#d29922" }}>{warning}</div>)}
+          </div>
+        )}
         {error && <div style={{ marginTop: 8, color: "#e5484d", whiteSpace: "pre-wrap" }}>{error}</div>}
       </div>
 
@@ -533,6 +713,7 @@ export default function OllvmUnicornPanel({ report }: Props) {
           <button type="button" style={{ ...buttonStyle, background: display === "script" ? "var(--bg-selected)" : "var(--bg-input)" }} onClick={() => setDisplay("script")}>脚本</button>
           <button type="button" style={{ ...buttonStyle, background: display === "results" ? "var(--bg-selected)" : "var(--bg-input)", opacity: results ? 1 : 0.5 }} disabled={!results} onClick={() => setDisplay("results")}>模拟结果</button>
           <button type="button" style={{ ...buttonStyle, background: display === "recapture" ? "var(--bg-selected)" : "var(--bg-input)", opacity: recaptureHook ? 1 : 0.5 }} disabled={!recaptureHook} onClick={() => setDisplay("recapture")}>重捕获 Hook</button>
+          <button type="button" style={{ ...buttonStyle, background: display === "checkpoint" ? "var(--bg-selected)" : "var(--bg-input)", opacity: checkpointHook ? 1 : 0.5 }} disabled={!checkpointHook} onClick={() => setDisplay("checkpoint")}>Checkpoint Hook</button>
           <button type="button" style={{ ...buttonStyle, background: display === "comparison" ? "var(--bg-selected)" : "var(--bg-input)", opacity: roundComparison ? 1 : 0.5 }} disabled={!roundComparison} onClick={() => setDisplay("comparison")}>轮次对比</button>
         </div>
         {display === "script" && (
@@ -540,6 +721,9 @@ export default function OllvmUnicornPanel({ report }: Props) {
         )}
         {display === "recapture" && (
           <pre style={{ flex: 1, margin: 0, padding: 10, overflow: "auto", background: "var(--bg-primary)", color: "var(--text-primary)", fontSize: 10, lineHeight: 1.45, whiteSpace: "pre" }}>{recaptureHook?.script || ""}</pre>
+        )}
+        {display === "checkpoint" && (
+          <pre style={{ flex: 1, margin: 0, padding: 10, overflow: "auto", background: "var(--bg-primary)", color: "var(--text-primary)", fontSize: 10, lineHeight: 1.45, whiteSpace: "pre" }}>{checkpointHook?.script || ""}</pre>
         )}
         {display === "results" && results && (
           <div style={{ flex: 1, overflow: "auto", fontSize: 11 }}>

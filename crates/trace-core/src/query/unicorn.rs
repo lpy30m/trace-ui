@@ -2,9 +2,10 @@ use std::collections::{BTreeMap, BTreeSet, HashSet};
 
 use serde::{Deserialize, Serialize};
 
-use crate::query::angr::{prepare_frida_seed, AngrOllvmFridaSeedProvenance};
+use crate::query::angr::{prepare_frida_seed_with_allowed_offsets, AngrOllvmFridaSeedProvenance};
 use crate::query::elf_identity::ElfBinaryIdentity;
 use crate::query::frida_capture::AngrStateSeed;
+use crate::query::frida_checkpoint::unicorn_checkpoint_offsets;
 use crate::query::ollvm::OllvmReport;
 use crate::utils::{format_signed_offset_hex, parse_hex_addr, parse_signed_offset};
 
@@ -486,6 +487,22 @@ pub fn generate_unicorn_ollvm_script(
     config: UnicornOllvmConfig,
     expected_binary_identity: &ElfBinaryIdentity,
 ) -> Result<UnicornOllvmScript, String> {
+    generate_unicorn_ollvm_script_with_checkpoint_result(
+        report,
+        frida_seeds,
+        config,
+        expected_binary_identity,
+        None,
+    )
+}
+
+pub fn generate_unicorn_ollvm_script_with_checkpoint_result(
+    report: &OllvmReport,
+    frida_seeds: Vec<&AngrStateSeed>,
+    config: UnicornOllvmConfig,
+    expected_binary_identity: &ElfBinaryIdentity,
+    checkpoint_result: Option<&UnicornOllvmResultBundle>,
+) -> Result<UnicornOllvmScript, String> {
     if report.scope.module_name.trim().is_empty() {
         return Err("OLLVM report module name must not be empty".to_string());
     }
@@ -502,6 +519,30 @@ pub fn generate_unicorn_ollvm_script(
     if frida_seeds.len() > 32 {
         return Err("at most 32 Frida seeds may be embedded in one Unicorn replay".to_string());
     }
+    let allowed_checkpoint_offsets = if let Some(bundle) = checkpoint_result {
+        if bundle.module_name.trim() != report.scope.module_name.trim() {
+            return Err(format!(
+                "Unicorn checkpoint result module {} does not match OLLVM report module {}",
+                bundle.module_name, report.scope.module_name
+            ));
+        }
+        if !bundle.binary_identity_matched
+            || !bundle
+                .binary_sha256
+                .eq_ignore_ascii_case(&bundle.expected_binary_sha256)
+            || !bundle
+                .binary_sha256
+                .eq_ignore_ascii_case(&expected_binary_identity.binary_sha256)
+        {
+            return Err(
+                "Unicorn checkpoint result does not match the selected exact ELF SHA-256"
+                    .to_string(),
+            );
+        }
+        unicorn_checkpoint_offsets(bundle)?
+    } else {
+        BTreeSet::new()
+    };
 
     let mut payloads = Vec::with_capacity(frida_seeds.len());
     let mut provenances = Vec::with_capacity(frida_seeds.len());
@@ -515,7 +556,8 @@ pub fn generate_unicorn_ollvm_script(
                 seed.source_event_index
             ));
         }
-        let (mut payload, provenance) = prepare_frida_seed(report, seed)?;
+        let (mut payload, provenance) =
+            prepare_frida_seed_with_allowed_offsets(report, seed, &allowed_checkpoint_offsets)?;
         let quality = assess_seed_quality(seed, &provenance.capture_offset);
         let recapture_plan = build_seed_recapture_plan(seed, &provenance.capture_offset);
         payload["quality"] = serde_json::to_value(&quality)
@@ -571,6 +613,12 @@ pub fn generate_unicorn_ollvm_script(
             "One or more seed recapture plans reached the 256-window bound; review the omitted coverage before another replay."
                 .to_string(),
         );
+    }
+    if checkpoint_result.is_some() {
+        warnings.push(format!(
+            "{} closer checkpoint offset(s) were authorized from a strictly validated prior Unicorn result for the same module and exact ELF.",
+            allowed_checkpoint_offsets.len()
+        ));
     }
 
     Ok(UnicornOllvmScript {
@@ -1088,6 +1136,85 @@ mod tests {
         elf
     }
 
+    fn checkpoint_result(identity: &ElfBinaryIdentity) -> UnicornOllvmResultBundle {
+        let generated = generate_unicorn_ollvm_script(
+            &sample_report(),
+            vec![&sample_seed()],
+            UnicornOllvmConfig::default(),
+            identity,
+        )
+        .unwrap();
+        UnicornOllvmResultBundle {
+            schema: UNICORN_OLLVM_SCHEMA.to_string(),
+            module_name: "libtarget.so".to_string(),
+            binary_sha256: identity.binary_sha256.clone(),
+            expected_binary_sha256: identity.binary_sha256.clone(),
+            binary_identity_matched: true,
+            architecture: "AArch64".to_string(),
+            unicorn_version: "2.1.4".to_string(),
+            capstone_version: "5.0.6".to_string(),
+            config: generated.config,
+            seeds: generated.seeds,
+            seed_qualities: generated.seed_qualities,
+            seed_recapture_plans: generated.seed_recapture_plans,
+            runs: vec![UnicornReplayRun {
+                source_event_index: 7,
+                seed_kind: "frida-capture-exact-dispatcher".to_string(),
+                start_offset: "0x100".to_string(),
+                mapped_base: "0x40000000".to_string(),
+                stop_reason: "missing-memory".to_string(),
+                instruction_count: 4,
+                elapsed_ms: 1,
+                terminal_address: "0x40000180".to_string(),
+                terminal_offset: Some("0x180".to_string()),
+                matched_dispatcher_offset: None,
+                source_state_values: Vec::new(),
+                target_state_values: Vec::new(),
+                executed_offsets: vec!["0x100".to_string(), "0x180".to_string()],
+                executed_offsets_truncated: false,
+                block_offsets: vec!["0x100".to_string(), "0x180".to_string()],
+                block_offsets_truncated: false,
+                register_changes: Vec::new(),
+                memory_writes: Vec::new(),
+                memory_writes_truncated: false,
+                call_boundaries: Vec::new(),
+                missing_memory: vec![UnicornMissingMemory {
+                    access: "read".to_string(),
+                    address: "0x60000020".to_string(),
+                    size: 16,
+                    pc_offset: Some("0x180".to_string()),
+                    instruction: Some("ldr q0, [x19, #0x20]".to_string()),
+                    base_register: Some("X19".to_string()),
+                    displacement: Some("0x20".to_string()),
+                }],
+                warnings: Vec::new(),
+                error: None,
+            }],
+            transition_matrix: Vec::new(),
+            recapture_suggestions: vec![UnicornRecaptureSuggestion {
+                pc_offset: "0x180".to_string(),
+                base_register: Some("X19".to_string()),
+                displacement: Some("0x20".to_string()),
+                byte_length: 16,
+                reason: "test checkpoint memory".to_string(),
+                source_event_indices: vec![7],
+            }],
+            warnings: Vec::new(),
+        }
+    }
+
+    fn checkpoint_seed(offset: &str) -> AngrStateSeed {
+        let mut seed = sample_seed();
+        let absolute = 0x4000_0000u64 + parse_hex_addr(offset).unwrap();
+        seed.source_event_index = 8;
+        seed.source_event = "hook-enter".to_string();
+        seed.hook_id = format!("unicorn-checkpoint-{}", offset.trim_start_matches("0x"));
+        seed.function_name = seed.hook_id.clone();
+        seed.capture_target = Some(format!("0x{absolute:x}"));
+        seed.capture_offset = Some(offset.to_string());
+        seed
+    }
+
     #[test]
     fn generates_bounded_script_and_ready_quality() {
         let elf = minimal_aarch64_elf();
@@ -1148,6 +1275,81 @@ mod tests {
             &wrong,
         )
         .is_err());
+    }
+
+    #[test]
+    fn authorizes_only_checkpoint_offsets_from_matching_prior_result() {
+        let identity = inspect_elf_bytes("libtarget.so", &minimal_aarch64_elf()).unwrap();
+        let seed = checkpoint_seed("0x180");
+        let without_prior = generate_unicorn_ollvm_script(
+            &sample_report(),
+            vec![&seed],
+            UnicornOllvmConfig::default(),
+            &identity,
+        )
+        .unwrap_err();
+        assert!(without_prior.contains("authorized Unicorn checkpoint"));
+
+        let prior = checkpoint_result(&identity);
+        let generated = generate_unicorn_ollvm_script_with_checkpoint_result(
+            &sample_report(),
+            vec![&seed],
+            UnicornOllvmConfig::default(),
+            &identity,
+            Some(&prior),
+        )
+        .unwrap();
+        assert_eq!(generated.seeds[0].capture_offset, "0x180");
+        assert_eq!(generated.seeds[0].matched_probe_offsets, vec!["0x180"]);
+        assert!(generated.seeds[0].matched_branch_offsets.is_empty());
+        assert!(generated.seeds[0].matched_dispatcher_offsets.is_empty());
+        assert!(generated.script.contains("frida-capture-exact-offset"));
+        assert!(generated
+            .warnings
+            .iter()
+            .any(|warning| warning.contains("1 closer checkpoint offset")));
+
+        let unknown = checkpoint_seed("0x184");
+        let error = generate_unicorn_ollvm_script_with_checkpoint_result(
+            &sample_report(),
+            vec![&unknown],
+            UnicornOllvmConfig::default(),
+            &identity,
+            Some(&prior),
+        )
+        .unwrap_err();
+        assert!(error.contains("authorized Unicorn checkpoint"));
+    }
+
+    #[test]
+    fn rejects_checkpoint_result_module_or_elf_mismatch() {
+        let identity = inspect_elf_bytes("libtarget.so", &minimal_aarch64_elf()).unwrap();
+        let seed = checkpoint_seed("0x180");
+
+        let mut wrong_module = checkpoint_result(&identity);
+        wrong_module.module_name = "libother.so".to_string();
+        let error = generate_unicorn_ollvm_script_with_checkpoint_result(
+            &sample_report(),
+            vec![&seed],
+            UnicornOllvmConfig::default(),
+            &identity,
+            Some(&wrong_module),
+        )
+        .unwrap_err();
+        assert!(error.contains("does not match OLLVM report module"));
+
+        let mut wrong_hash = checkpoint_result(&identity);
+        wrong_hash.binary_sha256 = "f".repeat(64);
+        wrong_hash.expected_binary_sha256 = wrong_hash.binary_sha256.clone();
+        let error = generate_unicorn_ollvm_script_with_checkpoint_result(
+            &sample_report(),
+            vec![&seed],
+            UnicornOllvmConfig::default(),
+            &identity,
+            Some(&wrong_hash),
+        )
+        .unwrap_err();
+        assert!(error.contains("exact ELF SHA-256"));
     }
 
     #[test]

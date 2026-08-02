@@ -24,6 +24,10 @@ AES 集成提交：`887968e fix: detect software AES from memory traces`
 - 新增 `trace-ui/unicorn-ollvm-round-comparison-v1`、MCP/Tauri `compare_unicorn_ollvm_rounds` 与 GUI“对比多轮 JSON”：严格比较 2–16 轮同 module、同 exact ELF SHA-256 的结果，按 exact `captureOffset` 聚合而不依赖跨文件不稳定的 event index。
 - 多轮报告区分基线覆盖和后续首次新增，按 seed 输出新/丢失 offset/block、新 dispatcher、缺页前移、同点停滞、路径分歧、覆盖回退、seed 增删、配置漂移与截断警告，并建议继续有界重捕获、改用更近 checkpoint 或转 angr。回退优先级高于重复缺页停滞，所有分类保持 Candidate/Related。
 - 核心比较器新增 7 个定向测试，覆盖进度、停滞、回退、新 dispatcher、ELF 不匹配、seed 集变化、配置漂移、截断、重复 seed、绝对地址缺页、round ID 和 2/16 边界。
+- 新增 `trace-ui/frida-unicorn-checkpoint-hook-v1` 与 MCP `generate_frida_unicorn_checkpoint_hook`：从严格校验的上一轮 Unicorn 结果选择 1–32 个原 seed，把 Hook 前移到 supported stalled run 的实际 missing-memory PC 或 terminal PC，并生成兼容 `trace-ui/frida-hook-v1` 的 Frida 16.x `hook-enter`。
+- checkpoint Hook 捕获 X0-X28、FP/LR/SP/PC/NZCV；只自动读取结果中已有的 X0-X28/SP register-relative suggestion。absolute、X29/X30、不支持停止原因和无法证明的内存关系保持 warning/manual，不复制旧绝对地址、陈旧字节，也不补零。
+- `generate_unicorn_ollvm_script` 新增可选上一轮 checkpoint result：只有 module、result expected/actual SHA-256 与当前 exact ELF 全部匹配，且新 capture offset 属于该结果推导出的 checkpoint 集合时才接受；provenance 记录为 exact offset，Python 分类为 `frida-capture-exact-offset`。
+- Tauri 增加 checkpoint Hook 生成/保存命令，MCP 工具数增至 64，Tauri invoke 命令增至 83；GUI 导入单轮或比较多轮结果后可选择停滞 seed、生成/保存/复制 checkpoint Hook，再导入新捕获继续 Unicorn。
 - Release Action 从真实 `src-tauri` 应用目录启动 Tauri，和本地 Windows MSI/NSIS 成功构建路径保持一致。
 
 ### 严重 OLLVM 样本的推荐顺序
@@ -32,7 +36,7 @@ AES 集成提交：`887968e fix: detect software AES from memory traces`
 2. 对精确 module-relative offset 生成 Frida dispatcher/branch Hook，由用户手动运行；优先捕获完整 GPR/NZCV，再按缺失状态提示补充少量 X0-X28 pointer 或 SP 栈窗口。
 3. 优先使用 Unicorn“模拟增强”做 exact-seed 具体重放。它速度快、路径确定，适合确认下一 dispatcher、循环、调用边界、寄存器变化和缺失内存。
 4. 遇到 `missing-memory` 时，优先勾选可自动生成的建议创建精确 Frida 重捕获 Hook；用户在相同构建/受控输入下手动运行，并把新捕获再次作为 Unicorn 或 angr seed。寄存器在 seed 点到缺失点之间若已变化，可能需要继续迭代或选择更近的人工捕获点。
-5. 至少完成两轮后，用 GUI“对比多轮 JSON”或 MCP `compare_unicorn_ollvm_rounds` 按时间顺序比较；只有新增覆盖、新 dispatcher 或缺页前移时继续重捕获。相同缺页/终点重复时改用更近的人工 checkpoint。
+5. 至少完成两轮后，用 GUI“对比多轮 JSON”或 MCP `compare_unicorn_ollvm_rounds` 按时间顺序比较；只有新增覆盖、新 dispatcher 或缺页前移时继续原点重捕获。相同缺页/终点重复时，用 `generate_frida_unicorn_checkpoint_hook` 生成更近 checkpoint，再把新捕获与该上一轮结果一起交给下一次 Unicorn 生成。
 6. 只有需要探索未观测分支或具体重放持续停滞时再生成 angr bridge，保持默认有界深度/状态数，避免严重混淆样本发生状态爆炸。
 7. 将 Unicorn/angr 结果导回 Trace UI，再用 IDA 注释和多运行对比人工确认。AI/MCP 负责选择候选、组织证据和生成脚本，不自动 attach Frida，也不把结构候选表述为已完成去混淆。
 
@@ -44,7 +48,7 @@ AES 集成提交：`887968e fix: detect software AES from memory traces`
 - 新增 `Native candidate · AES block X0/X1/X2` Frida 配方；从 Crypto Functions 候选进入时保留已预填的 module-relative offset。
 - 真实 nativeInfo trace 回归识别为 AES-128-ECB Encrypt、PKCS#7、7 blocks、112/112 bytes、`VerifiedFull`；动态证据包含 1400 次 S-box read、252 个 distinct index 和 44/44 schedule words。
 - 没有独立 OLLVM 控制流证据时，AES 实现仍保持 `StandardSoftware`，不会仅因查表或复杂代码误标为 `ObfuscatedStandardSoftware`。
-- 2026-08-02 当前工作树回归已通过 `cargo fmt --all -- --check`、`cargo test --workspace`、Frida 重捕获闭环测试 5/5、UI guards、Vitest 3/3、TypeScript/Vite production build 和 `cargo tauri build --ci`；本地成功生成 Windows MSI 与 NSIS 安装包。
+- 2026-08-02 当前工作树回归已通过 `cargo fmt --all -- --check`、`cargo test --workspace`、真实 `sh_security_environment_nativeInfo_trace_0_0xf92d8.log` AES 回归、checkpoint/Frida 闭环定向测试、UI guards、Vitest 4/4、TypeScript/Vite production build 和 `cargo tauri build --ci`；本地成功生成 Windows MSI、NSIS 安装包与 release EXE。
 
 ## 本轮 MCP 大捕获检索
 

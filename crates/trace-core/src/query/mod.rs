@@ -11,6 +11,7 @@ pub mod elf_identity;
 pub mod evidence_score;
 pub mod forward_slice;
 pub mod frida_capture;
+pub mod frida_checkpoint;
 pub mod frida_hook;
 pub mod frida_ollvm;
 pub mod frida_recapture;

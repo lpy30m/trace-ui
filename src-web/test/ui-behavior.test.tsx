@@ -1,10 +1,10 @@
-import { render, screen } from "@testing-library/react";
+import { render, screen, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { MaterialRow } from "../src/components/CryptoMaterialsPanel";
 import OllvmUnicornPanel from "../src/components/OllvmUnicornPanel";
 import { filterFridaCaptureEvents } from "../src/utils/fridaCaptureFilter";
-import type { CryptoMaterial, FridaCaptureBundle, FridaCaptureEvent, OllvmReport } from "../src/types/trace";
+import type { CryptoMaterial, FridaCaptureBundle, FridaCaptureEvent, OllvmReport, UnicornOllvmResultBundle } from "../src/types/trace";
 
 const mocks = vi.hoisted(() => ({
   invoke: vi.fn(),
@@ -175,5 +175,84 @@ describe("OLLVM Unicorn concrete replay", () => {
       fridaEventIndices: [7],
       stopOnCall: true,
     }));
+  });
+
+  it("generates a closer checkpoint hook and carries the prior result into the next replay", async () => {
+    const user = userEvent.setup();
+    const result = {
+      schema: "trace-ui/unicorn-ollvm-v1",
+      moduleName: "libtarget.so",
+      binarySha256: "a".repeat(64),
+      expectedBinarySha256: "a".repeat(64),
+      binaryIdentityMatched: true,
+      architecture: "AArch64",
+      unicornVersion: "2.1.4",
+      capstoneVersion: "5.0.6",
+      config: {},
+      seeds: [{ sourceEventIndex: 7, captureOffset: "0x100" }],
+      seedQualities: [],
+      seedRecapturePlans: [],
+      runs: [{
+        sourceEventIndex: 7,
+        startOffset: "0x100",
+        stopReason: "missing-memory",
+        instructionCount: 4,
+        elapsedMs: 1,
+        terminalOffset: "0x180",
+        matchedDispatcherOffset: null,
+        sourceStateValues: [],
+        targetStateValues: [],
+        blockOffsets: ["0x100", "0x180"],
+        registerChanges: [],
+        memoryWrites: [],
+        missingMemory: [],
+        error: null,
+      }],
+      transitionMatrix: [],
+      recaptureSuggestions: [],
+      warnings: [],
+    } as unknown as UnicornOllvmResultBundle;
+    mocks.open.mockResolvedValueOnce("C:\\samples\\round-1.json");
+    mocks.invoke.mockImplementation(async (command: string) => {
+      if (command === "load_unicorn_ollvm_results") return result;
+      if (command === "generate_frida_unicorn_checkpoint_hook") {
+        return {
+          schemaVersion: "trace-ui/frida-unicorn-checkpoint-hook-v1",
+          moduleName: "libtarget.so",
+          fileName: "libtarget-checkpoint.js",
+          expectedBinarySha256: "a".repeat(64),
+          selectedSeedOffsets: ["0x100"],
+          targets: [{
+            hookId: "unicorn-checkpoint-180",
+            offset: "0x180",
+            sourceEventIndices: [7],
+            sourceSeedOffsets: ["0x100"],
+            stopReasons: ["missing-memory"],
+            captures: [],
+          }],
+          captureWindowCount: 0,
+          maxEvents: 5000,
+          script: "Interceptor.attach(moduleBase.add(0x180), {})",
+          warnings: [],
+          protocolVersion: "trace-ui/frida-hook-v1",
+          fridaApiVersion: "16.x",
+        };
+      }
+      throw new Error(`unexpected command ${command}`);
+    });
+    const report = { scope: { moduleName: "libtarget.so" } } as OllvmReport;
+    const view = render(<OllvmUnicornPanel report={report} />);
+    const panel = within(view.container);
+
+    await user.click(panel.getByRole("button", { name: "导入结果 JSON" }));
+    expect(await panel.findByText(/^原 seed/)).toHaveTextContent("0x100");
+    await user.click(panel.getByRole("button", { name: "生成更近 checkpoint Hook" }));
+
+    expect(await panel.findByText(/1 个更近目标/)).toBeInTheDocument();
+    expect(mocks.invoke).toHaveBeenCalledWith("generate_frida_unicorn_checkpoint_hook", {
+      unicornResultPath: "C:\\samples\\round-1.json",
+      seedCaptureOffsets: ["0x100"],
+      maxEvents: 5000,
+    });
   });
 });

@@ -65,6 +65,11 @@ pub use query::frida_capture::{
     FridaCaptureEventDetail, FridaCaptureEventSearchResult, FridaCaptureEventSummary,
     FridaCaptureSearchOptions, FridaCaptureValueDetail, FridaCapturedValue,
 };
+pub use query::frida_checkpoint::{
+    generate_frida_unicorn_checkpoint_hook, unicorn_checkpoint_offsets,
+    FridaUnicornCheckpointHookOptions, FridaUnicornCheckpointHookScript,
+    FridaUnicornCheckpointHookTarget, FridaUnicornCheckpointMemorySpec,
+};
 pub use query::frida_hook::{
     generate_frida_hook, FridaArgumentKind, FridaArgumentSpec, FridaCaptureDirection,
     FridaHookRequest, FridaHookScript, FridaStalkerMode,
@@ -112,10 +117,11 @@ pub use query::source_sink::{
     FlowEndpointClassification, ResourceValidation,
 };
 pub use query::unicorn::{
-    generate_unicorn_ollvm_script, parse_unicorn_ollvm_result_bundle, UnicornCallBoundary,
-    UnicornMemoryWrite, UnicornMissingMemory, UnicornOllvmConfig, UnicornOllvmResultBundle,
-    UnicornOllvmScript, UnicornRecaptureSuggestion, UnicornRegisterChange, UnicornReplayRun,
-    UnicornSeedQuality, UnicornStateValue, UnicornTransitionEvidence,
+    generate_unicorn_ollvm_script, generate_unicorn_ollvm_script_with_checkpoint_result,
+    parse_unicorn_ollvm_result_bundle, UnicornCallBoundary, UnicornMemoryWrite,
+    UnicornMissingMemory, UnicornOllvmConfig, UnicornOllvmResultBundle, UnicornOllvmScript,
+    UnicornRecaptureSuggestion, UnicornRegisterChange, UnicornReplayRun, UnicornSeedQuality,
+    UnicornStateValue, UnicornTransitionEvidence,
 };
 pub use query::unicorn_compare::{
     compare_unicorn_ollvm_rounds, UnicornOllvmRoundComparisonReport, UnicornOllvmRoundDelta,

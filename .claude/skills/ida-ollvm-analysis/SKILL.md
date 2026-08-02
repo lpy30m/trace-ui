@@ -11,6 +11,7 @@ Use `mcp__trace-ui__analyze_ollvm`, `mcp__trace-ui__compare_ollvm_traces`, `mcp_
 `mcp__trace-ui__generate_angr_state_seed`, `mcp__trace-ui__generate_unicorn_ollvm_script`,
 `mcp__trace-ui__inspect_unicorn_ollvm_results`, and
 `mcp__trace-ui__generate_frida_unicorn_recapture_hook`, and
+`mcp__trace-ui__generate_frida_unicorn_checkpoint_hook`, and
 `mcp__trace-ui__compare_unicorn_ollvm_rounds`. For multi-dispatcher manual capture, also use
 `mcp__trace-ui__generate_frida_ollvm_dispatcher_hook` and
 `mcp__trace-ui__analyze_frida_ollvm_dispatcher_capture`.
@@ -63,7 +64,11 @@ Use `mcp__trace-ui__analyze_ollvm`, `mcp__trace-ui__compare_ollvm_traces`, `mcp_
    two or more ordered replays, call `compare_unicorn_ollvm_rounds` with two to sixteen result files from
    the same exact ELF. Review per-seed new/lost offsets and blocks, new dispatchers, moved/repeated missing
    signatures, configuration drift, and truncation. Continue recapture only while bounded coverage advances;
-   prefer a closer manual checkpoint or bounded angr when the same seed stalls.
+   when the same seed stalls, call `generate_frida_unicorn_checkpoint_hook` with the validated latest
+   result and one to 32 original seed offsets. Let the user run the generated Frida 16.x script at the
+   reported missing-memory PC or supported terminal PC, import the new `hook-enter`, then call
+   `generate_unicorn_ollvm_script` with that capture plus `checkpoint_result_path` pointing to the same
+   prior result. Use bounded angr instead when a closer concrete checkpoint still lacks required state.
 10. To observe several ranked dispatchers in one user-controlled run, call
     `generate_frida_ollvm_dispatcher_hook`, return/save the Frida 16.x script, and stop until the user
     supplies its capture. Then call `analyze_frida_ollvm_dispatcher_capture` on the same OLLVM scope.
@@ -127,6 +132,12 @@ Use `mcp__trace-ui__analyze_ollvm`, `mcp__trace-ui__compare_ollvm_traces`, `mcp_
   require another iteration or a closer manually selected capture point. Only byteArray regions with a
   runtime-verified X0-X28/SP `baseRegister + displacement` relation may be carried automatically; large
   regions are split into bounded windows, while unverifiable/truncated regions remain explicit warnings.
+- A closer Unicorn checkpoint is authorized only by a strictly parsed prior result from the same module
+  and exact ELF SHA-256. Missing-memory prefers its actual `pcOffset`; missing-register, loop-detected,
+  instruction-limit, and timeout use `terminalOffset`. The generated Hook captures X0-X28, FP/LR/SP/PC,
+  and NZCV at that closer offset and may read only existing safe X0-X28/SP-relative suggestions.
+  Absolute addresses and X29/X30 remain manual. Reusing the new capture in Unicorn requires the same
+  prior result as `checkpoint_result_path`; the hash guard is file identity, not runtime attestation.
 - Unicorn round comparison is valid only for two to sixteen ordered results with the same module and exact
   ELF SHA-256. It aligns seeds by exact capture offset rather than cross-file event index. New coverage or
   a new dispatcher remains Candidate/Related; repeated missing memory, lost coverage, configuration drift,
@@ -153,7 +164,9 @@ within 1-60,000 ms; begin with 50,000 instructions and 5,000 ms. Stop on calls b
 transition matrix as grouped exact-seed replay evidence, never a complete state machine or recovered CFG.
 Trace UI may generate a bounded Frida 16.x recapture script from validated Unicorn suggestions, but the
 user still controls attach/spawn/load/run and must confirm the runtime module is the same ELF build. It may
-compare user-produced replay JSON files, but it never launches Unicorn or angr during that comparison.
+also generate a closer-checkpoint Hook from supported stalled runs and authorize that new exact-offset seed
+only with the same prior result and exact ELF. It may compare user-produced replay JSON files, but it never
+launches Unicorn or angr during generation or comparison.
 
 ## Reporting
 

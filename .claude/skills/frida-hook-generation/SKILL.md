@@ -11,7 +11,8 @@ Use `mcp__trace-ui__list_frida_hook_recipes`, `mcp__trace-ui__generate_frida_hoo
 `mcp__trace-ui__analyze_frida_crypto_materials`, `mcp__trace-ui__analyze_frida_ollvm_dispatcher_capture`, and
 `mcp__trace-ui__generate_angr_state_seed`, `mcp__trace-ui__generate_unicorn_ollvm_script`,
 `mcp__trace-ui__inspect_unicorn_ollvm_results`, and
-`mcp__trace-ui__generate_frida_unicorn_recapture_hook`. Generated hooks target Frida 16.x JavaScript APIs and emit
+`mcp__trace-ui__generate_frida_unicorn_recapture_hook`, and
+`mcp__trace-ui__generate_frida_unicorn_checkpoint_hook`. Generated hooks target Frida 16.x JavaScript APIs and emit
 `trace-ui/frida-hook-v1` messages with `send()` plus `TRACE_UI_JSON` strict-JSON log lines.
 
 ## Workflow
@@ -58,7 +59,12 @@ Use `mcp__trace-ui__list_frida_hook_recipes`, `mcp__trace-ui__generate_frida_hoo
     signed-displacement window. It also re-reads prior seed byteArray windows whose X0-X28/SP-relative
     relation was verified against the capture register and pointer, merges duplicate old/new windows,
     and reports unsupported or truncated prior regions. The user runs it manually and reimports its
-    `hook-enter` as a new seed; never copy the prior absolute address or stale captured bytes.
+    `hook-enter` as a new seed; never copy the prior absolute address or stale captured bytes. If the
+    same seed still stops on missing-memory/register, loop, timeout, or instruction limit, call
+    `generate_frida_unicorn_checkpoint_hook` with the validated prior result and selected original seed
+    offsets. It hooks the actual missing-memory PC or supported terminal PC, captures full GPR/NZCV and
+    only safe existing X0-X28/SP-relative windows, and must be run manually. Reuse its new `hook-enter`
+    with `generate_unicorn_ollvm_script.checkpoint_result_path` set to that same prior result.
 
 ## Request fields
 
@@ -106,6 +112,10 @@ Use `mcp__trace-ui__list_frida_hook_recipes`, `mcp__trace-ui__generate_frida_hoo
   the prior replay, not runtime module attestation. Carry prior seed memory only from validated
   `seedRecapturePlans`; split large regions into bounded windows, re-read them at the original exact seed
   offset, and keep unverifiable byteArray/string regions explicit rather than inventing a relation.
+- For a closer Unicorn checkpoint, accept only supported stop reasons from a strictly validated prior
+  result. Require the same module and exact ELF SHA-256 again when the checkpoint capture becomes a new
+  Unicorn seed. The prior hash is a file guard, not runtime-image attestation; absolute memory and X29/X30
+  stay manual, and the generated Hook never attaches, spawns, loads, or executes Frida.
 
 ## Frida 16 boundary
 

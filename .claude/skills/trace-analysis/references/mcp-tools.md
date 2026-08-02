@@ -100,6 +100,15 @@ Line numbers in taint `@LINE` specs are **1-based**; `start_seq`/`end_seq`/`seq`
   `byteArray`/`readError` captures using `trace-ui/frida-hook-v1`. It never reuses stale bytes or old
   absolute addresses and never attaches, spawns, loads, or executes Frida. Unsupported/truncated prior
   regions are reported explicitly. The embedded ELF SHA-256 is prior-replay provenance only.
+- **generate_frida_unicorn_checkpoint_hook** `{unicorn_result_path,seed_capture_offsets,max_events?=5000}`
+  strictly validates one manually produced `trace-ui/unicorn-ollvm-v1` result, selects one to 32
+  original seed offsets, and derives at most 32 closer targets from supported stalled runs.
+  `missing-memory` prefers each actual missing `pcOffset`; `missing-register`, `loop-detected`,
+  `instruction-limit`, and `timeout` use `terminalOffset`. The generated Frida 16.x Hook captures
+  X0-X28, FP/LR/SP/PC/NZCV and only existing safe X0-X28/SP-relative suggestion windows. Absolute
+  addresses, X29/X30, unsupported stops, and unverifiable memory stay warning/manual. Trace UI never
+  executes Frida; the prior ELF hash is provenance and later exact-offset authorization, not runtime
+  image attestation.
 - **inspect_frida_capture** `{file_path}` reads user-captured JSON objects/arrays, Frida send envelopes,
   NDJSON, or `TRACE_UI_JSON`-prefixed CLI logs. It normalizes call IDs, module metadata, registers,
   buffers, returns, backtraces, and Stalker batch counts without running Frida.
@@ -192,8 +201,10 @@ Line numbers in taint `@LINE` specs are **1-based**; `start_seq`/`end_seq`/`seq`
   `frida_capture_path`, one to 32 exact `frida_event_indices` (legacy `frida_event_index` is accepted),
   mandatory `static_binary_path`, and bounded concrete limits: `max_instructions?=50000`,
   `timeout_ms?=5000`, `max_memory_writes?=4096`, `max_recorded_offsets?=50000`,
-  `stop_on_call?=true`, and `loop_visit_limit?=2`. Every event must exactly match an opaque branch,
-  condition-source offset, or dispatcher entry. The generated Python requires Unicorn, Capstone, and
+  `stop_on_call?=true`, `loop_visit_limit?=2`, and optional `checkpoint_result_path`. Every event must
+  exactly match an opaque branch, condition-source offset, dispatcher entry, or—when the prior result is
+  supplied—a supported checkpoint offset authorized from the same module and exact ELF SHA-256. The
+  generated Python requires Unicorn, Capstone, and
   pyelftools, verifies the AArch64 ELF SHA-256, maps PT_LOAD segments, applies captured registers and
   byteArray memory, and stops explicitly at next-dispatcher, return, call, loop, missing register/memory,
   unsupported SIMD/system state, timeout, or bounds. It never silently treats uncaptured runtime memory
@@ -205,7 +216,10 @@ Line numbers in taint `@LINE` specs are **1-based**; `start_seq`/`end_seq`/`seq`
   byteArray regions with verified register-relative provenance; regions above 4096 bytes are split into
   bounded windows. Supported suggestions can be passed to
   `generate_frida_unicorn_recapture_hook`, then the resulting user-captured exact-seed `hook-enter` can
-  be selected in another Unicorn/angr generation request. Results remain Candidate/Related.
+  be selected in another Unicorn/angr generation request. For repeated stalls, select original seed
+  offsets with `generate_frida_unicorn_checkpoint_hook`, run the closer Hook manually, then select its
+  new `hook-enter` in another Unicorn request while passing the same prior result as
+  `checkpoint_result_path`. Results remain Candidate/Related.
 - **compare_unicorn_ollvm_rounds** `{rounds:[{round_id,file_path,source_label?}, ...]}` strictly
   validates two to 16 ordered `trace-ui/unicorn-ollvm-v1` files for the same module and exact ELF
   SHA-256. It aggregates runs by exact seed `captureOffset`, reports cumulative and adjacent-round

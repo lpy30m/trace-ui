@@ -1363,12 +1363,16 @@ pub struct GenerateUnicornOllvmScriptRequest {
     #[schemars(description = "Legacy single exact Frida event index")]
     pub frida_event_index: Option<u64>,
     #[schemars(
-        description = "One to 32 hook-enter or ollvm-dispatcher-hit event indices. Every capture offset must exactly match a branch, condition source, or dispatcher entry."
+        description = "One to 32 hook-enter or ollvm-dispatcher-hit event indices. Every capture offset must exactly match a branch, condition source, dispatcher entry, or an offset authorized by checkpoint_result_path."
     )]
     #[serde(default)]
     pub frida_event_indices: Vec<u64>,
     #[schemars(description = "Required exact AArch64 ELF/shared-object path")]
     pub static_binary_path: String,
+    #[schemars(
+        description = "Optional absolute path to a strictly validated prior trace-ui/unicorn-ollvm-v1 result. It authorizes only supported closer checkpoint offsets from the same module and exact ELF SHA-256."
+    )]
+    pub checkpoint_result_path: Option<String>,
     #[schemars(description = "Maximum concrete instructions per seed (1-2000000, default: 50000)")]
     #[serde(default = "default_unicorn_max_instructions")]
     pub max_instructions: u64,
@@ -1431,6 +1435,23 @@ pub struct GenerateFridaUnicornRecaptureHookRequest {
     pub suggestion_indices: Vec<u32>,
     #[schemars(
         description = "Maximum hook-enter events emitted across all targets (1-50000, default: 5000)"
+    )]
+    #[serde(default = "default_frida_unicorn_recapture_events")]
+    pub max_events: u32,
+}
+
+#[derive(Debug, Deserialize, JsonSchema)]
+pub struct GenerateFridaUnicornCheckpointHookRequest {
+    #[schemars(
+        description = "Absolute path to a validated trace-ui/unicorn-ollvm-v1 JSON result from a manually executed generated Unicorn script"
+    )]
+    pub unicorn_result_path: String,
+    #[schemars(
+        description = "One to 32 original seed capture offsets from the result. Supported stalled runs are converted into closer missing-memory PC or terminal-offset checkpoint hooks."
+    )]
+    pub seed_capture_offsets: Vec<String>,
+    #[schemars(
+        description = "Maximum hook-enter events emitted across all closer checkpoint targets (1-50000, default: 5000)"
     )]
     #[serde(default = "default_frida_unicorn_recapture_events")]
     pub max_events: u32,
