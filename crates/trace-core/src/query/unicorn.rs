@@ -1,4 +1,4 @@
-use std::collections::{BTreeSet, HashSet};
+use std::collections::{BTreeMap, BTreeSet, HashSet};
 
 use serde::{Deserialize, Serialize};
 
@@ -6,7 +6,7 @@ use crate::query::angr::{prepare_frida_seed, AngrOllvmFridaSeedProvenance};
 use crate::query::elf_identity::ElfBinaryIdentity;
 use crate::query::frida_capture::AngrStateSeed;
 use crate::query::ollvm::OllvmReport;
-use crate::utils::parse_hex_addr;
+use crate::utils::{format_signed_offset_hex, parse_hex_addr, parse_signed_offset};
 
 const UNICORN_OLLVM_SCHEMA: &str = "trace-ui/unicorn-ollvm-v1";
 
@@ -48,6 +48,28 @@ pub struct UnicornSeedQuality {
     pub warnings: Vec<String>,
 }
 
+#[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct UnicornSeedRecaptureWindow {
+    pub label: String,
+    pub base_register: String,
+    pub displacement: String,
+    pub byte_length: u64,
+    pub source_kind: String,
+    pub phase: String,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct UnicornSeedRecapturePlan {
+    pub source_event_index: u64,
+    pub capture_offset: String,
+    pub windows: Vec<UnicornSeedRecaptureWindow>,
+    pub carry_forward_bytes: u64,
+    pub unsupported_memory_region_count: u64,
+    pub windows_truncated: bool,
+}
+
 #[derive(Clone, Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct UnicornOllvmScript {
@@ -56,6 +78,7 @@ pub struct UnicornOllvmScript {
     pub schema_version: String,
     pub seeds: Vec<AngrOllvmFridaSeedProvenance>,
     pub seed_qualities: Vec<UnicornSeedQuality>,
+    pub seed_recapture_plans: Vec<UnicornSeedRecapturePlan>,
     pub expected_binary_identity: ElfBinaryIdentity,
     pub config: UnicornOllvmConfig,
     pub warnings: Vec<String>,
@@ -203,6 +226,8 @@ pub struct UnicornOllvmResultBundle {
     #[serde(default)]
     pub seed_qualities: Vec<UnicornSeedQuality>,
     #[serde(default)]
+    pub seed_recapture_plans: Vec<UnicornSeedRecapturePlan>,
+    #[serde(default)]
     pub runs: Vec<UnicornReplayRun>,
     #[serde(default)]
     pub transition_matrix: Vec<UnicornTransitionEvidence>,
@@ -323,6 +348,132 @@ fn assess_seed_quality(seed: &AngrStateSeed, capture_offset: &str) -> UnicornSee
     }
 }
 
+fn recapture_base_register(value: &str) -> Option<String> {
+    let value = value.trim().to_ascii_uppercase();
+    if value == "SP" {
+        return Some(value);
+    }
+    value
+        .strip_prefix('X')
+        .and_then(|index| index.parse::<u8>().ok())
+        .filter(|index| *index <= 28)
+        .map(|index| format!("X{index}"))
+}
+
+fn bounded_recapture_label(value: &str) -> String {
+    const MAX_BASE_LABEL_BYTES: usize = 220;
+    let mut label = String::new();
+    for character in value.chars().filter(|character| !character.is_control()) {
+        if label.len().saturating_add(character.len_utf8()) > MAX_BASE_LABEL_BYTES {
+            break;
+        }
+        label.push(character);
+    }
+    if label.trim().is_empty() {
+        "seed-memory".to_string()
+    } else {
+        label
+    }
+}
+
+fn build_seed_recapture_plan(
+    seed: &AngrStateSeed,
+    capture_offset: &str,
+) -> UnicornSeedRecapturePlan {
+    const MAX_WINDOW_BYTES: u64 = 4_096;
+    const MAX_WINDOWS: usize = 256;
+    const MAX_DISPLACEMENT: i64 = 1_048_576;
+
+    let mut windows = BTreeMap::<(String, i64, u64), UnicornSeedRecaptureWindow>::new();
+    let mut unsupported_memory_region_count = 0u64;
+    let mut windows_truncated = false;
+
+    for region in &seed.memory_regions {
+        let Some(base_register) = region
+            .base_register
+            .as_deref()
+            .and_then(recapture_base_register)
+        else {
+            unsupported_memory_region_count += 1;
+            continue;
+        };
+        let Some(displacement) = region
+            .displacement
+            .as_deref()
+            .and_then(|value| parse_signed_offset(value).ok())
+        else {
+            unsupported_memory_region_count += 1;
+            continue;
+        };
+        if region.source_kind != "byteArray" || region.byte_length == 0 {
+            unsupported_memory_region_count += 1;
+            continue;
+        }
+        let Some(last_displacement) = region
+            .byte_length
+            .checked_sub(1)
+            .and_then(|length| i64::try_from(length).ok())
+            .and_then(|length| displacement.checked_add(length))
+        else {
+            unsupported_memory_region_count += 1;
+            continue;
+        };
+        if !(-MAX_DISPLACEMENT..=MAX_DISPLACEMENT).contains(&displacement)
+            || !(-MAX_DISPLACEMENT..=MAX_DISPLACEMENT).contains(&last_displacement)
+        {
+            unsupported_memory_region_count += 1;
+            continue;
+        }
+
+        let mut chunk_offset = 0u64;
+        let chunk_count = region.byte_length.div_ceil(MAX_WINDOW_BYTES);
+        let base_label = bounded_recapture_label(&region.label);
+        while chunk_offset < region.byte_length {
+            let byte_length = (region.byte_length - chunk_offset).min(MAX_WINDOW_BYTES);
+            let Some(chunk_displacement) = i64::try_from(chunk_offset)
+                .ok()
+                .and_then(|offset| displacement.checked_add(offset))
+            else {
+                unsupported_memory_region_count += 1;
+                break;
+            };
+            let key = (base_register.clone(), chunk_displacement, byte_length);
+            if !windows.contains_key(&key) && windows.len() >= MAX_WINDOWS {
+                windows_truncated = true;
+                break;
+            }
+            let part_index = chunk_offset / MAX_WINDOW_BYTES + 1;
+            windows
+                .entry(key)
+                .or_insert_with(|| UnicornSeedRecaptureWindow {
+                    label: if chunk_count > 1 {
+                        format!("{base_label}-part-{part_index}")
+                    } else {
+                        base_label.clone()
+                    },
+                    base_register: base_register.clone(),
+                    displacement: format_signed_offset_hex(chunk_displacement),
+                    byte_length,
+                    source_kind: region.source_kind.clone(),
+                    phase: region.phase.clone(),
+                });
+            chunk_offset += byte_length;
+        }
+    }
+
+    let carry_forward_bytes = windows.values().fold(0u64, |total, window| {
+        total.saturating_add(window.byte_length)
+    });
+    UnicornSeedRecapturePlan {
+        source_event_index: seed.source_event_index,
+        capture_offset: capture_offset.to_string(),
+        windows: windows.into_values().collect(),
+        carry_forward_bytes,
+        unsupported_memory_region_count,
+        windows_truncated,
+    }
+}
+
 fn quoted_json<T: Serialize>(value: &T, label: &str) -> Result<String, String> {
     let json = serde_json::to_string(value)
         .map_err(|error| format!("serialize {label} failed: {error}"))?;
@@ -355,6 +506,7 @@ pub fn generate_unicorn_ollvm_script(
     let mut payloads = Vec::with_capacity(frida_seeds.len());
     let mut provenances = Vec::with_capacity(frida_seeds.len());
     let mut qualities = Vec::with_capacity(frida_seeds.len());
+    let mut recapture_plans = Vec::with_capacity(frida_seeds.len());
     let mut source_event_indices = HashSet::new();
     for seed in frida_seeds {
         if !source_event_indices.insert(seed.source_event_index) {
@@ -365,11 +517,15 @@ pub fn generate_unicorn_ollvm_script(
         }
         let (mut payload, provenance) = prepare_frida_seed(report, seed)?;
         let quality = assess_seed_quality(seed, &provenance.capture_offset);
+        let recapture_plan = build_seed_recapture_plan(seed, &provenance.capture_offset);
         payload["quality"] = serde_json::to_value(&quality)
             .map_err(|error| format!("serialize seed quality failed: {error}"))?;
+        payload["recapturePlan"] = serde_json::to_value(&recapture_plan)
+            .map_err(|error| format!("serialize seed recapture plan failed: {error}"))?;
         payloads.push(payload);
         provenances.push(provenance);
         qualities.push(quality);
+        recapture_plans.push(recapture_plan);
     }
 
     let report_literal = quoted_json(report, "OLLVM report")?;
@@ -401,6 +557,21 @@ pub fn generate_unicorn_ollvm_script(
                 .to_string(),
         );
     }
+    let unsupported_regions = recapture_plans
+        .iter()
+        .map(|plan| plan.unsupported_memory_region_count)
+        .sum::<u64>();
+    if unsupported_regions > 0 {
+        warnings.push(format!(
+            "{unsupported_regions} seed memory region(s) lacked a verified bounded X0-X28/SP-relative relation and cannot be automatically carried into the next Frida recapture round."
+        ));
+    }
+    if recapture_plans.iter().any(|plan| plan.windows_truncated) {
+        warnings.push(
+            "One or more seed recapture plans reached the 256-window bound; review the omitted coverage before another replay."
+                .to_string(),
+        );
+    }
 
     Ok(UnicornOllvmScript {
         file_name,
@@ -408,6 +579,7 @@ pub fn generate_unicorn_ollvm_script(
         schema_version: UNICORN_OLLVM_SCHEMA.to_string(),
         seeds: provenances,
         seed_qualities: qualities,
+        seed_recapture_plans: recapture_plans,
         expected_binary_identity: expected_binary_identity.clone(),
         config,
         warnings,
@@ -533,6 +705,103 @@ pub fn parse_unicorn_ollvm_result_bundle(bytes: &[u8]) -> Result<UnicornOllvmRes
                 "Unicorn seed quality captureOffset does not match event {} provenance",
                 quality.source_event_index
             ));
+        }
+    }
+    if !bundle.seed_recapture_plans.is_empty() {
+        if bundle.seed_recapture_plans.len() != bundle.seeds.len() {
+            return Err("Unicorn result seedRecapturePlans count does not match seeds".to_string());
+        }
+        let mut plan_events = BTreeSet::new();
+        let mut total_plan_bytes = 0u64;
+        for plan in &bundle.seed_recapture_plans {
+            if !seed_events.contains(&plan.source_event_index)
+                || !plan_events.insert(plan.source_event_index)
+            {
+                return Err(format!(
+                    "Unicorn seed recapture plan references an unknown or duplicate event {}",
+                    plan.source_event_index
+                ));
+            }
+            let seed = bundle
+                .seeds
+                .iter()
+                .find(|seed| seed.source_event_index == plan.source_event_index)
+                .expect("validated seed event must exist");
+            validate_offset(&plan.capture_offset, "seed recapture captureOffset")?;
+            if !plan
+                .capture_offset
+                .eq_ignore_ascii_case(&seed.capture_offset)
+            {
+                return Err(format!(
+                    "Unicorn seed recapture captureOffset does not match event {} provenance",
+                    plan.source_event_index
+                ));
+            }
+            if plan.windows.len() > 256 {
+                return Err(format!(
+                    "Unicorn seed recapture plan {} exceeds the bounded window count",
+                    plan.source_event_index
+                ));
+            }
+            let mut plan_bytes = 0u64;
+            let mut unique_windows = BTreeSet::new();
+            for window in &plan.windows {
+                if window.label.trim().is_empty()
+                    || window.label.len() > 256
+                    || window.label.chars().any(|character| character.is_control())
+                {
+                    return Err("Unicorn seed recapture window label is invalid".to_string());
+                }
+                let Some(base_register) = recapture_base_register(&window.base_register) else {
+                    return Err(format!(
+                        "Unicorn seed recapture window uses unsupported register {}",
+                        window.base_register
+                    ));
+                };
+                let displacement = parse_signed_offset(&window.displacement)?;
+                let Some(last_displacement) = window
+                    .byte_length
+                    .checked_sub(1)
+                    .and_then(|length| i64::try_from(length).ok())
+                    .and_then(|length| displacement.checked_add(length))
+                else {
+                    return Err("Unicorn seed recapture window displacement overflow".to_string());
+                };
+                if window.byte_length == 0
+                    || window.byte_length > 4096
+                    || !(-1_048_576..=1_048_576).contains(&displacement)
+                    || !(-1_048_576..=1_048_576).contains(&last_displacement)
+                {
+                    return Err(
+                        "Unicorn seed recapture window must be 1-4096 bytes within +/- 1 MiB"
+                            .to_string(),
+                    );
+                }
+                if window.source_kind != "byteArray" {
+                    return Err(
+                        "Unicorn seed recapture windows must originate from byteArray captures"
+                            .to_string(),
+                    );
+                }
+                if !unique_windows.insert((base_register, displacement, window.byte_length)) {
+                    return Err(
+                        "Unicorn seed recapture plan contains duplicate windows".to_string()
+                    );
+                }
+                plan_bytes = plan_bytes.saturating_add(window.byte_length);
+            }
+            if plan_bytes != plan.carry_forward_bytes || plan_bytes > 1_048_576 {
+                return Err(format!(
+                    "Unicorn seed recapture byte count is invalid for event {}",
+                    plan.source_event_index
+                ));
+            }
+            total_plan_bytes = total_plan_bytes.saturating_add(plan_bytes);
+        }
+        if plan_events != seed_events || total_plan_bytes > 33_554_432 {
+            return Err(
+                "Unicorn result seed recapture plans are incomplete or too large".to_string(),
+            );
         }
     }
     let mut run_events = BTreeSet::new();
@@ -784,6 +1053,8 @@ mod tests {
                 label: "sp-stack-memory".to_string(),
                 source_kind: "byteArray".to_string(),
                 phase: "enter".to_string(),
+                base_register: Some("SP".to_string()),
+                displacement: Some("0x0".to_string()),
             }],
             warnings: Vec::new(),
         }
@@ -831,9 +1102,30 @@ mod tests {
         .unwrap();
         assert_eq!(generated.schema_version, UNICORN_OLLVM_SCHEMA);
         assert_eq!(generated.seed_qualities[0].status, "ready");
+        assert_eq!(generated.seed_recapture_plans.len(), 1);
+        assert_eq!(generated.seed_recapture_plans[0].windows.len(), 1);
+        assert_eq!(generated.seed_recapture_plans[0].carry_forward_bytes, 256);
         assert!(generated.script.contains("Uc(UC_ARCH_ARM64"));
         assert!(generated.script.contains("missing-memory"));
+        assert!(generated.script.contains("seedRecapturePlans"));
         assert!(generated.script.contains(&identity.binary_sha256));
+    }
+
+    #[test]
+    fn splits_large_seed_memory_into_bounded_recapture_windows() {
+        let mut seed = sample_seed();
+        seed.memory_regions[0].byte_length = 16 * 1024;
+        seed.memory_regions[0].bytes_hex = "00".repeat(16 * 1024);
+        let plan = build_seed_recapture_plan(&seed, "0x100");
+        assert_eq!(plan.windows.len(), 4);
+        assert_eq!(plan.carry_forward_bytes, 16 * 1024);
+        assert_eq!(plan.unsupported_memory_region_count, 0);
+        assert!(!plan.windows_truncated);
+        assert_eq!(plan.windows[0].displacement, "0x0");
+        assert_eq!(plan.windows[1].displacement, "0x1000");
+        assert_eq!(plan.windows[2].displacement, "0x2000");
+        assert_eq!(plan.windows[3].displacement, "0x3000");
+        assert!(plan.windows.iter().all(|window| window.byte_length == 4096));
     }
 
     #[test]
@@ -880,6 +1172,7 @@ mod tests {
             config: generated.config,
             seeds: generated.seeds,
             seed_qualities: generated.seed_qualities,
+            seed_recapture_plans: generated.seed_recapture_plans,
             runs: vec![UnicornReplayRun {
                 source_event_index: 7,
                 seed_kind: "frida-capture-exact-dispatcher".to_string(),
@@ -911,12 +1204,57 @@ mod tests {
         };
         parse_unicorn_ollvm_result_bundle(&serde_json::to_vec(&bundle).unwrap()).unwrap();
 
+        let mut invalid = bundle.clone();
+        invalid.seed_recapture_plans.clear();
+        invalid
+            .seed_recapture_plans
+            .push(bundle.seed_recapture_plans[0].clone());
+        invalid
+            .seed_recapture_plans
+            .push(bundle.seed_recapture_plans[0].clone());
+        let error =
+            parse_unicorn_ollvm_result_bundle(&serde_json::to_vec(&invalid).unwrap()).unwrap_err();
+        assert!(error.contains("count does not match seeds"));
+
+        let mut invalid = bundle.clone();
+        invalid.seed_recapture_plans[0].source_event_index = 99;
+        let error =
+            parse_unicorn_ollvm_result_bundle(&serde_json::to_vec(&invalid).unwrap()).unwrap_err();
+        assert!(error.contains("unknown or duplicate event"));
+
+        let mut invalid = bundle.clone();
+        invalid.seed_recapture_plans[0].capture_offset = "0x104".to_string();
+        let error =
+            parse_unicorn_ollvm_result_bundle(&serde_json::to_vec(&invalid).unwrap()).unwrap_err();
+        assert!(error.contains("captureOffset does not match"));
+
+        let mut invalid = bundle.clone();
+        invalid.seed_recapture_plans[0].windows[0].base_register = "X29".to_string();
+        let error =
+            parse_unicorn_ollvm_result_bundle(&serde_json::to_vec(&invalid).unwrap()).unwrap_err();
+        assert!(error.contains("unsupported register"));
+
+        let mut invalid = bundle.clone();
+        invalid.seed_recapture_plans[0].windows[0].displacement = "0x200000".to_string();
+        let error =
+            parse_unicorn_ollvm_result_bundle(&serde_json::to_vec(&invalid).unwrap()).unwrap_err();
+        assert!(error.contains("within +/- 1 MiB"));
+
+        let mut invalid = bundle.clone();
+        invalid.seed_recapture_plans[0].carry_forward_bytes += 1;
+        let error =
+            parse_unicorn_ollvm_result_bundle(&serde_json::to_vec(&invalid).unwrap()).unwrap_err();
+        assert!(error.contains("byte count is invalid"));
+
         let mut extra_seed = bundle.seeds[0].clone();
         extra_seed.source_event_index = 8;
         let mut extra_quality = bundle.seed_qualities[0].clone();
         extra_quality.source_event_index = 8;
+        let mut extra_recapture_plan = bundle.seed_recapture_plans[0].clone();
+        extra_recapture_plan.source_event_index = 8;
         bundle.seeds.push(extra_seed);
         bundle.seed_qualities.push(extra_quality);
+        bundle.seed_recapture_plans.push(extra_recapture_plan);
         let error =
             parse_unicorn_ollvm_result_bundle(&serde_json::to_vec(&bundle).unwrap()).unwrap_err();
         assert!(error.contains("exactly one replay run per seed event"));
@@ -966,6 +1304,9 @@ mod tests {
         );
         let parsed =
             parse_unicorn_ollvm_result_bundle(&std::fs::read(&result_path).unwrap()).unwrap();
+        assert_eq!(parsed.seed_recapture_plans.len(), 1);
+        assert_eq!(parsed.seed_recapture_plans[0].carry_forward_bytes, 256);
+        assert_eq!(parsed.seed_recapture_plans[0].windows.len(), 1);
         assert_eq!(parsed.runs[0].stop_reason, "next-dispatcher");
         assert_eq!(
             parsed.runs[0].matched_dispatcher_offset.as_deref(),

@@ -722,6 +722,14 @@ def analyze(binary_path):
             )
         )
     runs = [_run_seed(binary_path, seed) for seed in SEEDS]
+    recapture_plans = [seed.get("recapturePlan") or {
+        "sourceEventIndex": seed.get("sourceEventIndex"),
+        "captureOffset": seed.get("captureOffset"),
+        "windows": [],
+        "carryForwardBytes": 0,
+        "unsupportedMemoryRegionCount": len(seed.get("memoryRegions", [])),
+        "windowsTruncated": False,
+    } for seed in SEEDS]
     warnings = [
         "Concrete replay covers only the exact captured states and bounded execution performed here; it does not recover a complete OLLVM CFG.",
         "A next-dispatcher result is execution-specific Candidate/Related evidence. Alternate inputs, threads, or uncaptured memory may produce different transitions.",
@@ -730,6 +738,11 @@ def analyze(binary_path):
     partial = [quality for quality in [seed.get("quality") for seed in SEEDS] if quality and quality.get("status") != "ready"]
     if partial:
         warnings.append("{} replay seed(s) were partial; inspect missing state and recapture suggestions.".format(len(partial)))
+    unsupported_regions = sum(int(plan.get("unsupportedMemoryRegionCount") or 0) for plan in recapture_plans)
+    if unsupported_regions:
+        warnings.append("{} seed memory region(s) cannot be automatically carried into a later Frida recapture because no verified bounded register-relative relation was available.".format(unsupported_regions))
+    if any(bool(plan.get("windowsTruncated")) for plan in recapture_plans):
+        warnings.append("At least one seed recapture plan reached the 256-window bound; later replay coverage may remain incomplete.")
     return {
         "schema": SCHEMA,
         "moduleName": REPORT["scope"]["moduleName"],
@@ -742,6 +755,7 @@ def analyze(binary_path):
         "config": CONFIG,
         "seeds": [seed["provenance"] for seed in SEEDS],
         "seedQualities": [seed["quality"] for seed in SEEDS],
+        "seedRecapturePlans": recapture_plans,
         "runs": runs,
         "transitionMatrix": _transition_matrix(runs),
         "recaptureSuggestions": _recapture_suggestions(runs),

@@ -529,6 +529,8 @@ export interface FridaCapturedValue {
   value: string | null;
   byteLength: number | null;
   requestedLength: number | null;
+  baseRegister?: string | null;
+  displacement?: string | null;
   readError: string | null;
 }
 
@@ -654,6 +656,8 @@ export interface AngrSeedMemoryRegion {
   label: string;
   sourceKind: string;
   phase: string;
+  baseRegister?: string | null;
+  displacement?: string | null;
 }
 
 export interface AngrSeedRegister {
@@ -1194,12 +1198,31 @@ export interface UnicornSeedQuality {
   warnings: string[];
 }
 
+export interface UnicornSeedRecaptureWindow {
+  label: string;
+  baseRegister: string;
+  displacement: string;
+  byteLength: number;
+  sourceKind: string;
+  phase: string;
+}
+
+export interface UnicornSeedRecapturePlan {
+  sourceEventIndex: number;
+  captureOffset: string;
+  windows: UnicornSeedRecaptureWindow[];
+  carryForwardBytes: number;
+  unsupportedMemoryRegionCount: number;
+  windowsTruncated: boolean;
+}
+
 export interface UnicornOllvmScript {
   fileName: string;
   script: string;
   schemaVersion: string;
   seeds: AngrOllvmFridaSeedProvenance[];
   seedQualities: UnicornSeedQuality[];
+  seedRecapturePlans: UnicornSeedRecapturePlan[];
   expectedBinaryIdentity: ElfBinaryIdentity;
   config: UnicornOllvmConfig;
   warnings: string[];
@@ -1296,6 +1319,9 @@ export interface FridaUnicornRecaptureMemorySpec {
   byteLength: number;
   missingPcOffsets: string[];
   sourceEventIndices: number[];
+  sourceLabels: string[];
+  carriedForward: boolean;
+  suggested: boolean;
 }
 
 export interface FridaUnicornRecaptureHookTarget {
@@ -1313,6 +1339,9 @@ export interface FridaUnicornRecaptureHookScript {
   expectedBinarySha256: string;
   selectedSuggestionIndices: number[];
   targets: FridaUnicornRecaptureHookTarget[];
+  carriedForwardWindowCount: number;
+  suggestedWindowCount: number;
+  unsupportedSeedRegionCount: number;
   maxEvents: number;
   script: string;
   warnings: string[];
@@ -1332,6 +1361,7 @@ export interface UnicornOllvmResultBundle {
   config: UnicornOllvmConfig;
   seeds: AngrOllvmFridaSeedProvenance[];
   seedQualities: UnicornSeedQuality[];
+  seedRecapturePlans: UnicornSeedRecapturePlan[];
   runs: UnicornReplayRun[];
   transitionMatrix: UnicornTransitionEvidence[];
   recaptureSuggestions: UnicornRecaptureSuggestion[];

@@ -155,8 +155,12 @@ explicit missing-memory stops, and register-relative recapture suggestions. Unic
 captured states only; it does not explore alternate branches or recover a complete CFG. For supported
 X0-X28/SP register-relative suggestions, call `generate_frida_unicorn_recapture_hook` with one to 64
 suggestion indices. Return/save the Frida 16.x script for manual execution, then import its exact-seed
-`hook-enter` event as a new Unicorn or angr seed. Never fill unreadable memory with zeros; unsupported
-absolute/X29/X30 suggestions remain manual work.
+`hook-enter` event as a new Unicorn or angr seed. Current Unicorn results include per-seed
+`seedRecapturePlans`: the next Hook must re-read prior byteArray windows only when their
+`baseRegister + displacement` relation was verified against the original runtime registers and pointer,
+then merge/deduplicate the selected new windows. Never reuse prior absolute addresses or stale bytes,
+never fill unreadable memory with zeros, and keep unsupported absolute/X29/X30 or unverifiable prior
+regions as explicit manual work.
 
 **"Does this dispatcher or opaque branch stay stable across runs?"**
 → open two to sixteen controlled traces, then `compare_ollvm_traces{cases:[...]}` with a scope and

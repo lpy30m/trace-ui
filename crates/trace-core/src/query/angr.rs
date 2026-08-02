@@ -1896,6 +1896,8 @@ mod tests {
                 label: "input".to_string(),
                 source_kind: "byteArray".to_string(),
                 phase: "enter".to_string(),
+                base_register: None,
+                displacement: None,
             }],
             warnings: Vec::new(),
         }

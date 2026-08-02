@@ -55,7 +55,10 @@ Use `mcp__trace-ui__list_frida_hook_recipes`, `mcp__trace-ui__generate_frida_hoo
     `baseRegister`/`displacement` suggestions to refine the next bounded Frida capture. When the
     suggestion uses X0-X28 or SP, call `generate_frida_unicorn_recapture_hook` with one to 64 selected
     indices. The generated Hook remains at the original exact seed offset and reads only 1-4096 bytes per
-    signed-displacement window; the user runs it manually and reimports its `hook-enter` as a new seed.
+    signed-displacement window. It also re-reads prior seed byteArray windows whose X0-X28/SP-relative
+    relation was verified against the capture register and pointer, merges duplicate old/new windows,
+    and reports unsupported or truncated prior regions. The user runs it manually and reimports its
+    `hook-enter` as a new seed; never copy the prior absolute address or stale captured bytes.
 
 ## Request fields
 
@@ -100,7 +103,9 @@ Use `mcp__trace-ui__list_frida_hook_recipes`, `mcp__trace-ui__generate_frida_hoo
   loaded binary build or turn adjacent hits into a complete CFG.
 - For Unicorn recapture, reject absolute-address, X29, and X30 suggestions. Preserve `readError` for null
   or unreadable windows and never substitute zero bytes. The embedded expected SHA-256 is provenance from
-  the prior replay, not runtime module attestation.
+  the prior replay, not runtime module attestation. Carry prior seed memory only from validated
+  `seedRecapturePlans`; split large regions into bounded windows, re-read them at the original exact seed
+  offset, and keep unverifiable byteArray/string regions explicit rather than inventing a relation.
 
 ## Frida 16 boundary
 

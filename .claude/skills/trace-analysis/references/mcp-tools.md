@@ -95,8 +95,11 @@ Line numbers in taint `@LINE` specs are **1-based**; `start_seq`/`end_seq`/`seq`
   selected register-relative suggestions into one bounded Frida 16.x script. Supported bases are X0-X28
   and SP, signed displacement is limited to +/-1 MiB, each memory window is 1-4096 bytes, and the script
   contains at most 32 exact seed targets and 256 windows. It hooks the original seed `captureOffset`,
-  emits full GPR/NZCV plus `byteArray`/`readError` captures using `trace-ui/frida-hook-v1`, and never
-  attaches, spawns, loads, or executes Frida. The embedded ELF SHA-256 is prior-replay provenance only.
+  re-reads prior byteArray seed windows only when their runtime X0-X28/SP-relative relation was verified,
+  merges/deduplicates those windows with the selected new suggestions, and emits full GPR/NZCV plus
+  `byteArray`/`readError` captures using `trace-ui/frida-hook-v1`. It never reuses stale bytes or old
+  absolute addresses and never attaches, spawns, loads, or executes Frida. Unsupported/truncated prior
+  regions are reported explicitly. The embedded ELF SHA-256 is prior-replay provenance only.
 - **inspect_frida_capture** `{file_path}` reads user-captured JSON objects/arrays, Frida send envelopes,
   NDJSON, or `TRACE_UI_JSON`-prefixed CLI logs. It normalizes call IDs, module metadata, registers,
   buffers, returns, backtraces, and Stalker batch counts without running Frida.
@@ -198,7 +201,9 @@ Line numbers in taint `@LINE` specs are **1-based**; `start_seq`/`end_seq`/`seq`
 - **inspect_unicorn_ollvm_results** `{file_path}` strictly validates
   `trace-ui/unicorn-ollvm-v1`, including exact ELF identity, per-event concrete replay runs,
   dispatcher transition groups, register changes, memory writes, missing-state evidence, and bounded
-  register-relative Frida recapture suggestions. Supported suggestions can be passed to
+  register-relative Frida recapture suggestions. It also returns per-seed `seedRecapturePlans` for exact
+  byteArray regions with verified register-relative provenance; regions above 4096 bytes are split into
+  bounded windows. Supported suggestions can be passed to
   `generate_frida_unicorn_recapture_hook`, then the resulting user-captured exact-seed `hook-enter` can
   be selected in another Unicorn/angr generation request. Results remain Candidate/Related.
 

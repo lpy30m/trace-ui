@@ -4855,7 +4855,7 @@ impl TraceToolHandler {
 
     #[tool(
         name = "inspect_unicorn_ollvm_results",
-        description = "Read and strictly validate trace-ui/unicorn-ollvm-v1 JSON produced by a manually executed generated Unicorn script. Returns exact-seed concrete replay runs, next-dispatcher transition groups, register changes, memory writes, explicit missing state, and bounded Frida recapture suggestions without modifying the trace. All structural conclusions remain Candidate/Related."
+        description = "Read and strictly validate trace-ui/unicorn-ollvm-v1 JSON produced by a manually executed generated Unicorn script. Returns exact-seed concrete replay runs, next-dispatcher transition groups, register changes, memory writes, explicit missing state, bounded Frida recapture suggestions, and per-seed verified register-relative memory plans that a later recapture hook can re-read. It does not modify the trace. All structural conclusions remain Candidate/Related."
     )]
     async fn inspect_unicorn_ollvm_results(
         &self,
@@ -4871,7 +4871,7 @@ impl TraceToolHandler {
 
     #[tool(
         name = "generate_frida_unicorn_recapture_hook",
-        description = "Read and strictly validate a trace-ui/unicorn-ollvm-v1 result, then turn one to 64 selected register-relative recaptureSuggestions into a bounded Frida 16.x exact-seed-offset hook. The generated hook captures full ARM64 GPR/NZCV plus precise X0-X28/SP +/- displacement byte windows and emits hook-enter events that can be imported as another Unicorn/angr seed. Absolute-address and unsupported-register suggestions are rejected. Trace UI never executes Frida; all evidence remains Candidate/Related."
+        description = "Read and strictly validate a trace-ui/unicorn-ollvm-v1 result, then turn one to 64 selected register-relative recaptureSuggestions into a bounded Frida 16.x exact-seed-offset hook. The hook re-reads verified X0-X28/SP-relative byteArray windows from the prior seed, merges and deduplicates the newly selected missing-memory windows, captures full ARM64 GPR/NZCV, and emits hook-enter events that can be imported as another Unicorn/angr seed. It never copies stale bytes or prior absolute addresses. Absolute-address and unsupported-register suggestions are rejected; unsupported prior regions remain explicit warnings. Trace UI never executes Frida; all evidence remains Candidate/Related."
     )]
     async fn generate_frida_unicorn_recapture_hook(
         &self,

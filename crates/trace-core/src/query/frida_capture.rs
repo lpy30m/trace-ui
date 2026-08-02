@@ -14,7 +14,9 @@ use crate::query::crypto_material::{
     CryptoFormula, CryptoMaterial, CryptoMaterialKind, CryptoMaterialReport,
 };
 use crate::query::evidence_score::{score_evidence, EvidenceScoreSignal};
-use crate::utils::parse_hex_addr;
+use crate::utils::{
+    checked_add_signed_offset, format_signed_offset_hex, parse_hex_addr, parse_signed_offset,
+};
 
 const FRIDA_CAPTURE_SCHEMA: &str = "trace-ui/frida-capture-v1";
 const FRIDA_HOOK_PROTOCOL: &str = "trace-ui/frida-hook-v1";
@@ -47,6 +49,10 @@ pub struct FridaCapturedValue {
     pub requested_length: Option<u64>,
     #[serde(default)]
     pub read_error: Option<String>,
+    #[serde(default)]
+    pub base_register: Option<String>,
+    #[serde(default)]
+    pub displacement: Option<String>,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -178,6 +184,8 @@ pub struct FridaCaptureValueDetail {
     pub byte_length: Option<u64>,
     pub requested_length: Option<u64>,
     pub read_error: Option<String>,
+    pub base_register: Option<String>,
+    pub displacement: Option<String>,
     pub value_truncated: bool,
 }
 
@@ -206,6 +214,10 @@ pub struct AngrSeedMemoryRegion {
     pub label: String,
     pub source_kind: String,
     pub phase: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub base_register: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub displacement: Option<String>,
 }
 
 #[derive(Clone, Debug, Serialize)]
@@ -289,6 +301,8 @@ fn parse_capture(value: &Value) -> Option<FridaCapturedValue> {
         byte_length: u64_field(object, "byteLength"),
         requested_length: u64_field(object, "requestedLength"),
         read_error: string_field(object, "readError"),
+        base_register: string_field(object, "baseRegister"),
+        displacement: string_field(object, "displacement"),
     })
 }
 
@@ -788,6 +802,8 @@ fn capture_value_detail(capture: &FridaCapturedValue, max_bytes: u32) -> FridaCa
         byte_length: capture.byte_length,
         requested_length: capture.requested_length,
         read_error: capture.read_error.clone(),
+        base_register: capture.base_register.clone(),
+        displacement: capture.displacement.clone(),
         value_truncated,
     }
 }
@@ -2178,6 +2194,96 @@ fn safe_comment(value: &str) -> String {
         .collect()
 }
 
+fn capture_index_register(index: u8) -> Option<String> {
+    if index <= 28 {
+        Some(format!("X{index}"))
+    } else if index == 29 {
+        Some("SP".to_string())
+    } else {
+        None
+    }
+}
+
+fn normalized_relative_register(value: &str) -> Option<String> {
+    let value = value.trim().to_ascii_uppercase();
+    if value == "SP" {
+        return Some(value);
+    }
+    value
+        .strip_prefix('X')
+        .and_then(|index| index.parse::<u8>().ok())
+        .filter(|index| *index <= 28)
+        .map(|index| format!("X{index}"))
+}
+
+fn verified_capture_relation(
+    event: &FridaCaptureEvent,
+    capture: &FridaCapturedValue,
+    address: u64,
+    warnings: &mut Vec<String>,
+) -> (Option<String>, Option<String>) {
+    const MAX_RELATIVE_DISPLACEMENT: i64 = 1_048_576;
+
+    let Some(index_register) = capture_index_register(capture.index) else {
+        return (None, None);
+    };
+    let register_value = |register: &str| {
+        event
+            .registers
+            .get(&register.to_ascii_lowercase())
+            .and_then(|value| parse_hex_addr(value).ok())
+    };
+    let verify = |register: &str, displacement: i64| {
+        register_value(register)
+            .and_then(|base| checked_add_signed_offset(base, displacement))
+            .is_some_and(|pointer| pointer == address)
+    };
+
+    if let Some(explicit_register) = capture.base_register.as_deref() {
+        let normalized = normalized_relative_register(explicit_register);
+        let displacement = capture
+            .displacement
+            .as_deref()
+            .map(parse_signed_offset)
+            .unwrap_or(Ok(0));
+        match (normalized, displacement) {
+            (Some(register), Ok(displacement))
+                if register == index_register
+                    && (-MAX_RELATIVE_DISPLACEMENT..=MAX_RELATIVE_DISPLACEMENT)
+                        .contains(&displacement)
+                    && verify(&register, displacement) =>
+            {
+                return (
+                    Some(register),
+                    Some(format_signed_offset_hex(displacement)),
+                );
+            }
+            _ => warnings.push(format!(
+                "Capture {} supplied register-relative metadata that did not match its runtime pointer; the metadata was not trusted for a later recapture.",
+                capture.label
+            )),
+        }
+    }
+
+    let Some(base) = register_value(&index_register) else {
+        return (None, None);
+    };
+    let difference = address as i128 - base as i128;
+    if !((-(MAX_RELATIVE_DISPLACEMENT as i128))..=MAX_RELATIVE_DISPLACEMENT as i128)
+        .contains(&difference)
+    {
+        return (None, None);
+    }
+    let displacement = difference as i64;
+    if !verify(&index_register, displacement) {
+        return (None, None);
+    }
+    (
+        Some(index_register),
+        Some(format_signed_offset_hex(displacement)),
+    )
+}
+
 pub fn generate_angr_state_seed(
     bundle: &FridaCaptureBundle,
     event_index: u64,
@@ -2349,6 +2455,14 @@ pub fn generate_angr_state_seed(
             continue;
         }
         let hex = bytes_hex(&bytes);
+        let (base_register, displacement) =
+            verified_capture_relation(event, capture, address, &mut warnings);
+        if source_kind == "byteArray" && base_register.is_none() {
+            warnings.push(format!(
+                "Capture {} is usable in this seed but has no verified X0-X28/SP-relative pointer relation, so a later Unicorn recapture hook cannot automatically carry it forward.",
+                capture.label
+            ));
+        }
         memory_lines.push(format!(
             "    state.memory.store(_trace_ui_rebase(0x{address:x}, state), bytes.fromhex(\"{hex}\"))  # {} ({})",
             safe_comment(&capture.label),
@@ -2361,6 +2475,8 @@ pub fn generate_angr_state_seed(
             label: capture.label.clone(),
             source_kind,
             phase: capture.phase.clone(),
+            base_register,
+            displacement,
         });
     }
 
@@ -2566,6 +2682,8 @@ TRACE_UI_JSON {"protocol":"trace-ui/frida-hook-v1","eventId":"one:event:2","hook
             .iter()
             .any(|register| register.name == "nzcv"));
         assert_eq!(seed.memory_regions.len(), 1);
+        assert_eq!(seed.memory_regions[0].base_register.as_deref(), Some("X1"));
+        assert_eq!(seed.memory_regions[0].displacement.as_deref(), Some("0x0"));
     }
 
     #[test]
@@ -2595,10 +2713,12 @@ TRACE_UI_JSON {"protocol":"trace-ui/frida-hook-v1","eventId":"one:event:2","hook
                     "kind": "byteArray",
                     "direction": "input",
                     "phase": "enter",
-                    "pointer": "0x90000000",
+                    "pointer": "0x90000020",
                     "value": "00112233",
                     "byteLength": 4,
-                    "requestedLength": 4
+                    "requestedLength": 4,
+                    "baseRegister": "X19",
+                    "displacement": "0x20"
                 },
                 {
                     "index": 29,
@@ -2606,10 +2726,12 @@ TRACE_UI_JSON {"protocol":"trace-ui/frida-hook-v1","eventId":"one:event:2","hook
                     "kind": "byteArray",
                     "direction": "input",
                     "phase": "enter",
-                    "pointer": "0xa0000000",
+                    "pointer": "0x9ffffff0",
                     "value": "aabbccdd",
                     "byteLength": 4,
-                    "requestedLength": 4
+                    "requestedLength": 4,
+                    "baseRegister": "SP",
+                    "displacement": "-0x10"
                 }
             ]
         }]);
@@ -2620,14 +2742,66 @@ TRACE_UI_JSON {"protocol":"trace-ui/frida-hook-v1","eventId":"one:event:2","hook
 
         let seed = generate_angr_state_seed(&bundle, 0, true, true).unwrap();
         assert_eq!(seed.memory_regions.len(), 2);
+        assert!(seed.memory_regions.iter().any(|region| {
+            region.label == "x19-memory"
+                && region.address == "0x90000020"
+                && region.base_register.as_deref() == Some("X19")
+                && region.displacement.as_deref() == Some("0x20")
+        }));
+        assert!(seed.memory_regions.iter().any(|region| {
+            region.label == "sp-stack-memory"
+                && region.address == "0x9ffffff0"
+                && region.base_register.as_deref() == Some("SP")
+                && region.displacement.as_deref() == Some("-0x10")
+        }));
+    }
+
+    #[test]
+    fn rejects_forged_register_relative_capture_metadata_but_keeps_exact_bytes() {
+        let capture = serde_json::json!([{
+            "protocol": FRIDA_HOOK_PROTOCOL,
+            "hookId": "ollvm-dispatchers",
+            "event": "ollvm-dispatcher-hit",
+            "functionName": "dispatcher-100",
+            "timestampMs": 1,
+            "threadId": 1,
+            "module": "libtarget.so",
+            "moduleBase": "0x71000000",
+            "moduleSize": 0x4000,
+            "target": "0x71000100",
+            "dispatcherOffset": "0x100",
+            "registers": {
+                "x19": "0x90000000",
+                "pc": "0x71000100"
+            },
+            "captures": [{
+                "index": 19,
+                "label": "forged-window",
+                "kind": "byteArray",
+                "direction": "input",
+                "phase": "enter",
+                "pointer": "0x90200000",
+                "value": "00112233",
+                "byteLength": 4,
+                "requestedLength": 4,
+                "baseRegister": "X19",
+                "displacement": "0x20"
+            }]
+        }]);
+        let bundle = parse_frida_capture_bundle(&serde_json::to_vec(&capture).unwrap()).unwrap();
+        let seed = generate_angr_state_seed(&bundle, 0, false, false).unwrap();
+        assert_eq!(seed.memory_regions.len(), 1);
+        assert_eq!(seed.memory_regions[0].address, "0x90200000");
+        assert!(seed.memory_regions[0].base_register.is_none());
+        assert!(seed.memory_regions[0].displacement.is_none());
         assert!(seed
-            .memory_regions
+            .warnings
             .iter()
-            .any(|region| region.label == "x19-memory" && region.address == "0x90000000"));
+            .any(|warning| warning.contains("did not match its runtime pointer")));
         assert!(seed
-            .memory_regions
+            .warnings
             .iter()
-            .any(|region| { region.label == "sp-stack-memory" && region.address == "0xa0000000" }));
+            .any(|warning| warning.contains("cannot automatically carry it forward")));
     }
 
     #[test]

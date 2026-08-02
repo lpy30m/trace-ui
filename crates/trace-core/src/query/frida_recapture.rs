@@ -3,7 +3,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use serde::{Deserialize, Serialize};
 
 use crate::query::unicorn::UnicornOllvmResultBundle;
-use crate::utils::parse_hex_addr;
+use crate::utils::{format_signed_offset_hex, parse_hex_addr, parse_signed_offset};
 
 const FRIDA_UNICORN_RECAPTURE_HOOK_SCHEMA: &str = "trace-ui/frida-unicorn-recapture-hook-v1";
 const FRIDA_HOOK_PROTOCOL: &str = "trace-ui/frida-hook-v1";
@@ -38,6 +38,9 @@ pub struct FridaUnicornRecaptureMemorySpec {
     pub byte_length: u32,
     pub missing_pc_offsets: Vec<String>,
     pub source_event_indices: Vec<u64>,
+    pub source_labels: Vec<String>,
+    pub carried_forward: bool,
+    pub suggested: bool,
 }
 
 #[derive(Clone, Debug, Serialize)]
@@ -59,6 +62,9 @@ pub struct FridaUnicornRecaptureHookScript {
     pub expected_binary_sha256: String,
     pub selected_suggestion_indices: Vec<u32>,
     pub targets: Vec<FridaUnicornRecaptureHookTarget>,
+    pub carried_forward_window_count: u32,
+    pub suggested_window_count: u32,
+    pub unsupported_seed_region_count: u64,
     pub max_events: u32,
     pub script: String,
     pub warnings: Vec<String>,
@@ -70,6 +76,10 @@ pub struct FridaUnicornRecaptureHookScript {
 struct CaptureAccumulator {
     missing_pc_offsets: BTreeSet<String>,
     source_event_indices: BTreeSet<u64>,
+    source_labels: BTreeSet<String>,
+    preferred_label: Option<String>,
+    carried_forward: bool,
+    suggested: bool,
 }
 
 #[derive(Default)]
@@ -84,40 +94,26 @@ fn normalized_offset(value: &str) -> Result<String, String> {
 }
 
 fn parse_displacement(value: Option<&str>) -> Result<i64, String> {
-    let value = value.unwrap_or("0").trim();
-    if value.is_empty() {
-        return Ok(0);
-    }
-    let lower = value.to_ascii_lowercase();
-    let parsed = if let Some(hex) = lower.strip_prefix("-0x") {
-        let magnitude = i64::from_str_radix(hex, 16)
-            .map_err(|_| format!("invalid negative recapture displacement: {value}"))?;
-        magnitude
-            .checked_neg()
-            .ok_or_else(|| format!("recapture displacement underflow: {value}"))?
-    } else if let Some(hex) = lower.strip_prefix("+0x") {
-        i64::from_str_radix(hex, 16)
-            .map_err(|_| format!("invalid recapture displacement: {value}"))?
-    } else if let Some(hex) = lower.strip_prefix("0x") {
-        i64::from_str_radix(hex, 16)
-            .map_err(|_| format!("invalid recapture displacement: {value}"))?
-    } else {
-        lower
-            .parse::<i64>()
-            .map_err(|_| format!("invalid recapture displacement: {value}"))?
-    };
+    let parsed = parse_signed_offset(value.unwrap_or("0"))
+        .map_err(|error| format!("invalid recapture displacement: {error}"))?;
     if !(-1_048_576..=1_048_576).contains(&parsed) {
         return Err("Frida Unicorn recapture displacement must be within +/- 1 MiB".to_string());
     }
     Ok(parsed)
 }
 
-fn displacement_hex(value: i64) -> String {
-    if value < 0 {
-        format!("-0x{:x}", value.unsigned_abs())
-    } else {
-        format!("0x{value:x}")
+fn validate_window_bounds(displacement: i64, byte_length: u32) -> Result<(), String> {
+    let last_displacement = i64::from(byte_length.saturating_sub(1));
+    let Some(last_displacement) = displacement.checked_add(last_displacement) else {
+        return Err("Frida Unicorn recapture window displacement overflow".to_string());
+    };
+    if !(-1_048_576..=1_048_576).contains(&last_displacement) {
+        return Err(
+            "Frida Unicorn recapture window must remain within +/- 1 MiB of its base register"
+                .to_string(),
+        );
     }
+    Ok(())
 }
 
 fn capture_register(value: &str) -> Result<(String, u8), String> {
@@ -217,6 +213,14 @@ pub fn generate_frida_unicorn_recapture_hook(
         .map(|seed| (seed.source_event_index, seed))
         .collect::<BTreeMap<_, _>>();
     let mut target_accumulators = BTreeMap::<String, TargetAccumulator>::new();
+    let mut selected_source_event_indices = BTreeSet::new();
+    let mut warnings = vec![
+        "This Frida 16.x recapture script is generated only. The user manually attaches/spawns/loads/runs it; Trace UI performs no runtime Frida control.".to_string(),
+        "The hook targets the original exact seed offsets so its hook-enter events remain eligible for another OLLVM Unicorn/angr seed. Register-relative windows are evaluated at those seed points, not at the later missing-memory instruction.".to_string(),
+        "The embedded SHA-256 records the ELF used by the prior Unicorn replay but cannot attest the module currently loaded in the target process; confirm the exact build manually.".to_string(),
+        "Every memory read is explicitly register-relative and bounded to 1-4096 bytes. Null, unreadable, or guard-page-crossing windows emit readError and are never replaced with zero bytes.".to_string(),
+        "Recaptured execution remains Candidate/Related evidence. A changed register value, thread, input, or earlier path can make the requested window differ from the original missing-memory state.".to_string(),
+    ];
 
     for suggestion_index in &selected_suggestion_indices {
         let suggestion = bundle
@@ -243,6 +247,7 @@ pub fn generate_frida_unicorn_recapture_hook(
                 "Frida Unicorn recapture byte length must be between 1 and 4096".to_string(),
             );
         }
+        validate_window_bounds(displacement, byte_length)?;
         if suggestion.source_event_indices.is_empty() {
             return Err(format!(
                 "Unicorn recapture suggestion {} has no source events",
@@ -251,6 +256,7 @@ pub fn generate_frida_unicorn_recapture_hook(
         }
         let missing_pc_offset = normalized_offset(&suggestion.pc_offset)?;
         for source_event_index in &suggestion.source_event_indices {
+            selected_source_event_indices.insert(*source_event_index);
             let seed = seed_by_event.get(source_event_index).ok_or_else(|| {
                 format!(
                     "Unicorn recapture suggestion {} references unknown seed event {}",
@@ -273,6 +279,95 @@ pub fn generate_frida_unicorn_recapture_hook(
                 .or_default();
             capture.source_event_indices.insert(*source_event_index);
             capture.missing_pc_offsets.insert(missing_pc_offset.clone());
+            let label = capture_label(&base_register, displacement, byte_length);
+            capture.source_labels.insert(label.clone());
+            if capture.preferred_label.is_none() {
+                capture.preferred_label = Some(label);
+            }
+            capture.suggested = true;
+        }
+    }
+
+    let mut plan_by_event = BTreeMap::new();
+    for plan in &bundle.seed_recapture_plans {
+        if plan_by_event
+            .insert(plan.source_event_index, plan)
+            .is_some()
+        {
+            return Err(format!(
+                "Unicorn result contains duplicate seed recapture plans for event {}",
+                plan.source_event_index
+            ));
+        }
+    }
+    let mut unsupported_seed_region_count = 0u64;
+    if bundle.seed_recapture_plans.is_empty() {
+        warnings.push(
+            "This Unicorn result predates seedRecapturePlans, so prior seed memory cannot be carried forward automatically. The generated hook still captures the selected new missing-memory windows; regenerate and rerun Unicorn from a current seed to enable cumulative recapture."
+                .to_string(),
+        );
+    } else {
+        for source_event_index in selected_source_event_indices {
+            let seed = seed_by_event
+                .get(&source_event_index)
+                .expect("selected suggestion seed was validated above");
+            let Some(plan) = plan_by_event.get(&source_event_index) else {
+                warnings.push(format!(
+                    "Unicorn result has no seed recapture plan for selected event {source_event_index}; its prior seed memory cannot be carried forward automatically."
+                ));
+                continue;
+            };
+            let target_offset = normalized_offset(&seed.capture_offset)?;
+            if normalized_offset(&plan.capture_offset)? != target_offset {
+                return Err(format!(
+                    "Unicorn seed recapture plan captureOffset does not match event {source_event_index} provenance"
+                ));
+            }
+            unsupported_seed_region_count =
+                unsupported_seed_region_count.saturating_add(plan.unsupported_memory_region_count);
+            if plan.unsupported_memory_region_count > 0 {
+                warnings.push(format!(
+                    "Seed event {source_event_index} has {} memory region(s) without a verified X0-X28/SP-relative relation; those regions cannot be carried into this recapture hook automatically.",
+                    plan.unsupported_memory_region_count
+                ));
+            }
+            if plan.windows_truncated {
+                warnings.push(format!(
+                    "Seed event {source_event_index} reached the bounded 256-window recapture-plan limit; later prior-memory windows were not carried forward."
+                ));
+            }
+            let target = target_accumulators
+                .get_mut(&target_offset)
+                .expect("selected suggestion target was created above");
+            for window in &plan.windows {
+                if window.source_kind != "byteArray" {
+                    return Err(format!(
+                        "Unicorn seed recapture plan event {source_event_index} contains a non-byteArray window"
+                    ));
+                }
+                let (base_register, _capture_index) = capture_register(&window.base_register)?;
+                let displacement = parse_displacement(Some(&window.displacement))?;
+                let byte_length = u32::try_from(window.byte_length).map_err(|_| {
+                    "Unicorn seed recapture window byte length does not fit u32".to_string()
+                })?;
+                if !(1..=4096).contains(&byte_length) {
+                    return Err(
+                        "Frida Unicorn carried-forward byte length must be between 1 and 4096"
+                            .to_string(),
+                    );
+                }
+                validate_window_bounds(displacement, byte_length)?;
+                let capture = target
+                    .captures
+                    .entry((base_register, displacement, byte_length))
+                    .or_default();
+                capture.source_event_indices.insert(source_event_index);
+                capture.source_labels.insert(window.label.clone());
+                if !capture.carried_forward {
+                    capture.preferred_label = Some(window.label.clone());
+                }
+                capture.carried_forward = true;
+            }
         }
     }
 
@@ -282,10 +377,12 @@ pub fn generate_frida_unicorn_recapture_hook(
 
     let mut targets = Vec::new();
     let mut total_capture_specs = 0usize;
+    let mut carried_forward_window_count = 0u32;
+    let mut suggested_window_count = 0u32;
     for (offset, target) in target_accumulators {
-        if target.captures.len() > 64 {
+        if target.captures.len() > 256 {
             return Err(format!(
-                "Frida Unicorn recapture target {offset} contains more than 64 memory windows"
+                "Frida Unicorn recapture target {offset} contains more than 256 memory windows"
             ));
         }
         let mut target_bytes = 0u64;
@@ -293,15 +390,27 @@ pub fn generate_frida_unicorn_recapture_hook(
         for ((base_register, displacement, byte_length), capture) in target.captures {
             target_bytes = target_bytes.saturating_add(byte_length as u64);
             let (_, index) = capture_register(&base_register)?;
+            if capture.carried_forward {
+                carried_forward_window_count = carried_forward_window_count.saturating_add(1);
+            }
+            if capture.suggested {
+                suggested_window_count = suggested_window_count.saturating_add(1);
+            }
+            let source_labels = capture.source_labels.into_iter().collect::<Vec<_>>();
             captures.push(FridaUnicornRecaptureMemorySpec {
                 index,
-                label: capture_label(&base_register, displacement, byte_length),
+                label: capture
+                    .preferred_label
+                    .unwrap_or_else(|| capture_label(&base_register, displacement, byte_length)),
                 base_register,
                 displacement,
-                displacement_hex: displacement_hex(displacement),
+                displacement_hex: format_signed_offset_hex(displacement),
                 byte_length,
                 missing_pc_offsets: capture.missing_pc_offsets.into_iter().collect(),
                 source_event_indices: capture.source_event_indices.into_iter().collect(),
+                source_labels,
+                carried_forward: capture.carried_forward,
+                suggested: capture.suggested,
             });
         }
         if target_bytes > 1_048_576 {
@@ -494,15 +603,12 @@ setImmediate(install);
         expected_binary_sha256: bundle.expected_binary_sha256.to_ascii_lowercase(),
         selected_suggestion_indices,
         targets,
+        carried_forward_window_count,
+        suggested_window_count,
+        unsupported_seed_region_count,
         max_events: options.max_events,
         script,
-        warnings: vec![
-            "This Frida 16.x recapture script is generated only. The user manually attaches/spawns/loads/runs it; Trace UI performs no runtime Frida control.".to_string(),
-            "The hook targets the original exact seed offsets so its hook-enter events remain eligible for another OLLVM Unicorn/angr seed. Register-relative windows are evaluated at those seed points, not at the later missing-memory instruction.".to_string(),
-            "The embedded SHA-256 records the ELF used by the prior Unicorn replay but cannot attest the module currently loaded in the target process; confirm the exact build manually.".to_string(),
-            "Every memory read is explicitly register-relative and bounded to 1-4096 bytes. Null, unreadable, or guard-page-crossing windows emit readError and are never replaced with zero bytes.".to_string(),
-            "Recaptured execution remains Candidate/Related evidence. A changed register value, thread, input, or earlier path can make the requested window differ from the original missing-memory state.".to_string(),
-        ],
+        warnings,
         protocol_version: FRIDA_HOOK_PROTOCOL.to_string(),
         frida_api_version: "16.x".to_string(),
     })
@@ -513,7 +619,10 @@ mod tests {
     use super::*;
     use crate::query::angr::AngrOllvmFridaSeedProvenance;
     use crate::query::frida_capture::{generate_angr_state_seed, parse_frida_capture_bundle};
-    use crate::query::unicorn::{UnicornOllvmConfig, UnicornRecaptureSuggestion, UnicornReplayRun};
+    use crate::query::unicorn::{
+        UnicornOllvmConfig, UnicornRecaptureSuggestion, UnicornReplayRun, UnicornSeedRecapturePlan,
+        UnicornSeedRecaptureWindow,
+    };
 
     fn sample_bundle() -> UnicornOllvmResultBundle {
         UnicornOllvmResultBundle {
@@ -540,6 +649,7 @@ mod tests {
                 matched_dispatcher_offsets: vec!["0x100".to_string()],
             }],
             seed_qualities: Vec::new(),
+            seed_recapture_plans: Vec::new(),
             runs: Vec::<UnicornReplayRun>::new(),
             transition_matrix: Vec::new(),
             recapture_suggestions: vec![
@@ -562,6 +672,36 @@ mod tests {
             ],
             warnings: Vec::new(),
         }
+    }
+
+    fn sample_bundle_with_recapture_plan() -> UnicornOllvmResultBundle {
+        let mut bundle = sample_bundle();
+        bundle.seed_recapture_plans = vec![UnicornSeedRecapturePlan {
+            source_event_index: 7,
+            capture_offset: "0x100".to_string(),
+            windows: vec![
+                UnicornSeedRecaptureWindow {
+                    label: "prior-key".to_string(),
+                    base_register: "X1".to_string(),
+                    displacement: "0x0".to_string(),
+                    byte_length: 16,
+                    source_kind: "byteArray".to_string(),
+                    phase: "enter".to_string(),
+                },
+                UnicornSeedRecaptureWindow {
+                    label: "prior-x19-state".to_string(),
+                    base_register: "X19".to_string(),
+                    displacement: "0x20".to_string(),
+                    byte_length: 8,
+                    source_kind: "byteArray".to_string(),
+                    phase: "enter".to_string(),
+                },
+            ],
+            carry_forward_bytes: 24,
+            unsupported_memory_region_count: 1,
+            windows_truncated: true,
+        }];
+        bundle
     }
 
     #[test]
@@ -595,6 +735,54 @@ mod tests {
         assert!(generated.script.contains("event: event"));
         assert!(generated.script.contains("'hook-enter'"));
         assert!(!generated.script.contains("frida.attach"));
+        assert_eq!(generated.carried_forward_window_count, 0);
+        assert_eq!(generated.suggested_window_count, 2);
+        assert!(generated
+            .warnings
+            .iter()
+            .any(|warning| warning.contains("predates seedRecapturePlans")));
+    }
+
+    #[test]
+    fn merges_prior_seed_windows_with_new_suggestions_and_deduplicates_overlap() {
+        let generated = generate_frida_unicorn_recapture_hook(
+            &sample_bundle_with_recapture_plan(),
+            &[0, 1],
+            &FridaUnicornRecaptureHookOptions::default(),
+        )
+        .unwrap();
+        assert_eq!(generated.targets.len(), 1);
+        assert_eq!(generated.targets[0].captures.len(), 3);
+        assert_eq!(generated.carried_forward_window_count, 2);
+        assert_eq!(generated.suggested_window_count, 2);
+        assert_eq!(generated.unsupported_seed_region_count, 1);
+        let overlap = generated.targets[0]
+            .captures
+            .iter()
+            .find(|capture| {
+                capture.base_register == "X19"
+                    && capture.displacement == 0x20
+                    && capture.byte_length == 8
+            })
+            .unwrap();
+        assert_eq!(overlap.label, "prior-x19-state");
+        assert!(overlap.carried_forward);
+        assert!(overlap.suggested);
+        assert!(overlap
+            .source_labels
+            .contains(&"prior-x19-state".to_string()));
+        assert!(overlap
+            .source_labels
+            .iter()
+            .any(|label| label.starts_with("unicorn-recapture-x19-plus-20")));
+        assert!(generated
+            .warnings
+            .iter()
+            .any(|warning| warning.contains("without a verified X0-X28/SP-relative")));
+        assert!(generated
+            .warnings
+            .iter()
+            .any(|warning| warning.contains("256-window recapture-plan limit")));
     }
 
     #[test]
@@ -617,6 +805,16 @@ mod tests {
         )
         .unwrap_err();
         assert!(error.contains("X0-X28 or SP"));
+
+        let mut bundle = sample_bundle();
+        bundle.recapture_suggestions[0].displacement = Some("0x100000".to_string());
+        let error = generate_frida_unicorn_recapture_hook(
+            &bundle,
+            &[0],
+            &FridaUnicornRecaptureHookOptions::default(),
+        )
+        .unwrap_err();
+        assert!(error.contains("remain within +/- 1 MiB"));
     }
 
     #[test]
@@ -729,6 +927,110 @@ mod tests {
         assert!(seed.script.contains("state.regs.x19"));
         assert!(seed.script.contains("state.regs.sp"));
         assert!(seed.script.contains("bytes.fromhex(\"0011223344556677\")"));
+    }
+
+    #[test]
+    fn second_round_seed_contains_prior_and_newly_recaptured_memory() {
+        let generated = generate_frida_unicorn_recapture_hook(
+            &sample_bundle_with_recapture_plan(),
+            &[0, 1],
+            &FridaUnicornRecaptureHookOptions::default(),
+        )
+        .unwrap();
+        let target = &generated.targets[0];
+        let prior_key = target
+            .captures
+            .iter()
+            .find(|capture| capture.base_register == "X1")
+            .unwrap();
+        let overlap = target
+            .captures
+            .iter()
+            .find(|capture| capture.base_register == "X19")
+            .unwrap();
+        let new_stack = target
+            .captures
+            .iter()
+            .find(|capture| capture.base_register == "SP")
+            .unwrap();
+        let capture = serde_json::json!([{
+            "protocol": FRIDA_HOOK_PROTOCOL,
+            "eventId": "recapture:test:event:2",
+            "hookId": target.hook_id,
+            "event": "hook-enter",
+            "functionName": "unicorn-recapture-100",
+            "moduleName": generated.module_name,
+            "moduleBase": "0x71000000",
+            "moduleSize": 0x4000,
+            "target": "0x71000100",
+            "captureOffset": target.offset,
+            "timestampMs": 2,
+            "threadId": 7,
+            "registers": {
+                "x1": "0x80000000",
+                "x19": "0x90000000",
+                "sp": "0xa0001000",
+                "pc": "0x71000100"
+            },
+            "captures": [
+                {
+                    "index": prior_key.index,
+                    "label": prior_key.label,
+                    "kind": "byteArray",
+                    "direction": "input",
+                    "phase": "enter",
+                    "pointer": "0x80000000",
+                    "value": "000102030405060708090a0b0c0d0e0f",
+                    "byteLength": 16,
+                    "requestedLength": 16,
+                    "baseRegister": prior_key.base_register,
+                    "displacement": prior_key.displacement_hex
+                },
+                {
+                    "index": overlap.index,
+                    "label": overlap.label,
+                    "kind": "byteArray",
+                    "direction": "input",
+                    "phase": "enter",
+                    "pointer": "0x90000020",
+                    "value": "0011223344556677",
+                    "byteLength": 8,
+                    "requestedLength": 8,
+                    "baseRegister": overlap.base_register,
+                    "displacement": overlap.displacement_hex
+                },
+                {
+                    "index": new_stack.index,
+                    "label": new_stack.label,
+                    "kind": "byteArray",
+                    "direction": "input",
+                    "phase": "enter",
+                    "pointer": "0xa0000ff0",
+                    "value": "101112131415161718191a1b1c1d1e1f",
+                    "byteLength": 16,
+                    "requestedLength": 16,
+                    "baseRegister": new_stack.base_register,
+                    "displacement": new_stack.displacement_hex
+                }
+            ]
+        }]);
+        let parsed = parse_frida_capture_bundle(&serde_json::to_vec(&capture).unwrap()).unwrap();
+        let seed = generate_angr_state_seed(&parsed, 0, true, true).unwrap();
+        assert_eq!(seed.memory_regions.len(), 3);
+        assert!(seed.memory_regions.iter().any(|region| {
+            region.label == "prior-key"
+                && region.base_register.as_deref() == Some("X1")
+                && region.displacement.as_deref() == Some("0x0")
+        }));
+        assert!(seed.memory_regions.iter().any(|region| {
+            region.label == "prior-x19-state"
+                && region.base_register.as_deref() == Some("X19")
+                && region.displacement.as_deref() == Some("0x20")
+        }));
+        assert!(seed.memory_regions.iter().any(|region| {
+            region.base_register.as_deref() == Some("SP")
+                && region.displacement.as_deref() == Some("-0x10")
+        }));
     }
 
     #[test]

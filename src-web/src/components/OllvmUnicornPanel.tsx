@@ -97,6 +97,24 @@ export default function OllvmUnicornPanel({ report }: Props) {
       ? `python "${savedPath}" "${binaryPath}" -o "trace-ui-unicorn-ollvm.json"`
       : null
   ), [binaryPath, savedPath]);
+  const generatedRecaptureSummary = useMemo(() => {
+    const plans = generated?.seedRecapturePlans || [];
+    return {
+      windows: plans.reduce((count, plan) => count + plan.windows.length, 0),
+      bytes: plans.reduce((count, plan) => count + plan.carryForwardBytes, 0),
+      unsupported: plans.reduce((count, plan) => count + plan.unsupportedMemoryRegionCount, 0),
+      truncated: plans.some(plan => plan.windowsTruncated),
+    };
+  }, [generated]);
+  const resultRecaptureSummary = useMemo(() => {
+    const plans = results?.seedRecapturePlans || [];
+    return {
+      windows: plans.reduce((count, plan) => count + plan.windows.length, 0),
+      bytes: plans.reduce((count, plan) => count + plan.carryForwardBytes, 0),
+      unsupported: plans.reduce((count, plan) => count + plan.unsupportedMemoryRegionCount, 0),
+      truncated: plans.some(plan => plan.windowsTruncated),
+    };
+  }, [results]);
 
   const requestArgs = () => ({
     report,
@@ -401,6 +419,11 @@ export default function OllvmUnicornPanel({ report }: Props) {
                 {quality.missingRegisters.length > 0 && <div>缺失：{quality.missingRegisters.join(", ")}</div>}
               </div>
             ))}
+            <div style={{ marginTop: 6, color: generatedRecaptureSummary.unsupported > 0 || generatedRecaptureSummary.truncated ? "#d29922" : "var(--text-secondary)" }}>
+              可跨轮重读 {generatedRecaptureSummary.windows} 个寄存器相对窗口 / {generatedRecaptureSummary.bytes} bytes
+              {generatedRecaptureSummary.unsupported > 0 && ` · ${generatedRecaptureSummary.unsupported} 个内存区域无法自动保留`}
+              {generatedRecaptureSummary.truncated && " · 已达到窗口上限"}
+            </div>
           </div>
         )}
         {generated?.warnings.map((warning, index) => <div key={`generated-${index}`} style={{ marginTop: 5, color: "#d29922" }}>{warning}</div>)}
@@ -410,6 +433,9 @@ export default function OllvmUnicornPanel({ report }: Props) {
             <div style={{ fontWeight: 600 }}>4. Frida 精确重捕获</div>
             <div style={{ marginTop: 4, color: "var(--text-secondary)", lineHeight: 1.5 }}>
               从下次捕获建议生成 X0-X28/SP 正负位移窗口。Hook 仍落在原 exact seed offset，捕获结果可以再次导入 Unicorn/angr。
+            </div>
+            <div style={{ marginTop: 4, color: "var(--text-tertiary)", lineHeight: 1.5 }}>
+              新 Hook 会在当前进程重新读取上一轮 seed 的寄存器相对内存，再叠加本轮缺失窗口；不会复制上一轮的绝对地址或陈旧字节。
             </div>
             <div style={{ display: "grid", gridTemplateColumns: "165px minmax(0,1fr)", gap: 6, alignItems: "center", marginTop: 6 }}>
               <label>最大重捕获事件</label>
@@ -426,7 +452,12 @@ export default function OllvmUnicornPanel({ report }: Props) {
             {recaptureSavedPath && <div title={recaptureSavedPath} style={{ marginTop: 5, color: "#3fb950", overflow: "hidden", textOverflow: "ellipsis" }}>已保存：{recaptureSavedPath}</div>}
             {recaptureHook && (
               <div style={{ marginTop: 6, padding: 6, background: "var(--bg-secondary)", borderRadius: 4 }}>
-                {recaptureHook.targets.length} exact seed targets · {recaptureHook.targets.reduce((count, target) => count + target.captures.length, 0)} bounded windows · max {recaptureHook.maxEvents} events
+                {recaptureHook.targets.length} exact seed targets · {recaptureHook.targets.reduce((count, target) => count + target.captures.length, 0)} bounded windows · 保留旧窗口 {recaptureHook.carriedForwardWindowCount} · 新建议窗口 {recaptureHook.suggestedWindowCount} · max {recaptureHook.maxEvents} events
+              </div>
+            )}
+            {recaptureHook && recaptureHook.unsupportedSeedRegionCount > 0 && (
+              <div style={{ marginTop: 4, color: "#d29922" }}>
+                {recaptureHook.unsupportedSeedRegionCount} 个旧 seed 内存区域缺少已验证的 X0-X28/SP 相对关系，未自动跨轮保留。
               </div>
             )}
             {recaptureHook?.warnings.map((warning, index) => <div key={`recapture-warning-${index}`} style={{ marginTop: 4, color: "#d29922" }}>{warning}</div>)}
@@ -452,6 +483,11 @@ export default function OllvmUnicornPanel({ report }: Props) {
             <div style={{ padding: 9, borderBottom: "1px solid var(--border-color)", background: "var(--bg-secondary)" }}>
               <strong>Unicorn {results.unicornVersion} / Capstone {results.capstoneVersion}</strong>
               <div>{results.runs.length} runs · {results.transitionMatrix.length} transition groups · {results.recaptureSuggestions.length} recapture suggestions</div>
+              <div style={{ color: resultRecaptureSummary.unsupported > 0 || resultRecaptureSummary.truncated ? "#d29922" : "var(--text-secondary)" }}>
+                Seed 跨轮保留计划：{resultRecaptureSummary.windows} windows / {resultRecaptureSummary.bytes} bytes
+                {resultRecaptureSummary.unsupported > 0 && ` · ${resultRecaptureSummary.unsupported} unsupported regions`}
+                {resultRecaptureSummary.truncated && " · window limit reached"}
+              </div>
               <div style={{ color: results.binaryIdentityMatched ? "#3fb950" : "#e5484d" }}>Exact ELF SHA-256 {results.binaryIdentityMatched ? "matched" : "mismatch"}</div>
             </div>
 

@@ -16,6 +16,9 @@ AES 集成提交：`887968e fix: detect software AES from memory traces`
 - 新增 `trace-ui/frida-unicorn-recapture-hook-v1` 与 MCP `generate_frida_unicorn_recapture_hook`：从 Unicorn `recaptureSuggestions` 选择最多 64 条 X0-X28/SP 正负位移窗口，聚合到最多 32 个原 exact seed offset，生成兼容 `trace-ui/frida-hook-v1` 的 Frida 16.x `hook-enter` 捕获。
 - GUI“模拟增强”新增“Frida 精确重捕获”阶段，可筛选建议、生成/保存/复制 `.js`。窗口限制 1–4096 字节，空指针或不可读内存输出 `readError`，绝不补零；absolute、X29/X30 等建议明确保留为手动项。
 - 新增协议闭环回归：构造重捕获 `hook-enter`，经 `parse_frida_capture_bundle` 与 `generate_angr_state_seed` 后验证原 `captureOffset`、`X19+0x20` 和 `SP-0x10` 内存区域均被保留。
+- 新增多轮 seed 内存保留：Frida capture/angr seed 记录经过 runtime pointer 校验的 `baseRegister + displacement`；Unicorn 结果为每个 seed 输出 `seedRecapturePlans`，16 KiB 等大区域按 4096 字节拆窗。
+- 重捕获 Hook 会把上一轮已验证的 key/input/stack 窗口与本轮 missing-memory 建议合并并去重，输出“保留旧窗口 / 新建议窗口 / unsupported region”统计。它在当前进程重新读取窗口，不复用旧绝对地址或陈旧字节；旧版结果仍兼容但会提示无法自动携带旧 seed 内存。
+- 新增伪造相对地址元数据拒绝、plan 严格解析、窗口拆分、旧结果兼容及第二轮 seed 同时保留旧/新内存的回归。
 - Dispatcher Frida 捕获扩展为可选 X0-X28 pointer snapshot 与从 SP 开始的 0–16 KiB 栈窗口；默认均关闭，读取失败保持 `readError`。
 - Frida 捕获导入同步接受 X8-X28 和合成 SP 栈 capture index，避免新增内存在生成 angr/Unicorn seed 时被旧 X0-X7 过滤器静默丢弃。
 - Release Action 从真实 `src-tauri` 应用目录启动 Tauri，和本地 Windows MSI/NSIS 成功构建路径保持一致。

@@ -56,6 +56,9 @@ Use `mcp__trace-ui__analyze_ollvm`, `mcp__trace-ui__compare_ollvm_traces`, `mcp_
    suggestion uses X0-X28 or SP plus a bounded signed displacement, call
    `generate_frida_unicorn_recapture_hook` for up to 64 suggestions, let the user run the generated
    exact-seed-offset Frida 16.x script, then reuse the new `hook-enter` as another Unicorn/angr seed.
+   The generated Hook should cumulatively re-read verified prior seed windows and merge them with the new
+   missing-memory request, so a second replay keeps the prior key/input/stack context instead of merely
+   moving the missing-memory stop. Never carry an old absolute address or stale bytes across runs.
 10. To observe several ranked dispatchers in one user-controlled run, call
     `generate_frida_ollvm_dispatcher_hook`, return/save the Frida 16.x script, and stop until the user
     supplies its capture. Then call `analyze_frida_ollvm_dispatcher_capture` on the same OLLVM scope.
@@ -116,7 +119,9 @@ Use `mcp__trace-ui__analyze_ollvm`, `mcp__trace-ui__compare_ollvm_traces`, `mcp_
   use register-relative recapture suggestions to improve a partial seed instead of silently filling zeros.
 - Unicorn recapture hooks run at the original exact seed offset, not the later missing-memory PC. This
   preserves the existing seed gate, but a base register that changes between those points may still
-  require another iteration or a closer manually selected capture point.
+  require another iteration or a closer manually selected capture point. Only byteArray regions with a
+  runtime-verified X0-X28/SP `baseRegister + displacement` relation may be carried automatically; large
+  regions are split into bounded windows, while unverifiable/truncated regions remain explicit warnings.
 
 ## IDA bridge boundary
 
