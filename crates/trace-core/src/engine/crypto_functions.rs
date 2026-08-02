@@ -6,7 +6,8 @@ use crate::query::crypto_functions::{
     CryptoSoftwareHit, CryptoSoftwareSignal, SoftwareShapeHit,
 };
 use crate::query::software_aes::{
-    detect_dynamic_aes_sboxes, find_aes128_schedules, verify_observed_aes128_ecb, MemAccess,
+    detect_dynamic_aes_sboxes, find_aes128_schedules, verify_observed_aes128_ecb_in_scopes,
+    AesCallScope, MemAccess,
 };
 use trace_parser::types::TraceFormat;
 use trace_parser::{gumtrace as gumtrace_parser, parser};
@@ -236,8 +237,21 @@ impl super::TraceEngine {
         memory_writes.extend(crate::query::software_crypto::raw_gumtrace_writes(data));
         let sbox_scan = detect_dynamic_aes_sboxes(&memory_reads);
         let schedules = find_aes128_schedules(&memory_writes);
-        let semantic_verification =
-            verify_observed_aes128_ecb(&memory_reads, &memory_writes, &schedules);
+        let call_scopes = call_tree
+            .nodes
+            .iter()
+            .map(|node| AesCallScope {
+                call_instance_id: node.id,
+                entry_seq: node.entry_seq,
+                exit_seq: node.exit_seq,
+            })
+            .collect::<Vec<_>>();
+        let semantic_verification = verify_observed_aes128_ecb_in_scopes(
+            &memory_reads,
+            &memory_writes,
+            &schedules,
+            &call_scopes,
+        );
         let mut software_hits = sbox_scan
             .matches
             .iter()

@@ -65,7 +65,7 @@ impl super::TraceEngine {
 
         // 3. 从 mem_accesses 索引收集全部读/写（带地址+值+seq+size）。
         let handle = self.get_handle(session_id)?;
-        let (reads, mut writes) = {
+        let (reads, mut writes, call_scopes) = {
             let state = handle
                 .state
                 .read()
@@ -87,7 +87,21 @@ impl super::TraceEngine {
                     writes.push(a);
                 }
             }
-            (reads, writes)
+            let call_scopes = state
+                .call_tree
+                .as_ref()
+                .map(|tree| {
+                    tree.nodes
+                        .iter()
+                        .map(|node| crate::query::software_aes::AesCallScope {
+                            call_instance_id: node.id,
+                            entry_seq: node.entry_seq,
+                            exit_seq: node.exit_seq,
+                        })
+                        .collect::<Vec<_>>()
+                })
+                .unwrap_or_default();
+            (reads, writes, call_scopes)
         };
         // The legacy phase-2 index keeps one MemOp per instruction line. Vector/pair stores may
         // contain multiple mem_w tokens, so crypto analysis supplements writes from the raw line.
@@ -134,7 +148,12 @@ impl super::TraceEngine {
         let sbox_scan = crate::query::software_aes::detect_dynamic_aes_sboxes(&reads);
         let schedules = crate::query::software_aes::find_aes128_schedules(&writes);
         let semantic_verification =
-            crate::query::software_aes::verify_observed_aes128_ecb(&reads, &writes, &schedules);
+            crate::query::software_aes::verify_observed_aes128_ecb_in_scopes(
+                &reads,
+                &writes,
+                &schedules,
+                &call_scopes,
+            );
         let dynamic_software = semantic_verification.as_ref().and_then(|verification| {
             schedules
                 .iter()
@@ -391,7 +410,6 @@ mod integration_tests {
                 None,
             )
             .unwrap();
-
         let report = engine
             .analyze_whitebox(&session.session_id, WhiteBoxOptions::default())
             .unwrap();
@@ -401,7 +419,7 @@ mod integration_tests {
         ));
         assert!(matches!(
             report.key_exposure,
-            crate::query::whitebox_aes::KeyExposure::ExpandedScheduleObserved
+            crate::query::whitebox_aes::KeyExposure::RawKeyObserved
         ));
         assert!(matches!(
             report.whitebox_status,
@@ -412,7 +430,13 @@ mod integration_tests {
         let sbox = report
             .aes_sbox_fingerprints
             .iter()
-            .find(|item| item.base_addr == "0x71cd18f3bc")
+            .filter(|item| {
+                matches!(
+                    item.direction_candidate,
+                    crate::query::software_aes::AesDirection::Encrypt
+                )
+            })
+            .max_by_key(|item| item.matching_reads)
             .expect("standard AES S-box fingerprint");
         assert_eq!(sbox.matching_reads, 1_400);
         assert_eq!(sbox.distinct_indices, 252);
@@ -420,7 +444,7 @@ mod integration_tests {
         let schedule = report
             .aes_key_schedules
             .iter()
-            .find(|item| item.schedule_address == "0x71cd1d6280")
+            .find(|item| item.verification.standard_key_schedule)
             .expect("AES-128 expanded schedule");
         assert_eq!(schedule.verification.words_checked, 44);
         assert_eq!(schedule.verification.words_matched, 44);
@@ -437,7 +461,7 @@ mod integration_tests {
         assert_eq!(software.padded_length, 112);
         assert_eq!(software.block_count, 7);
         assert_eq!(software.verification, "VerifiedFull");
-        assert_eq!(software.output_base_addr, "0x730794efc0");
+        assert_eq!(software.output_hex.len(), 112 * 2);
 
         let functions = engine
             .analyze_crypto_functions(
@@ -445,10 +469,32 @@ mod integration_tests {
                 crate::query::crypto_functions::CryptoFunctionsOptions::default(),
             )
             .unwrap();
+        let candidate_module_offset =
+            |candidate: &crate::query::crypto_functions::CryptoFunctionCandidate| {
+                let line = engine
+                    .get_lines(&session.session_id, &[candidate.entry_seq])
+                    .ok()?
+                    .into_iter()
+                    .next()?;
+                if !line
+                    .so_name
+                    .as_deref()
+                    .is_some_and(|name| name.eq_ignore_ascii_case("libsh_security.so"))
+                {
+                    return None;
+                }
+                let module_base = super::parse_hex(&line.address)?
+                    .saturating_sub(super::parse_hex(&line.so_offset)?);
+                Some(super::parse_hex(&candidate.func_addr)?.saturating_sub(module_base))
+            };
         let cipher = functions
             .candidates
             .iter()
-            .find(|candidate| candidate.func_addr == "0x71cd0da63c")
+            .find(|candidate| {
+                candidate_module_offset(candidate)
+                    .is_some_and(|offset| offset.abs_diff(0xc74dc) <= 0x200)
+                    && candidate.verification_status.as_deref() == Some("VerifiedFull")
+            })
             .expect("AES block function");
         assert_eq!(cipher.verification_status.as_deref(), Some("VerifiedFull"));
         assert!(cipher
@@ -456,7 +502,8 @@ mod integration_tests {
             .iter()
             .any(|hint| hint == "StandardSoftware"));
         assert!(functions.candidates.iter().any(|candidate| {
-            candidate.func_addr == "0x71cd0da6c0"
+            candidate_module_offset(candidate)
+                .is_some_and(|offset| offset.abs_diff(0xc76c0) <= 0x200)
                 && candidate
                     .software_signal_counts
                     .contains_key("AES128_KEY_SCHEDULE")

@@ -134,6 +134,52 @@ fn one_shot_digest_recipe(
 
 pub fn list_frida_hook_recipes() -> Vec<FridaHookRecipe> {
     let mut recipes = vec![
+        recipe(
+            "native-aes-block-x0-x1-x2",
+            "Native candidate",
+            "AES block X0/X1/X2",
+            "Capture a candidate native 16-byte block transform: X0 input, X1 bounded key material, and X2 output. Apply this after selecting a function/offset candidate so the current target is preserved.",
+            request(
+                "libtarget.so",
+                "AES_block_candidate",
+                vec![
+                    argument(
+                        0,
+                        "input",
+                        FridaArgumentKind::ByteArray,
+                        FridaCaptureDirection::Input,
+                        Some(16),
+                        None,
+                        None,
+                    ),
+                    argument(
+                        1,
+                        "key",
+                        FridaArgumentKind::ByteArray,
+                        FridaCaptureDirection::Input,
+                        Some(32),
+                        None,
+                        None,
+                    ),
+                    argument(
+                        2,
+                        "output",
+                        FridaArgumentKind::ByteArray,
+                        FridaCaptureDirection::Output,
+                        Some(16),
+                        None,
+                        None,
+                    ),
+                ],
+                64,
+            ),
+            &["input", "key", "output", "AES semantic recomputation"],
+            &[
+                "This is an ABI candidate preset, not proof that the function is AES.",
+                "If the real key buffer is shorter or longer, adjust X1 length; exact recomputation tests only bounded 16/24/32-byte prefixes.",
+                "For wrapper functions, adjust input/output lengths or hook the inner single-block function instead.",
+            ],
+        ),
         one_shot_digest_recipe(
             "openssl-md5-one-shot",
             "OpenSSL/BoringSSL",
@@ -461,5 +507,25 @@ mod tests {
                 .iter()
                 .any(|argument| argument.length_pointer_arg.is_some()));
         }
+    }
+
+    #[test]
+    fn native_aes_block_recipe_captures_x0_x1_x2_for_semantic_recomputation() {
+        let recipes = list_frida_hook_recipes();
+        let recipe = recipes
+            .iter()
+            .find(|recipe| recipe.recipe_id == "native-aes-block-x0-x1-x2")
+            .unwrap();
+        assert_eq!(recipe.request.arguments.len(), 3);
+        assert_eq!(recipe.request.arguments[0].index, 0);
+        assert_eq!(recipe.request.arguments[0].length, Some(16));
+        assert_eq!(recipe.request.arguments[1].index, 1);
+        assert_eq!(recipe.request.arguments[1].length, Some(32));
+        assert_eq!(recipe.request.arguments[2].index, 2);
+        assert_eq!(recipe.request.arguments[2].length, Some(16));
+        assert!(matches!(
+            recipe.request.arguments[2].direction,
+            FridaCaptureDirection::Output
+        ));
     }
 }

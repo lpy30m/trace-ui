@@ -1,5 +1,7 @@
 use std::collections::{BTreeMap, HashMap, HashSet};
 
+use aes::cipher::{generic_array::GenericArray, BlockDecrypt, BlockEncrypt, KeyInit};
+use aes::{Aes128, Aes192, Aes256};
 use hmac::{Hmac, Mac};
 use md5::Md5;
 use pbkdf2::pbkdf2_hmac;
@@ -840,11 +842,58 @@ pub fn get_frida_capture_event(
 struct FridaMaterialEntry {
     material_id: String,
     call_id: String,
+    hook_id: String,
+    thread_id: u64,
+    event_index: u64,
+    timestamp_ms: u64,
+    capture_index: u8,
     function_name: String,
     label: String,
+    direction: String,
     phase: String,
     kind: CryptoMaterialKind,
+    explicit_role: bool,
     bytes: Vec<u8>,
+}
+
+#[derive(Clone)]
+struct FridaAesObservation {
+    call_id: String,
+    hook_id: String,
+    thread_id: u64,
+    function_name: String,
+    first_event_index: u64,
+    last_event_index: u64,
+    first_timestamp_ms: u64,
+    last_timestamp_ms: u64,
+    key: FridaMaterialEntry,
+    input: FridaMaterialEntry,
+    output: FridaMaterialEntry,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum FridaAesDirection {
+    Encrypt,
+    Decrypt,
+}
+
+impl FridaAesDirection {
+    fn name(self) -> &'static str {
+        match self {
+            Self::Encrypt => "Encrypt",
+            Self::Decrypt => "Decrypt",
+        }
+    }
+}
+
+struct FridaAesSeriesVerification {
+    key_len: usize,
+    direction: FridaAesDirection,
+    total_blocks: usize,
+    matched_blocks: usize,
+    matched_input: Vec<u8>,
+    matched_output: Vec<u8>,
+    fully_matched_observations: Vec<bool>,
 }
 
 #[derive(Clone, Copy)]
@@ -890,7 +939,7 @@ impl FridaHashAlgorithm {
     fn hmac(self, key: &[u8], input: &[u8]) -> Option<Vec<u8>> {
         macro_rules! calculate {
             ($digest:ty) => {{
-                let mut mac = Hmac::<$digest>::new_from_slice(key).ok()?;
+                let mut mac = <Hmac<$digest> as Mac>::new_from_slice(key).ok()?;
                 mac.update(input);
                 Some(mac.finalize().into_bytes().to_vec())
             }};
@@ -979,17 +1028,17 @@ fn classify_frida_material(
         (CryptoMaterialKind::Digest, "digest".to_string(), true)
     } else if explicit(&["mac", "hmac"]) {
         (CryptoMaterialKind::Mac, "mac".to_string(), true)
-    } else if explicit(&["plaintext", "plain"]) {
+    } else if explicit(&["plaintext", "plain", "pt"]) {
         (CryptoMaterialKind::Plaintext, "plaintext".to_string(), true)
-    } else if explicit(&["ciphertext", "cipher"]) {
+    } else if explicit(&["ciphertext", "cipher", "ct"]) {
         (
             CryptoMaterialKind::Ciphertext,
             "ciphertext".to_string(),
             true,
         )
-    } else if explicit(&["input", "message", "data", "source", "src"]) {
+    } else if explicit(&["input", "in", "message", "data", "source", "src"]) {
         (CryptoMaterialKind::Input, "input".to_string(), true)
-    } else if explicit(&["output", "result", "destination", "dst"]) {
+    } else if explicit(&["output", "out", "result", "destination", "dst"]) {
         (CryptoMaterialKind::Output, "output".to_string(), true)
     } else if capture.phase == "leave" || capture.direction == "output" {
         let kind = if function.contains("encrypt") {
@@ -1023,6 +1072,236 @@ fn captured_material_bytes(capture: &FridaCapturedValue) -> Option<Vec<u8>> {
         "utf16String" => Some(value.encode_utf16().flat_map(u16::to_le_bytes).collect()),
         _ => None,
     }
+}
+
+fn frida_aes_key_lengths(captured_len: usize) -> Vec<usize> {
+    [16usize, 24, 32]
+        .into_iter()
+        .filter(|length| *length <= captured_len)
+        .collect()
+}
+
+fn frida_aes_ecb_transform(
+    key: &[u8],
+    input: &[u8],
+    direction: FridaAesDirection,
+) -> Option<Vec<u8>> {
+    if input.is_empty() || input.len() % 16 != 0 {
+        return None;
+    }
+    macro_rules! transform {
+        ($cipher:ty) => {{
+            let cipher = <$cipher>::new_from_slice(key).ok()?;
+            let mut output = Vec::with_capacity(input.len());
+            for input_block in input.chunks_exact(16) {
+                let mut block = GenericArray::clone_from_slice(input_block);
+                match direction {
+                    FridaAesDirection::Encrypt => cipher.encrypt_block(&mut block),
+                    FridaAesDirection::Decrypt => cipher.decrypt_block(&mut block),
+                }
+                output.extend_from_slice(&block);
+            }
+            output
+        }};
+    }
+    Some(match key.len() {
+        16 => transform!(Aes128),
+        24 => transform!(Aes192),
+        32 => transform!(Aes256),
+        _ => return None,
+    })
+}
+
+fn best_frida_entry<'a, F>(
+    entries: &'a [FridaMaterialEntry],
+    mut score: F,
+) -> Option<&'a FridaMaterialEntry>
+where
+    F: FnMut(&FridaMaterialEntry) -> Option<i32>,
+{
+    entries
+        .iter()
+        .filter_map(|entry| score(entry).map(|value| (value, entry.event_index, entry)))
+        .max_by(|left, right| left.0.cmp(&right.0).then_with(|| right.1.cmp(&left.1)))
+        .map(|(_, _, entry)| entry)
+}
+
+fn frida_aes_observation(
+    call_id: &str,
+    entries: &[FridaMaterialEntry],
+) -> Option<FridaAesObservation> {
+    let output = best_frida_entry(entries, |entry| {
+        if entry.phase != "leave" || entry.bytes.is_empty() || entry.bytes.len() % 16 != 0 {
+            return None;
+        }
+        let mut score = 40;
+        if matches!(
+            entry.kind,
+            CryptoMaterialKind::Output
+                | CryptoMaterialKind::Ciphertext
+                | CryptoMaterialKind::Plaintext
+        ) {
+            score += 35;
+        }
+        if entry.explicit_role {
+            score += 25;
+        }
+        if entry.capture_index == 2 {
+            score += 20;
+        }
+        if entry.direction == "output" || entry.direction == "inOut" {
+            score += 10;
+        }
+        Some(score)
+    })?;
+
+    let key = best_frida_entry(entries, |entry| {
+        if entry.phase != "enter" || frida_aes_key_lengths(entry.bytes.len()).is_empty() {
+            return None;
+        }
+        let mut score = 0;
+        if entry.kind == CryptoMaterialKind::Key {
+            score += 100;
+        }
+        if entry.explicit_role {
+            score += 30;
+        }
+        if entry.capture_index == 1 {
+            score += 25;
+        }
+        if matches!(entry.bytes.len(), 16 | 18 | 24 | 32) {
+            score += 10;
+        }
+        Some(score)
+    })?;
+
+    let input = best_frida_entry(entries, |entry| {
+        if entry.phase != "enter"
+            || entry.material_id == key.material_id
+            || entry.bytes.len() != output.bytes.len()
+            || entry.bytes.is_empty()
+            || entry.bytes.len() % 16 != 0
+        {
+            return None;
+        }
+        let mut score = 0;
+        if matches!(
+            entry.kind,
+            CryptoMaterialKind::Input
+                | CryptoMaterialKind::Plaintext
+                | CryptoMaterialKind::Ciphertext
+        ) {
+            score += 35;
+        }
+        if entry.explicit_role {
+            score += 30;
+        }
+        if entry.capture_index == 0 {
+            score += 25;
+        }
+        if entry.direction == "input" || entry.direction == "inOut" {
+            score += 10;
+        }
+        Some(score)
+    })?;
+
+    if input.material_id == output.material_id || key.material_id == output.material_id {
+        return None;
+    }
+    let first = entries.iter().min_by_key(|entry| entry.event_index)?;
+    let last = entries.iter().max_by_key(|entry| entry.event_index)?;
+    Some(FridaAesObservation {
+        call_id: call_id.to_string(),
+        hook_id: first.hook_id.clone(),
+        thread_id: first.thread_id,
+        function_name: first.function_name.clone(),
+        first_event_index: first.event_index,
+        last_event_index: last.event_index,
+        first_timestamp_ms: first.timestamp_ms,
+        last_timestamp_ms: last.timestamp_ms,
+        key: key.clone(),
+        input: input.clone(),
+        output: output.clone(),
+    })
+}
+
+fn same_frida_aes_series(left: &FridaAesObservation, right: &FridaAesObservation) -> bool {
+    left.hook_id == right.hook_id
+        && left.thread_id == right.thread_id
+        && left.function_name == right.function_name
+        && left.key.bytes == right.key.bytes
+        && left.key.capture_index == right.key.capture_index
+        && left.input.capture_index == right.input.capture_index
+        && left.output.capture_index == right.output.capture_index
+        && left.input.bytes.len() == right.input.bytes.len()
+        && right.first_event_index <= left.last_event_index.saturating_add(16)
+        && right.first_timestamp_ms <= left.last_timestamp_ms.saturating_add(1_000)
+}
+
+fn verify_frida_aes_series(
+    observations: &[FridaAesObservation],
+) -> Option<FridaAesSeriesVerification> {
+    let first = observations.first()?;
+    let mut best: Option<FridaAesSeriesVerification> = None;
+    for key_len in frida_aes_key_lengths(first.key.bytes.len()) {
+        let key = &first.key.bytes[..key_len];
+        for direction in [FridaAesDirection::Encrypt, FridaAesDirection::Decrypt] {
+            let mut total_blocks = 0usize;
+            let mut matched_blocks = 0usize;
+            let mut matched_input = Vec::new();
+            let mut matched_output = Vec::new();
+            let mut fully_matched_observations = Vec::with_capacity(observations.len());
+            for observation in observations {
+                let recomputed = frida_aes_ecb_transform(key, &observation.input.bytes, direction)?;
+                let mut observation_matches = 0usize;
+                for ((input_block, output_block), recomputed_block) in observation
+                    .input
+                    .bytes
+                    .chunks_exact(16)
+                    .zip(observation.output.bytes.chunks_exact(16))
+                    .zip(recomputed.chunks_exact(16))
+                {
+                    total_blocks += 1;
+                    if output_block == recomputed_block {
+                        observation_matches += 1;
+                        matched_blocks += 1;
+                        matched_input.extend_from_slice(input_block);
+                        matched_output.extend_from_slice(output_block);
+                    }
+                }
+                fully_matched_observations
+                    .push(observation_matches == observation.input.bytes.len() / 16);
+            }
+            let candidate = FridaAesSeriesVerification {
+                key_len,
+                direction,
+                total_blocks,
+                matched_blocks,
+                matched_input,
+                matched_output,
+                fully_matched_observations,
+            };
+            let replace = best.as_ref().is_none_or(|existing| {
+                candidate.matched_blocks > existing.matched_blocks
+                    || (candidate.matched_blocks == existing.matched_blocks
+                        && candidate.total_blocks > existing.total_blocks)
+            });
+            if replace {
+                best = Some(candidate);
+            }
+        }
+    }
+    best.filter(|verification| verification.matched_blocks > 0)
+}
+
+fn frida_pkcs7_padding(bytes: &[u8]) -> Option<&'static str> {
+    let padding = *bytes.last()? as usize;
+    ((1..=16).contains(&padding)
+        && padding <= bytes.len()
+        && bytes[bytes.len() - padding..]
+            .iter()
+            .all(|byte| *byte as usize == padding))
+    .then_some("PKCS#7")
 }
 
 fn crypto_kind_name(kind: CryptoMaterialKind) -> &'static str {
@@ -1085,6 +1364,332 @@ fn mark_frida_material_verified(
     );
 }
 
+fn set_frida_aes_material_role(
+    materials: &mut [CryptoMaterial],
+    material_id: &str,
+    kind: CryptoMaterialKind,
+    role: &str,
+    algorithm: &str,
+    evidence: &str,
+) {
+    mark_frida_material_verified(materials, material_id, evidence.to_string());
+    if let Some(material) = materials
+        .iter_mut()
+        .find(|material| material.material_id == material_id)
+    {
+        material.kind = kind;
+        material.role = role.to_string();
+        material.algorithm = Some(algorithm.to_string());
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
+fn push_verified_frida_aes_material(
+    materials: &mut Vec<CryptoMaterial>,
+    max_materials: usize,
+    materials_truncated: &mut bool,
+    kind: CryptoMaterialKind,
+    role: &str,
+    algorithm: &str,
+    bytes: &[u8],
+    function_name: &str,
+    first_event_index: u64,
+    last_event_index: u64,
+    evidence: &str,
+) -> Option<String> {
+    if materials.len() >= max_materials {
+        *materials_truncated = true;
+        return None;
+    }
+    let material_id = format!("frida-material-{}", materials.len() + 1);
+    materials.push(CryptoMaterial {
+        material_id: material_id.clone(),
+        kind,
+        role: role.to_string(),
+        algorithm: Some(algorithm.to_string()),
+        bytes_hex: Some(bytes_hex(bytes)),
+        ascii_preview: Some(
+            bytes
+                .iter()
+                .take(96)
+                .map(|byte| {
+                    if byte.is_ascii_graphic() || *byte == b' ' {
+                        *byte as char
+                    } else {
+                        '.'
+                    }
+                })
+                .collect(),
+        ),
+        byte_len: Some(bytes.len() as u32),
+        address: None,
+        observation_seq: u32::try_from(first_event_index).ok(),
+        completion_seq: u32::try_from(last_event_index).ok(),
+        function_name: Some(function_name.to_string()),
+        register: None,
+        source: "frida-capture-aggregate".to_string(),
+        evidence: vec![evidence.to_string()],
+        assessment: score_evidence(
+            format!("frida_crypto_material:{material_id}"),
+            true,
+            vec![
+                EvidenceScoreSignal::new(
+                    "captured_bytes",
+                    "Exact bytes aggregated from callId-correlated Frida captures",
+                    30,
+                    true,
+                    Some(format!("{} bytes", bytes.len())),
+                ),
+                EvidenceScoreSignal::new(
+                    "semantic_recomputation",
+                    "Observed AES block output matches deterministic recomputation",
+                    70,
+                    true,
+                    Some(evidence.to_string()),
+                ),
+            ],
+            vec![
+                "Aggregate material contains only blocks covered by exact imported captures."
+                    .to_string(),
+            ],
+        ),
+    });
+    Some(material_id)
+}
+
+fn append_frida_aes_verifications(
+    grouped: &BTreeMap<String, Vec<FridaMaterialEntry>>,
+    materials: &mut Vec<CryptoMaterial>,
+    formulas: &mut Vec<CryptoFormula>,
+    max_materials: usize,
+    materials_truncated: &mut bool,
+) {
+    let mut observations: Vec<_> = grouped
+        .iter()
+        .filter_map(|(call_id, entries)| frida_aes_observation(call_id, entries))
+        .collect();
+    observations.sort_by_key(|observation| observation.first_event_index);
+
+    let mut start = 0usize;
+    while start < observations.len() {
+        let mut end = start + 1;
+        while end < observations.len()
+            && same_frida_aes_series(&observations[end - 1], &observations[end])
+        {
+            end += 1;
+        }
+        let series = &observations[start..end];
+        let Some(verification) = verify_frida_aes_series(series) else {
+            start = end;
+            continue;
+        };
+        let algorithm = format!("AES-{}", verification.key_len * 8);
+        let status = if verification.matched_blocks == verification.total_blocks {
+            "VerifiedFull"
+        } else if verification.matched_blocks > 1 {
+            "VerifiedPartial"
+        } else {
+            "VerifiedBlock"
+        };
+        let bytes_checked = verification.total_blocks.saturating_mul(16);
+        let bytes_matched = verification.matched_blocks.saturating_mul(16);
+        let mut plaintext = Vec::new();
+        if verification.matched_blocks == verification.total_blocks {
+            for observation in series {
+                match verification.direction {
+                    FridaAesDirection::Encrypt => {
+                        plaintext.extend_from_slice(&observation.input.bytes)
+                    }
+                    FridaAesDirection::Decrypt => {
+                        plaintext.extend_from_slice(&observation.output.bytes)
+                    }
+                }
+            }
+        }
+        let padding = frida_pkcs7_padding(&plaintext);
+        let call_ids = series
+            .iter()
+            .take(16)
+            .map(|observation| observation.call_id.as_str())
+            .collect::<Vec<_>>()
+            .join(", ");
+        let evidence = format!(
+            "Imported Frida call series [{}]: {} {}-ECB {} matched {}/{} observed blocks ({}/{} bytes) by exact recomputation{}.",
+            call_ids,
+            status,
+            algorithm,
+            verification.direction.name(),
+            verification.matched_blocks,
+            verification.total_blocks,
+            bytes_matched,
+            bytes_checked,
+            padding
+                .map(|value| format!("; plaintext padding {value}"))
+                .unwrap_or_default()
+        );
+
+        let input_kind = match verification.direction {
+            FridaAesDirection::Encrypt => CryptoMaterialKind::Plaintext,
+            FridaAesDirection::Decrypt => CryptoMaterialKind::Ciphertext,
+        };
+        let output_kind = match verification.direction {
+            FridaAesDirection::Encrypt => CryptoMaterialKind::Ciphertext,
+            FridaAesDirection::Decrypt => CryptoMaterialKind::Plaintext,
+        };
+        for (index, observation) in series.iter().enumerate() {
+            set_frida_aes_material_role(
+                materials,
+                &observation.key.material_id,
+                CryptoMaterialKind::Key,
+                "key",
+                &algorithm,
+                &evidence,
+            );
+            if verification.fully_matched_observations[index] {
+                set_frida_aes_material_role(
+                    materials,
+                    &observation.input.material_id,
+                    input_kind,
+                    if matches!(input_kind, CryptoMaterialKind::Plaintext) {
+                        "plaintext"
+                    } else {
+                        "ciphertext"
+                    },
+                    &algorithm,
+                    &evidence,
+                );
+                set_frida_aes_material_role(
+                    materials,
+                    &observation.output.material_id,
+                    output_kind,
+                    if matches!(output_kind, CryptoMaterialKind::Ciphertext) {
+                        "ciphertext"
+                    } else {
+                        "plaintext"
+                    },
+                    &algorithm,
+                    &evidence,
+                );
+            }
+        }
+
+        let first = &series[0];
+        let last = &series[series.len() - 1];
+        let (input_material_id, output_material_id) =
+            if series.len() == 1 && verification.matched_blocks == verification.total_blocks {
+                (
+                    Some(first.input.material_id.clone()),
+                    Some(first.output.material_id.clone()),
+                )
+            } else {
+                (
+                    push_verified_frida_aes_material(
+                        materials,
+                        max_materials,
+                        materials_truncated,
+                        input_kind,
+                        if matches!(input_kind, CryptoMaterialKind::Plaintext) {
+                            "plaintext"
+                        } else {
+                            "ciphertext"
+                        },
+                        &algorithm,
+                        &verification.matched_input,
+                        &first.function_name,
+                        first.first_event_index,
+                        last.last_event_index,
+                        &evidence,
+                    ),
+                    push_verified_frida_aes_material(
+                        materials,
+                        max_materials,
+                        materials_truncated,
+                        output_kind,
+                        if matches!(output_kind, CryptoMaterialKind::Ciphertext) {
+                            "ciphertext"
+                        } else {
+                            "plaintext"
+                        },
+                        &algorithm,
+                        &verification.matched_output,
+                        &first.function_name,
+                        first.first_event_index,
+                        last.last_event_index,
+                        &evidence,
+                    ),
+                )
+            };
+        if let (Some(input_material_id), Some(output_material_id)) =
+            (input_material_id, output_material_id)
+        {
+            let key_suffix = if first.key.bytes.len() == verification.key_len {
+                String::new()
+            } else {
+                format!("[0:{}]", verification.key_len)
+            };
+            formulas.push(CryptoFormula {
+                formula_id: format!("frida-formula-{}", formulas.len() + 1),
+                operation: "AES-ECB".to_string(),
+                algorithm: algorithm.clone(),
+                expression: format!(
+                    "{}-ECB {}({}, {}{}) = {} [{} {}/{} blocks; {}/{} bytes{}]",
+                    algorithm,
+                    verification.direction.name(),
+                    first.input.label,
+                    first.key.label,
+                    key_suffix,
+                    first.output.label,
+                    status,
+                    verification.matched_blocks,
+                    verification.total_blocks,
+                    bytes_matched,
+                    bytes_checked,
+                    padding
+                        .map(|value| format!("; {value}"))
+                        .unwrap_or_default()
+                ),
+                input_material_ids: vec![first.key.material_id.clone(), input_material_id],
+                output_material_id: Some(output_material_id),
+                call_seq: None,
+                function_name: Some(first.function_name.clone()),
+                evidence: vec![evidence.clone()],
+                assessment: score_evidence(
+                    format!("frida_crypto_formula:aes:{}", first.call_id),
+                    true,
+                    vec![
+                        EvidenceScoreSignal::new(
+                            "call_correlation",
+                            "Input, key, and output were correlated by callId and capture phase",
+                            20,
+                            true,
+                            Some(format!("{} calls", series.len())),
+                        ),
+                        EvidenceScoreSignal::new(
+                            "semantic_recomputation",
+                            "Captured AES-ECB blocks match deterministic recomputation",
+                            80,
+                            true,
+                            Some(evidence),
+                        ),
+                    ],
+                    if status == "VerifiedFull" {
+                        vec![
+                            "VerifiedFull covers every input/output block observed in this contiguous imported call series, not unobserved native invocations."
+                                .to_string(),
+                        ]
+                    } else {
+                        vec![
+                            "One or more observed blocks did not match; this result must not be treated as full-call verification."
+                                .to_string(),
+                        ]
+                    },
+                ),
+            });
+        }
+        start = end;
+    }
+}
+
 pub fn analyze_frida_crypto_materials(
     bundle: &FridaCaptureBundle,
     max_materials: Option<u32>,
@@ -1129,9 +1734,8 @@ pub fn analyze_frida_crypto_materials(
             }
             let (kind, role, explicit_role) =
                 classify_frida_material(capture, &event.function_name);
-            if !include_unknown && !explicit_role && kind == CryptoMaterialKind::Input {
-                continue;
-            }
+            let retained_for_semantic_matching =
+                !include_unknown && !explicit_role && kind == CryptoMaterialKind::Input;
             if materials.len() >= max_materials {
                 materials_truncated = true;
                 break;
@@ -1152,6 +1756,11 @@ pub fn analyze_frida_crypto_materials(
                     "Capture label '{}' explicitly suggests role {}.",
                     capture.label, role
                 ));
+            } else if retained_for_semantic_matching {
+                evidence.push(
+                    "Unlabeled input candidate was retained for bounded callId/ABI semantic recomputation; its role remains Related unless exact output bytes match."
+                        .to_string(),
+                );
             } else {
                 evidence.push(format!(
                     "Role {} was inferred from capture direction/phase and function name; treat it as Related evidence.",
@@ -1228,10 +1837,17 @@ pub fn analyze_frida_crypto_materials(
             entries.push(FridaMaterialEntry {
                 material_id,
                 call_id: call_id.to_string(),
+                hook_id: event.hook_id.clone(),
+                thread_id: event.thread_id,
+                event_index: event.index,
+                timestamp_ms: event.timestamp_ms,
+                capture_index: capture.index,
                 function_name: event.function_name.clone(),
                 label: capture.label.clone(),
+                direction: capture.direction.clone(),
                 phase: capture.phase.clone(),
                 kind,
+                explicit_role,
                 bytes,
             });
         }
@@ -1248,7 +1864,14 @@ pub fn analyze_frida_crypto_materials(
             .or_default()
             .push(entry);
     }
-    for (call_id, call_entries) in grouped {
+    append_frida_aes_verifications(
+        &grouped,
+        &mut materials,
+        &mut formulas,
+        max_materials,
+        &mut materials_truncated,
+    );
+    for (call_id, call_entries) in &grouped {
         let Some(first) = call_entries.first() else {
             continue;
         };
@@ -1305,7 +1928,7 @@ pub fn analyze_frida_crypto_materials(
                         CryptoMaterialKind::Output | CryptoMaterialKind::DerivedKey
                     )
             });
-            let iterations = integer_values.get(&call_id).and_then(|values| {
+            let iterations = integer_values.get(call_id).and_then(|values| {
                 values
                     .iter()
                     .find(|(label, _)| {
@@ -1496,7 +2119,9 @@ pub fn analyze_frida_crypto_materials(
         coverage: vec![
             "Imported Frida byteArray/UTF-8/UTF-16 captures are grouped by callId and classified by explicit labels, phase, direction, and function name."
                 .to_string(),
-            "MD5/SHA, HMAC, and PBKDF2 outputs are deterministically recomputed when the required captured bytes and integer parameters are present in one call."
+            "MD5/SHA, HMAC, PBKDF2, and AES-128/192/256 ECB outputs are deterministically recomputed when the required captured bytes are present."
+                .to_string(),
+            "Consecutive single-block AES calls with the same hook, thread, function, ABI positions, and captured key are aggregated into a bounded block series."
                 .to_string(),
         ],
         limitations: vec![
@@ -1505,6 +2130,10 @@ pub fn analyze_frida_crypto_materials(
             "UTF-8/UTF-16 captures are re-encoded text and may not preserve invalid bytes or terminators; prefer byteArray for verification."
                 .to_string(),
             "Role labels remain Related evidence unless deterministic recomputation or independently verified API semantics confirm them."
+                .to_string(),
+            "Unlabeled AES capture roles may use the common X0 input / X1 key / X2 output ABI as a candidate ordering; only exact AES recomputation opens the verification gate."
+                .to_string(),
+            "Frida AES recomputation currently tests ECB Encrypt/Decrypt only. CBC, CTR, GCM, XTS, and caller-side pre/post transforms require their IV/nonce/tweak/state captures before verification."
                 .to_string(),
             "Capture max_bytes and pointer read failures can truncate key, input, output, salt, or digest material."
                 .to_string(),
@@ -2175,6 +2804,126 @@ TRACE_UI_JSON {"protocol":"trace-ui/frida-hook-v1","eventId":"one:event:2","hook
         assert_eq!(report.verified_formulas, 0);
         assert_eq!(report.verified_materials, 0);
         assert!(report.formulas.is_empty());
+    }
+
+    fn aes_block_capture(
+        captured_key: &[u8],
+        transform_key: &[u8],
+        tamper_last_ciphertext_byte: bool,
+    ) -> serde_json::Value {
+        let mut plaintext = (0u8..105).collect::<Vec<_>>();
+        plaintext.extend_from_slice(&[7u8; 7]);
+        let mut ciphertext =
+            frida_aes_ecb_transform(transform_key, &plaintext, FridaAesDirection::Encrypt).unwrap();
+        if tamper_last_ciphertext_byte {
+            *ciphertext.last_mut().unwrap() ^= 1;
+        }
+        let mut events = Vec::new();
+        for (block_index, (input, output)) in plaintext
+            .chunks_exact(16)
+            .zip(ciphertext.chunks_exact(16))
+            .enumerate()
+        {
+            let call_id = format!("native-aes:{block_index}");
+            events.push(serde_json::json!({
+                "protocol": FRIDA_HOOK_PROTOCOL,
+                "hookId": "native-aes-block",
+                "event": "hook-enter",
+                "functionName": "A_e",
+                "timestampMs": block_index * 2 + 1,
+                "threadId": 7,
+                "callId": call_id,
+                "captures": [
+                    {"index":0,"label":"arg0","kind":"byteArray","direction":"input","phase":"enter","pointer":format!("0x{:x}", 0x1000 + block_index * 16),"value":bytes_hex(input),"byteLength":16},
+                    {"index":1,"label":"arg1","kind":"byteArray","direction":"input","phase":"enter","pointer":"0x2000","value":bytes_hex(captured_key),"byteLength":captured_key.len()}
+                ]
+            }));
+            events.push(serde_json::json!({
+                "protocol": FRIDA_HOOK_PROTOCOL,
+                "hookId": "native-aes-block",
+                "event": "hook-leave",
+                "functionName": "A_e",
+                "timestampMs": block_index * 2 + 2,
+                "threadId": 7,
+                "callId": call_id,
+                "captures": [
+                    {"index":2,"label":"arg2","kind":"byteArray","direction":"output","phase":"leave","pointer":format!("0x{:x}", 0x3000 + block_index * 16),"value":bytes_hex(output),"byteLength":16}
+                ]
+            }));
+        }
+        serde_json::Value::Array(events)
+    }
+
+    #[test]
+    fn verifies_unlabeled_aes128_ecb_calls_and_uses_the_18_byte_key_prefix() {
+        let key = b"0123456789abcdef";
+        let mut captured_key = key.to_vec();
+        captured_key.extend_from_slice(b"!!");
+        let capture = aes_block_capture(&captured_key, key, false);
+        let bundle = parse_frida_capture_bundle(&serde_json::to_vec(&capture).unwrap()).unwrap();
+        let report = analyze_frida_crypto_materials(&bundle, None, false).unwrap();
+
+        assert_eq!(report.verified_formulas, 1);
+        let formula = report
+            .formulas
+            .iter()
+            .find(|formula| formula.operation == "AES-ECB")
+            .expect("AES formula");
+        assert_eq!(formula.algorithm, "AES-128");
+        assert!(formula.assessment.verification_gate_met);
+        assert!(formula.expression.contains("VerifiedFull 7/7 blocks"));
+        assert!(formula.expression.contains("112/112 bytes"));
+        assert!(formula.expression.contains("PKCS#7"));
+        assert!(formula.expression.contains("arg1[0:16]"));
+        assert!(report.materials.iter().any(|material| {
+            material.kind == CryptoMaterialKind::Key
+                && material.algorithm.as_deref() == Some("AES-128")
+                && material.byte_len == Some(18)
+        }));
+    }
+
+    #[test]
+    fn modified_final_aes_block_is_verified_partial_never_verified_full() {
+        let key = b"0123456789abcdef";
+        let mut captured_key = key.to_vec();
+        captured_key.extend_from_slice(b"!!");
+        let capture = aes_block_capture(&captured_key, key, true);
+        let bundle = parse_frida_capture_bundle(&serde_json::to_vec(&capture).unwrap()).unwrap();
+        let report = analyze_frida_crypto_materials(&bundle, None, false).unwrap();
+
+        let formula = report
+            .formulas
+            .iter()
+            .find(|formula| formula.operation == "AES-ECB")
+            .expect("partial AES formula");
+        assert!(formula.expression.contains("VerifiedPartial 6/7 blocks"));
+        assert!(formula.expression.contains("96/112 bytes"));
+        assert!(!formula.expression.contains("VerifiedFull"));
+        assert!(formula
+            .assessment
+            .limitations
+            .iter()
+            .any(|item| item.contains("must not be treated as full-call")));
+    }
+
+    #[test]
+    fn wrong_captured_aes_key_does_not_open_the_verification_gate() {
+        let correct_key = b"0123456789abcdef";
+        let mut wrong_captured_key = b"fedcba9876543210".to_vec();
+        wrong_captured_key.extend_from_slice(b"!!");
+        let capture = aes_block_capture(&wrong_captured_key, correct_key, false);
+        let bundle = parse_frida_capture_bundle(&serde_json::to_vec(&capture).unwrap()).unwrap();
+        let report = analyze_frida_crypto_materials(&bundle, None, false).unwrap();
+
+        assert!(report
+            .formulas
+            .iter()
+            .all(|formula| formula.operation != "AES-ECB"));
+        assert_eq!(report.verified_formulas, 0);
+        assert!(report
+            .materials
+            .iter()
+            .all(|material| !material.assessment.verification_gate_met));
     }
 
     #[test]

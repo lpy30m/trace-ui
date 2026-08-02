@@ -59,6 +59,13 @@ pub struct MemAccess {
     pub size: u8,
 }
 
+#[derive(Clone, Copy, Debug)]
+pub struct AesCallScope {
+    pub call_instance_id: u32,
+    pub entry_seq: u32,
+    pub exit_seq: u32,
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
 pub enum AesDirection {
     Encrypt,
@@ -542,6 +549,15 @@ pub fn verify_observed_aes128_ecb(
     writes: &[MemAccess],
     schedules: &[AesKeyScheduleEvidence],
 ) -> Option<AesSemanticVerification> {
+    verify_observed_aes128_ecb_in_scopes(reads, writes, schedules, &[])
+}
+
+pub fn verify_observed_aes128_ecb_in_scopes(
+    reads: &[MemAccess],
+    writes: &[MemAccess],
+    schedules: &[AesKeyScheduleEvidence],
+    call_scopes: &[AesCallScope],
+) -> Option<AesSemanticVerification> {
     if schedules.is_empty() {
         return None;
     }
@@ -684,7 +700,24 @@ pub fn verify_observed_aes128_ecb(
                             block_at(&output_bytes, start_output).unwrap();
                         let (_, _, last_output_seq) =
                             block_at(&output_bytes, start_output + byte_len as u64 - 16).unwrap();
-                        let full_call_coverage = start_input == *input_run_start
+                        let evidence_start_seq = schedule
+                            .start_seq
+                            .min(first_input_seq)
+                            .min(first_output_seq);
+                        let evidence_end_seq =
+                            schedule.end_seq.max(last_input_seq).max(last_output_seq);
+                        let call_instance_covered = call_scopes.is_empty()
+                            || call_scopes
+                                .iter()
+                                .filter(|scope| scope.call_instance_id != 0)
+                                .filter(|scope| {
+                                    scope.entry_seq <= evidence_start_seq
+                                        && scope.exit_seq >= evidence_end_seq
+                                })
+                                .min_by_key(|scope| scope.exit_seq.saturating_sub(scope.entry_seq))
+                                .is_some();
+                        let full_call_coverage = call_instance_covered
+                            && start_input == *input_run_start
                             && start_output == output.run_start
                             && start_input + byte_len as u64 == input_run_end
                             && start_output + byte_len as u64 == output.run_end;
@@ -860,6 +893,58 @@ mod tests {
         let last = writes.last_mut().unwrap();
         last.value ^= 1;
         assert!(verify_observed_aes128_ecb(&reads, &writes, &schedules).is_none());
+    }
+
+    #[test]
+    fn exact_bytes_split_across_call_instances_are_not_verified_full() {
+        let key = [
+            0x00, 0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08, 0x09, 0x0a, 0x0b, 0x0c, 0x0d,
+            0x0e, 0x0f,
+        ];
+        let input = [
+            0x00, 0x11, 0x22, 0x33, 0x44, 0x55, 0x66, 0x77, 0x88, 0x99, 0xaa, 0xbb, 0xcc, 0xdd,
+            0xee, 0xff,
+        ];
+        let output = aes128_transform(&key, &input, AesDirection::Encrypt);
+        let schedule = expand_aes128_key(&key);
+        let mut writes = Vec::new();
+        for (index, &value) in schedule.iter().enumerate() {
+            writes.push(access(index as u32, 0x7100_2000 + index as u64, value));
+        }
+        for (index, &value) in output.iter().enumerate() {
+            writes.push(access(
+                300 + index as u32,
+                0x7300_2000 + index as u64,
+                value,
+            ));
+        }
+        let reads: Vec<_> = input
+            .iter()
+            .enumerate()
+            .map(|(index, &value)| access(200 + index as u32, 0x7300_1000 + index as u64, value))
+            .collect();
+        let schedules = find_aes128_schedules(&writes);
+        let scopes = [
+            AesCallScope {
+                call_instance_id: 0,
+                entry_seq: 0,
+                exit_seq: u32::MAX,
+            },
+            AesCallScope {
+                call_instance_id: 1,
+                entry_seq: 0,
+                exit_seq: 250,
+            },
+            AesCallScope {
+                call_instance_id: 2,
+                entry_seq: 251,
+                exit_seq: 400,
+            },
+        ];
+        let verification =
+            verify_observed_aes128_ecb_in_scopes(&reads, &writes, &schedules, &scopes).unwrap();
+        assert_eq!(verification.status, "VerifiedBlock");
+        assert!(!verification.full_call_coverage);
     }
 
     #[test]

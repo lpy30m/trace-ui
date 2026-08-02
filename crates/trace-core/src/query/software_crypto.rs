@@ -743,7 +743,7 @@ pub fn report_from_dynamic_aes(
             "Observed byte-addressed input/output buffers recompute exactly as canonical AES blocks."
                 .to_string(),
         implementation_kind: "StandardSoftware".to_string(),
-        key_exposure: "ExpandedScheduleObserved".to_string(),
+        key_exposure: "RawKeyObserved".to_string(),
         whitebox_status: "NotWhiteBox".to_string(),
         verification: verification.status.clone(),
         ciphertext_sha256: hex(&Sha256::digest(ciphertext)),

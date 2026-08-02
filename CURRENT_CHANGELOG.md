@@ -1,8 +1,9 @@
 # Trace UI 当前开发记录与后续交接
 
 最后更新：2026-08-02
-当前分支：`feat/unicorn-ollvm-replay`
-功能基线提交：`9211fdc feat: harden OLLVM angr handoff`（其后的提交继续记录界面中文化与文档交接）
+当前分支：`feat/aes-unicorn-integration`
+Unicorn/OLLVM 基线提交：`457353f feat: add exact-seed Unicorn OLLVM replay`
+AES 集成提交：`887968e fix: detect software AES from memory traces`
 
 这份文档是后续 Codex/开发者进入项目时的快速入口。它记录当前已经实现的 Frida 16、OLLVM、IDA、angr 和密码材料分析能力，以及每项能力对应的代码位置和边界。
 
@@ -15,6 +16,24 @@
 - Dispatcher Frida 捕获扩展为可选 X0-X28 pointer snapshot 与从 SP 开始的 0–16 KiB 栈窗口；默认均关闭，读取失败保持 `readError`。
 - Frida 捕获导入同步接受 X8-X28 和合成 SP 栈 capture index，避免新增内存在生成 angr/Unicorn seed 时被旧 X0-X7 过滤器静默丢弃。
 - Release Action 从真实 `src-tauri` 应用目录启动 Tauri，和本地 Windows MSI/NSIS 成功构建路径保持一致。
+
+### 严重 OLLVM 样本的推荐顺序
+
+1. 先用窄函数或窄 sequence 范围运行 `analyze_ollvm`，只把 dispatcher、state register 和 opaque branch 当作候选。
+2. 对精确 module-relative offset 生成 Frida dispatcher/branch Hook，由用户手动运行；优先捕获完整 GPR/NZCV，再按缺失状态提示补充少量 X0-X28 pointer 或 SP 栈窗口。
+3. 优先使用 Unicorn“模拟增强”做 exact-seed 具体重放。它速度快、路径确定，适合确认下一 dispatcher、循环、调用边界、寄存器变化和缺失内存。
+4. 只有需要探索未观测分支时再生成 angr bridge，保持默认有界深度/状态数，避免严重混淆样本发生状态爆炸。
+5. 将 Unicorn/angr 结果导回 Trace UI，再用 IDA 注释和多运行对比人工确认。AI/MCP 负责选择候选、组织证据和生成脚本，不自动 attach Frida，也不把结构候选表述为已完成去混淆。
+
+## 本轮 AES 与 Frida 语义验证增强
+
+- 纯 trace 软件 AES 在没有函数名/API 注释时，也可从动态 S-box、AES-128 44-word schedule、连续 16-byte input/output 和逐 block 复算建立证据。
+- `analyze_frida_crypto_materials` 按 `callId` 对齐 enter/leave 捕获，支持显式角色以及有界的 X0=input、X1=key、X2=output 候选 ABI，并尝试 AES-128/192/256 ECB Encrypt/Decrypt。
+- 相同 hook、线程、函数、ABI 和 key 的连续单块调用可聚合覆盖；错误 key 不打开 gate，末块篡改只能得到 `VerifiedPartial`，跨调用拼接不能得到 `VerifiedFull`。
+- 新增 `Native candidate · AES block X0/X1/X2` Frida 配方；从 Crypto Functions 候选进入时保留已预填的 module-relative offset。
+- 真实 nativeInfo trace 回归识别为 AES-128-ECB Encrypt、PKCS#7、7 blocks、112/112 bytes、`VerifiedFull`；动态证据包含 1400 次 S-box read、252 个 distinct index 和 44/44 schedule words。
+- 没有独立 OLLVM 控制流证据时，AES 实现仍保持 `StandardSoftware`，不会仅因查表或复杂代码误标为 `ObfuscatedStandardSoftware`。
+- 2026-08-02 回归已通过 `cargo fmt --all -- --check`、`cargo test --workspace`、真实日志 ignored test、UI guards、Vitest、TypeScript/Vite production build 和 `cargo tauri build --ci`；本地成功生成 Windows MSI 与 NSIS 安装包。
 
 ## 本轮 MCP 大捕获检索
 

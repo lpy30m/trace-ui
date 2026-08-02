@@ -173,15 +173,20 @@ export default function FridaHookPanel({ seed }: Props) {
   const applySelectedRecipe = useCallback(() => {
     if (!selectedRecipe) return;
     const currentModule = request.moduleName.trim();
-    setTargetMode("symbol");
+    const preserveCurrentTarget = selectedRecipe.recipeId === "native-aes-block-x0-x1-x2"
+      && (targetMode === "offset" ? Boolean(request.offset?.trim()) : Boolean(request.symbol?.trim()));
+    setTargetMode(preserveCurrentTarget ? targetMode : "symbol");
     setRequest({
       ...selectedRecipe.request,
       moduleName: currentModule || selectedRecipe.request.moduleName,
+      symbol: preserveCurrentTarget ? request.symbol : selectedRecipe.request.symbol,
+      offset: preserveCurrentTarget ? request.offset : selectedRecipe.request.offset,
+      functionName: preserveCurrentTarget ? request.functionName : selectedRecipe.request.functionName,
       arguments: selectedRecipe.request.arguments.map(argument => ({ ...argument })),
     });
     setSeedLabel(`recipe:${selectedRecipe.recipeId}`);
     setError(null);
-  }, [request.moduleName, selectedRecipe]);
+  }, [request, selectedRecipe, targetMode]);
 
   const updateArgument = useCallback((row: number, patch: Partial<FridaArgumentSpec>) => {
     setRequest(previous => ({

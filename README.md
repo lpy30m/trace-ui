@@ -193,11 +193,17 @@ python .\target-trace-ui-unicorn.py .\libtarget.so -o .\trace-ui-unicorn-ollvm.j
 
 最后回到“模拟增强”页签导入结果 JSON。若停止原因为 `missing-memory`，按页面给出的寄存器、位移和建议窗口扩大下一轮 Frida pointer/SP 捕获；不要把缺失字节补零后继续。
 
+对于严重 OLLVM 样本，推荐先用 Unicorn 具体重放确认“这个已捕获状态下一步实际走到哪里”，再只对少数需要探索的 branch/condition-source 使用 angr 有界符号执行。Unicorn 更适合快速发现下一 dispatcher、循环、调用边界和缺失内存；angr 更适合比较未观测分支，但必须限制深度与状态数。两者都依赖 exact ELF 和精确捕获点，结果导回后仍需结合动态 trace、IDA 和多运行对比人工确认。
+
 Frida 捕获回导支持 JSON object/array、标准 send envelope、NDJSON 和带前缀的 CLI 日志。选中一次捕获后可生成 `trace-ui/angr-state-seed-v1` Python，填充 X0-X7、X8-X28、可选 SP/LR、可用的 NZCV 和已捕获内存；module 内指针会按 mapped base 重定位，heap/stack 地址仍属于单次进程证据。NZCV 会优先按 AArch64 packed flags 写入 angr，必要时回退到 N/Z/C/V 单独寄存器，仍需人工确认捕获点语义一致。
+
+原生 AES 捕获也会直接做语义重算：`analyze_frida_crypto_materials` 按 `callId` 对齐 enter/leave buffer，支持显式 key/input/output 别名，也支持有界的 X0 输入、X1 key、X2 输出候选 ABI；自动尝试 AES-128/192/256 key 前缀以及 ECB Encrypt/Decrypt，并逐 block 比较。相同 hook、线程、函数、ABI 位置和 key 的连续单块调用会聚合；末块被修改时只能得到 `VerifiedPartial`，不会误报 `VerifiedFull`。标签和 ABI 位置本身都不能打开 verification gate。
+
+GUI 快速路径：从 Crypto Functions 的 AES 候选点击生成 Hook，进入 Frida 页面后套用 `Native candidate · AES block X0/X1/X2` 配方。该配方会保留已经预填的 module-relative offset，只替换为 X0=16-byte input、X1=bounded key、X2=16-byte output 的捕获参数；如果目标是 wrapper 或 key buffer 长度不同，再手工调整长度。
 
 专用 dispatcher 捕获事件使用同一 `trace-ui/frida-hook-v1` 协议，事件类型为 `ollvm-dispatcher-hit`；`dispatcherOffset` 与 `target/moduleBase` 会交叉校验。该 atlas 是执行样本的结构化索引，不是完整 CFG、自动去平坦化或函数调用边界证明。
 
-捕获文件还可按 `callId` 建立独立密码材料索引：显式 label 可提示 key/password/salt/IV/nonce/AAD/tag/input/output/digest/MAC，若同一次调用内存在完整 byteArray，则会对 MD5/SHA、HMAC 与受限迭代次数的 PBKDF2 做确定性重算。只有重算匹配才打开 Verified gate；标签和方向推断保持 Related。
+捕获文件还可按 `callId` 建立独立密码材料索引：显式 label 可提示 key/password/salt/IV/nonce/AAD/tag/input/output/digest/MAC，若捕获中存在完整 byteArray，则会对 AES-128/192/256 ECB、MD5/SHA、HMAC 与受限迭代次数的 PBKDF2 做确定性重算。AES 连续单块调用会按同 hook/线程/函数/key/ABI 聚合并显示实际 matched/checked block 数。只有重算匹配才打开 Verified gate；标签和方向推断保持 Related。
 
 ### 调用树与函数分析
 
