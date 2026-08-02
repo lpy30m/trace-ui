@@ -1,6 +1,8 @@
 import { useMemo, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import type {
+  AngrOllvmResultBundle,
+  AngrOllvmScript,
   FridaCaptureBundle,
   FridaCaptureEvent,
   FridaUnicornCheckpointHookScript,
@@ -148,8 +150,14 @@ export default function OllvmUnicornPanel({ report }: Props) {
   const [checkpointMaxEvents, setCheckpointMaxEvents] = useState("5000");
   const [checkpointHook, setCheckpointHook] = useState<FridaUnicornCheckpointHookScript | null>(null);
   const [checkpointSavedPath, setCheckpointSavedPath] = useState<string | null>(null);
+  const [angrFlowDepth, setAngrFlowDepth] = useState("8");
+  const [angrFlowStates, setAngrFlowStates] = useState("32");
+  const [angrFallbackScript, setAngrFallbackScript] = useState<AngrOllvmScript | null>(null);
+  const [angrFallbackSavedPath, setAngrFallbackSavedPath] = useState<string | null>(null);
+  const [angrFallbackResults, setAngrFallbackResults] = useState<AngrOllvmResultBundle | null>(null);
+  const [angrFallbackResultsPath, setAngrFallbackResultsPath] = useState<string | null>(null);
   const [savedPath, setSavedPath] = useState<string | null>(null);
-  const [display, setDisplay] = useState<"script" | "results" | "recapture" | "checkpoint" | "comparison">("script");
+  const [display, setDisplay] = useState<"script" | "results" | "recapture" | "checkpoint" | "comparison" | "angr" | "angr-results">("script");
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
@@ -164,6 +172,11 @@ export default function OllvmUnicornPanel({ report }: Props) {
       ? `python "${savedPath}" "${binaryPath}" -o "trace-ui-unicorn-ollvm.json"`
       : null
   ), [binaryPath, savedPath]);
+  const angrFallbackCommand = useMemo(() => (
+    angrFallbackSavedPath && binaryPath
+      ? `python "${angrFallbackSavedPath}" "${binaryPath}" -o "trace-ui-angr-ollvm.json"`
+      : null
+  ), [angrFallbackSavedPath, binaryPath]);
   const generatedRecaptureSummary = useMemo(() => {
     const plans = generated?.seedRecapturePlans || [];
     return {
@@ -182,6 +195,13 @@ export default function OllvmUnicornPanel({ report }: Props) {
       truncated: plans.some(plan => plan.windowsTruncated),
     };
   }, [results]);
+
+  const resetAngrFallback = () => {
+    setAngrFallbackScript(null);
+    setAngrFallbackSavedPath(null);
+    setAngrFallbackResults(null);
+    setAngrFallbackResultsPath(null);
+  };
 
   const requestArgs = () => ({
     report,
@@ -216,6 +236,7 @@ export default function OllvmUnicornPanel({ report }: Props) {
       setSelectedCheckpointSeedOffsets([]);
       setCheckpointHook(null);
       setCheckpointSavedPath(null);
+      resetAngrFallback();
     }
   };
 
@@ -245,6 +266,7 @@ export default function OllvmUnicornPanel({ report }: Props) {
       setResultsPath(null);
       setSelectedRecaptureSuggestions([]);
       setRecaptureHook(null);
+      resetAngrFallback();
     } catch (reason) {
       setError(String(reason));
     } finally {
@@ -263,6 +285,7 @@ export default function OllvmUnicornPanel({ report }: Props) {
     setResultsPath(null);
     setSelectedRecaptureSuggestions([]);
     setRecaptureHook(null);
+    resetAngrFallback();
   };
 
   const generateScript = async (): Promise<UnicornOllvmScript | null> => {
@@ -338,6 +361,7 @@ export default function OllvmUnicornPanel({ report }: Props) {
       setRecaptureSavedPath(null);
       setCheckpointHook(null);
       setCheckpointSavedPath(null);
+      resetAngrFallback();
       setDisplay("results");
     } catch (reason) {
       setError(String(reason));
@@ -386,6 +410,7 @@ export default function OllvmUnicornPanel({ report }: Props) {
         .slice(0, 1));
       setCheckpointHook(null);
       setCheckpointSavedPath(null);
+      resetAngrFallback();
       setDisplay("comparison");
     } catch (reason) {
       setError(String(reason));
@@ -546,6 +571,102 @@ export default function OllvmUnicornPanel({ report }: Props) {
     }
   };
 
+  const angrFallbackRequestArgs = () => ({
+    report,
+    probeOpaqueBranches: false,
+    useCfgEmulated: false,
+    exploreSeededFlows: true,
+    flowMaxDepth: positiveInteger(angrFlowDepth, 8),
+    flowMaxStatesPerProbe: positiveInteger(angrFlowStates, 32),
+    fridaBundle: capture,
+    fridaEventIndex: null,
+    fridaEventIndices: selectedEvents,
+    fridaIncludeSp: true,
+    fridaIncludeLr: true,
+    staticBinaryPath: binaryPath || "",
+    checkpointResultPath,
+  });
+
+  const generateAngrFallback = async (): Promise<AngrOllvmScript | null> => {
+    if (!binaryPath) {
+      setError("请先选择与上一轮结果一致的精确 AArch64 ELF/shared object。");
+      return null;
+    }
+    if (!checkpointResultPath) {
+      setError("请先导入授权更近 checkpoint 的上一轮 Unicorn 结果 JSON。");
+      return null;
+    }
+    if (!capture || selectedEvents.length === 0) {
+      setError("请导入更近 checkpoint Hook 的 Frida 捕获，并选择至少一个带寄存器的精确事件。");
+      return null;
+    }
+    setBusy(true);
+    setError(null);
+    try {
+      const value = await invoke<AngrOllvmScript>("generate_angr_ollvm_script", angrFallbackRequestArgs());
+      setAngrFallbackScript(value);
+      setAngrFallbackResults(null);
+      setAngrFallbackResultsPath(null);
+      setDisplay("angr");
+      return value;
+    } catch (reason) {
+      setError(String(reason));
+      return null;
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const saveAngrFallback = async () => {
+    const value = angrFallbackScript || await generateAngrFallback();
+    if (!value) return;
+    const { save } = await import("@tauri-apps/plugin-dialog");
+    const path = await save({
+      defaultPath: value.fileName,
+      filters: [{ name: "Python", extensions: ["py"] }],
+    });
+    if (typeof path !== "string") return;
+    setBusy(true);
+    setError(null);
+    try {
+      const written = await invoke<string>("save_angr_ollvm_script", {
+        path,
+        ...angrFallbackRequestArgs(),
+      });
+      setAngrFallbackSavedPath(written);
+    } catch (reason) {
+      setError(String(reason));
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const importAngrFallbackResults = async () => {
+    const { open } = await import("@tauri-apps/plugin-dialog");
+    const path = await open({
+      multiple: false,
+      directory: false,
+      title: "Select Trace UI bounded angr result JSON",
+      filters: [{ name: "Trace UI angr results", extensions: ["json"] }],
+    });
+    if (typeof path !== "string") return;
+    setBusy(true);
+    setError(null);
+    try {
+      const bundle = await invoke<AngrOllvmResultBundle>("load_angr_ollvm_results", { path });
+      if (bundle.moduleName !== report.scope.moduleName) {
+        throw new Error(`angr result module ${bundle.moduleName} does not match ${report.scope.moduleName}`);
+      }
+      setAngrFallbackResults(bundle);
+      setAngrFallbackResultsPath(path);
+      setDisplay("angr-results");
+    } catch (reason) {
+      setError(String(reason));
+    } finally {
+      setBusy(false);
+    }
+  };
+
   return (
     <div style={{ display: "flex", flex: 1, minHeight: 0, overflow: "hidden" }}>
       <div style={{ width: 440, padding: 10, borderRight: "1px solid var(--border-color)", overflow: "auto", fontSize: 11 }}>
@@ -556,7 +677,7 @@ export default function OllvmUnicornPanel({ report }: Props) {
         <div style={{ marginTop: 10, fontWeight: 600 }}>1. 精确 ELF</div>
         <div style={{ display: "flex", gap: 6, marginTop: 5 }}>
           <button type="button" style={buttonStyle} onClick={selectBinary}>选择 ELF</button>
-          {binaryPath && <button type="button" style={buttonStyle} onClick={() => { setBinaryPath(null); setGenerated(null); setResults(null); setResultsPath(null); setSelectedRecaptureSuggestions([]); setRecaptureHook(null); setCheckpointResultPath(null); setSelectedCheckpointSeedOffsets([]); setCheckpointHook(null); setCheckpointSavedPath(null); }}>清除</button>}
+          {binaryPath && <button type="button" style={buttonStyle} onClick={() => { setBinaryPath(null); setGenerated(null); setResults(null); setResultsPath(null); setSelectedRecaptureSuggestions([]); setRecaptureHook(null); setCheckpointResultPath(null); setSelectedCheckpointSeedOffsets([]); setCheckpointHook(null); setCheckpointSavedPath(null); resetAngrFallback(); }}>清除</button>}
         </div>
         <div title={binaryPath || ""} style={{ marginTop: 5, color: binaryPath ? "var(--text-secondary)" : "#d29922", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
           {binaryPath || "必须选择与 Frida 捕获相同构建的 AArch64 ELF"}
@@ -565,7 +686,7 @@ export default function OllvmUnicornPanel({ report }: Props) {
         <div style={{ marginTop: 12, fontWeight: 600 }}>2. Frida 精确事件</div>
         <div style={{ display: "flex", gap: 6, marginTop: 5 }}>
           <button type="button" style={buttonStyle} onClick={importCapture}>导入捕获</button>
-          {capture && <button type="button" style={buttonStyle} onClick={() => { setCapture(null); setCapturePath(null); setSelectedEvents([]); setGenerated(null); setResults(null); setResultsPath(null); setSelectedRecaptureSuggestions([]); setRecaptureHook(null); }}>清除</button>}
+          {capture && <button type="button" style={buttonStyle} onClick={() => { setCapture(null); setCapturePath(null); setSelectedEvents([]); setGenerated(null); setResults(null); setResultsPath(null); setSelectedRecaptureSuggestions([]); setRecaptureHook(null); resetAngrFallback(); }}>清除</button>}
         </div>
         {capturePath && <div title={capturePath} style={{ marginTop: 5, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", color: "var(--text-secondary)" }}>{capturePath.split(/[\\/]/).pop()}</div>}
         {capture && (
@@ -705,6 +826,43 @@ export default function OllvmUnicornPanel({ report }: Props) {
             {checkpointHook?.warnings.map((warning, index) => <div key={`checkpoint-warning-${index}`} style={{ marginTop: 4, color: "#d29922" }}>{warning}</div>)}
           </div>
         )}
+        {checkpointResultPath && (
+          <div style={{ marginTop: 12, paddingTop: 10, borderTop: "1px solid var(--border-color)" }}>
+            <div style={{ fontWeight: 600 }}>6. checkpoint → bounded angr 接力</div>
+            <div style={{ marginTop: 4, color: "var(--text-secondary)", lineHeight: 1.5 }}>
+              当更近 checkpoint 的具体重放仍缺少状态时，使用同一 Frida 事件建立 blank state，并有界探索到下一 dispatcher、循环、外部目标、死路或配置上限。
+            </div>
+            <div style={{ marginTop: 4, color: "var(--text-tertiary)", lineHeight: 1.5 }}>
+              Core 会严格校验同模块、上一轮 expected/actual SHA-256、当前精确 ELF SHA-256，以及捕获 offset 是否属于上一轮授权集合。路径只属于 Candidate/Related 证据。
+            </div>
+            <div style={{ display: "grid", gridTemplateColumns: "165px minmax(0,1fr)", gap: 6, alignItems: "center", marginTop: 6 }}>
+              <label>最大 symbolic 深度</label>
+              <input aria-label="Checkpoint angr flow depth" type="number" min={1} max={64} style={inputStyle} value={angrFlowDepth} onChange={event => { setAngrFlowDepth(event.target.value); resetAngrFallback(); }} />
+              <label>每个 probe 最大状态</label>
+              <input aria-label="Checkpoint angr flow states" type="number" min={1} max={256} style={inputStyle} value={angrFlowStates} onChange={event => { setAngrFlowStates(event.target.value); resetAngrFallback(); }} />
+            </div>
+            <div title={checkpointResultPath} style={{ marginTop: 5, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", color: "var(--text-secondary)" }}>
+              prior result：{checkpointResultPath.split(/[\\/]/).pop()} · selected events：{selectedEvents.length > 0 ? selectedEvents.map(index => `#${index}`).join(", ") : "none"}
+            </div>
+            <div style={{ display: "flex", gap: 6, flexWrap: "wrap", marginTop: 6 }}>
+              <button type="button" style={{ ...buttonStyle, background: "var(--btn-primary)", color: "#fff", border: "none", opacity: busy ? 0.6 : 1 }} disabled={busy} onClick={generateAngrFallback}>生成 bounded angr</button>
+              <button type="button" style={buttonStyle} disabled={busy} onClick={saveAngrFallback}>保存 angr .py</button>
+              <button type="button" style={buttonStyle} disabled={busy} onClick={importAngrFallbackResults}>导入 angr JSON</button>
+              <button type="button" style={{ ...buttonStyle, opacity: angrFallbackScript ? 1 : 0.5 }} disabled={!angrFallbackScript} onClick={() => angrFallbackScript && navigator.clipboard.writeText(angrFallbackScript.script)}>复制 angr 脚本</button>
+            </div>
+            {angrFallbackSavedPath && <div title={angrFallbackSavedPath} style={{ marginTop: 5, color: "#3fb950", overflow: "hidden", textOverflow: "ellipsis" }}>已保存：{angrFallbackSavedPath}</div>}
+            {angrFallbackScript && (
+              <div style={{ marginTop: 6, padding: 6, background: "var(--bg-secondary)", borderRadius: 4, lineHeight: 1.5 }}>
+                已嵌入 {angrFallbackScript.fridaSeeds.length} 个 Frida seed · 授权 checkpoint：{angrFallbackScript.authorizedCheckpointOffsets.join(", ") || "none"}
+                <div style={{ color: "var(--text-tertiary)" }}>bounded flow：depth {angrFallbackScript.flowConfig.maxDepth} / {angrFallbackScript.flowConfig.maxStatesPerProbe} states per probe</div>
+                <div style={{ marginTop: 3 }}>Trace UI 不会安装或运行 angr。请在隔离 Python 环境手动执行，再导入生成的 JSON。</div>
+                <code style={{ display: "block", marginTop: 3, whiteSpace: "pre-wrap", userSelect: "text" }}>python -m pip install angr</code>
+                {angrFallbackCommand && <code style={{ display: "block", marginTop: 3, whiteSpace: "pre-wrap", userSelect: "text" }}>{angrFallbackCommand}</code>}
+              </div>
+            )}
+            {angrFallbackScript?.warnings.map((warning, index) => <div key={`angr-fallback-warning-${index}`} style={{ marginTop: 4, color: "#d29922" }}>{warning}</div>)}
+          </div>
+        )}
         {error && <div style={{ marginTop: 8, color: "#e5484d", whiteSpace: "pre-wrap" }}>{error}</div>}
       </div>
 
@@ -715,6 +873,8 @@ export default function OllvmUnicornPanel({ report }: Props) {
           <button type="button" style={{ ...buttonStyle, background: display === "recapture" ? "var(--bg-selected)" : "var(--bg-input)", opacity: recaptureHook ? 1 : 0.5 }} disabled={!recaptureHook} onClick={() => setDisplay("recapture")}>重捕获 Hook</button>
           <button type="button" style={{ ...buttonStyle, background: display === "checkpoint" ? "var(--bg-selected)" : "var(--bg-input)", opacity: checkpointHook ? 1 : 0.5 }} disabled={!checkpointHook} onClick={() => setDisplay("checkpoint")}>Checkpoint Hook</button>
           <button type="button" style={{ ...buttonStyle, background: display === "comparison" ? "var(--bg-selected)" : "var(--bg-input)", opacity: roundComparison ? 1 : 0.5 }} disabled={!roundComparison} onClick={() => setDisplay("comparison")}>轮次对比</button>
+          <button type="button" style={{ ...buttonStyle, background: display === "angr" ? "var(--bg-selected)" : "var(--bg-input)", opacity: angrFallbackScript ? 1 : 0.5 }} disabled={!angrFallbackScript} onClick={() => setDisplay("angr")}>angr 脚本</button>
+          <button type="button" style={{ ...buttonStyle, background: display === "angr-results" ? "var(--bg-selected)" : "var(--bg-input)", opacity: angrFallbackResults ? 1 : 0.5 }} disabled={!angrFallbackResults} onClick={() => setDisplay("angr-results")}>angr 结果</button>
         </div>
         {display === "script" && (
           <pre style={{ flex: 1, margin: 0, padding: 10, overflow: "auto", background: "var(--bg-primary)", color: "var(--text-primary)", fontSize: 10, lineHeight: 1.45, whiteSpace: "pre" }}>{generated?.script || ""}</pre>
@@ -724,6 +884,50 @@ export default function OllvmUnicornPanel({ report }: Props) {
         )}
         {display === "checkpoint" && (
           <pre style={{ flex: 1, margin: 0, padding: 10, overflow: "auto", background: "var(--bg-primary)", color: "var(--text-primary)", fontSize: 10, lineHeight: 1.45, whiteSpace: "pre" }}>{checkpointHook?.script || ""}</pre>
+        )}
+        {display === "angr" && (
+          <pre style={{ flex: 1, margin: 0, padding: 10, overflow: "auto", background: "var(--bg-primary)", color: "var(--text-primary)", fontSize: 10, lineHeight: 1.45, whiteSpace: "pre" }}>{angrFallbackScript?.script || ""}</pre>
+        )}
+        {display === "angr-results" && angrFallbackResults && (
+          <div style={{ flex: 1, overflow: "auto", fontSize: 11 }}>
+            <div style={{ padding: 9, borderBottom: "1px solid var(--border-color)", background: "var(--bg-secondary)", lineHeight: 1.5 }}>
+              <strong>{angrFallbackResults.cfgKind} / angr {angrFallbackResults.angrVersion}</strong>
+              <div>{angrFallbackResults.checkpointProbes.length} checkpoint probes · {angrFallbackResults.checkpointProbes.filter(probe => probe.flowExploration).length} bounded flows</div>
+              <div style={{ color: angrFallbackResults.binaryIdentityMatched === false ? "#e5484d" : "#3fb950" }}>Exact ELF guard {angrFallbackResults.binaryIdentityMatched === false ? "mismatch" : "matched"}</div>
+              {angrFallbackResultsPath && <div title={angrFallbackResultsPath} style={{ color: "var(--text-tertiary)", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{angrFallbackResultsPath}</div>}
+              <div style={{ color: "var(--text-tertiary)" }}>这些路径不是已恢复 CFG，也不证明从真实入口可达。</div>
+            </div>
+            {angrFallbackResults.checkpointProbes.map(probe => (
+              <div key={`angr-checkpoint-${probe.offset}-${probe.sourceEventIndex}`} style={{ padding: 9, borderBottom: "1px solid var(--border-color)", lineHeight: 1.5 }}>
+                <div style={{ display: "flex", gap: 8, flexWrap: "wrap", alignItems: "center" }}>
+                  <code>{probe.offset}</code>
+                  <strong style={{ color: probe.status === "ok" ? "#3fb950" : "#d29922" }}>{probe.status}</strong>
+                  <span>event #{probe.sourceEventIndex}</span>
+                  <span>{probe.seededRegisters.length} regs / {probe.seededMemoryRegions.length} memory regions</span>
+                </div>
+                <div style={{ marginTop: 3 }}>source state：{stateText(probe.sourceStateValues)}</div>
+                <div style={{ color: "var(--text-tertiary)" }}>{probe.limitation}</div>
+                {probe.error && <div style={{ color: "#e5484d" }}>{probe.error}</div>}
+                {probe.flowExploration && (
+                  <div style={{ marginTop: 6 }}>
+                    <div style={{ color: probe.flowExploration.truncated ? "#d29922" : "#3fb950" }}>
+                      {probe.flowExploration.paths.length} paths / {probe.flowExploration.exploredStates} states{probe.flowExploration.truncated ? " / truncated" : ""}
+                    </div>
+                    {probe.flowExploration.paths.map((path, pathIndex) => (
+                      <div key={`${probe.offset}-angr-path-${pathIndex}`} style={{ marginTop: 5, padding: 6, background: "var(--bg-secondary)", borderRadius: 4 }}>
+                        <code>{path.status}</code> · {path.offsets.join(" → ") || path.terminalAddress}
+                        <div>target：<code>{path.matchedDispatcherOffset || path.terminalOffset || path.terminalAddress}</code> · state {stateText(path.dispatcherStateValues)}</div>
+                        <div style={{ color: "var(--text-tertiary)" }}>{path.constraintCount} constraints · {path.jumpKinds.join(", ") || "no jump kind"}</div>
+                        {path.error && <div style={{ color: "#e5484d" }}>{path.error}</div>}
+                      </div>
+                    ))}
+                  </div>
+                )}
+              </div>
+            ))}
+            {angrFallbackResults.checkpointProbes.length === 0 && <div style={{ padding: 10, color: "#d29922" }}>结果没有 checkpoint probe；请确认捕获 offset 确实由所选上一轮 Unicorn 结果授权。</div>}
+            {angrFallbackResults.warnings.map((warning, index) => <div key={`angr-result-warning-${index}`} style={{ padding: "4px 9px", color: "#d29922" }}>{warning}</div>)}
+          </div>
         )}
         {display === "results" && results && (
           <div style={{ flex: 1, overflow: "auto", fontSize: 11 }}>

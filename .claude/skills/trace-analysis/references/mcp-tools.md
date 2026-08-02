@@ -172,31 +172,38 @@ Line numbers in taint `@LINE` specs are **1-based**; `start_seq`/`end_seq`/`seq`
   `probe_opaque_branches?=true`, `use_cfg_emulated?=false`,
   `explore_seeded_flows?=true`, `flow_max_depth?=8`, `flow_max_states_per_probe?=32`, and optional
   `frida_capture_path`, legacy `frida_event_index`, bounded `frida_event_indices` (up to 32),
-  `frida_include_sp?=false`, `frida_include_lr?=true`, and `static_binary_path`.
+  `frida_include_sp?=false`, `frida_include_lr?=true`, `static_binary_path`, and
+  `checkpoint_result_path`.
   The Frida fields must select user-captured `hook-enter` or `ollvm-dispatcher-hit` events whose
   module-relative targets exactly match an opaque branch, one of its recorded condition-source
-  offsets, or a dispatcher `startOffset`; mismatches are rejected. When `static_binary_path` is
-  supplied, its AArch64 ELF SHA-256 is embedded and the generated manual script refuses a different
-  file before running angr.
+  offsets, a dispatcher `startOffset`, or—only when `checkpoint_result_path` is supplied—a supported
+  closer checkpoint offset. Checkpoint authorization requires the report module, prior result
+  expected/actual SHA-256, current exact AArch64 ELF SHA-256, and capture offset to match; mismatches
+  are rejected. When `static_binary_path` is supplied, its SHA-256 is embedded and the generated
+  manual script refuses a different file before running angr.
   It returns standalone Python that the
   user manually runs against the exact ELF/shared object. The script reconciles angr static CFG
   successors with observed dynamic edges, performs blank-state probes, and performs trace-register-seeded
   probes when bounded branch snapshots are available. Each exact branch/condition-source Frida seed adds
-  captured registers and byteArray memory regions as a separate branch candidate probe. An exact
-  Each exact dispatcher-entry seed adds a dispatcher probe whose bounded flow stops at the next dispatcher, loop,
+  captured registers and byteArray memory regions as a separate branch candidate probe. Each exact
+  dispatcher-entry seed adds a dispatcher probe whose bounded flow stops at the next dispatcher, loop,
   external target, dead end, unconstrained state, or configured bound and reports source/target state
   registers as `concrete`, `symbolic` with at most two alternatives, or `unavailable`. Missing flags,
   SIMD, memory, or entry-path constraints can still change feasibility. Branch continuation applies to
   the first trace seed per candidate and every exact branch Frida seed; dispatcher continuation is independent
   of `probe_opaque_branches`. Both record bounded endings and reject
   result JSON that exceeds the configured 1-64 depth or 1-256 state bounds.
+  A `frida-capture-authorized-checkpoint` seed creates a separate `checkpointProbes` entry. It starts
+  from a blank state at the authorized closer offset, applies captured GPR/NZCV/byteArray memory, and
+  uses the same bounded next-dispatcher/loop/external/dead-end/unconstrained/bound exploration.
   It writes `trace-ui/angr-ollvm-v1` JSON with all seed provenance and optional expected-hash/match
   fields. Trace UI does not install or execute angr.
 - **inspect_angr_ollvm_results** `{file_path}` validates and returns an imported
   `trace-ui/angr-ollvm-v1` bundle, including binary SHA-256, mapped base, CFG kind, unobserved static
-  successors, dynamic-only successors, optional branch probes, and optional exact dispatcher-entry
-  probes with bounded paths and state-register values. Blank-state and dispatcher-flow results are
-  candidate evidence and do not prove real-entry reachability or a recovered/deobfuscated CFG.
+  successors, dynamic-only successors, optional branch probes, exact dispatcher-entry probes, and
+  authorized `checkpointProbes` with bounded paths and state-register values. Blank-state,
+  dispatcher-flow, and checkpoint-flow results are candidate evidence and do not prove real-entry
+  reachability or a recovered/deobfuscated CFG.
 - **generate_unicorn_ollvm_script** accepts the same trace scope plus mandatory
   `frida_capture_path`, one to 32 exact `frida_event_indices` (legacy `frida_event_index` is accepted),
   mandatory `static_binary_path`, and bounded concrete limits: `max_instructions?=50000`,

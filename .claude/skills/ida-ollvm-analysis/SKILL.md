@@ -68,7 +68,10 @@ Use `mcp__trace-ui__analyze_ollvm`, `mcp__trace-ui__compare_ollvm_traces`, `mcp_
    result and one to 32 original seed offsets. Let the user run the generated Frida 16.x script at the
    reported missing-memory PC or supported terminal PC, import the new `hook-enter`, then call
    `generate_unicorn_ollvm_script` with that capture plus `checkpoint_result_path` pointing to the same
-   prior result. Use bounded angr instead when a closer concrete checkpoint still lacks required state.
+   prior result. If the closer concrete checkpoint still lacks required state, call
+   `generate_angr_ollvm_script` with the same capture, exact ELF, and same `checkpoint_result_path`;
+   normally set `probe_opaque_branches:false` while keeping bounded flow at depth 8 / 32 states. Inspect
+   `checkpointProbes` as Candidate/Related paths only.
 10. To observe several ranked dispatchers in one user-controlled run, call
     `generate_frida_ollvm_dispatcher_hook`, return/save the Frida 16.x script, and stop until the user
     supplies its capture. Then call `analyze_frida_ollvm_dispatcher_capture` on the same OLLVM scope.
@@ -138,6 +141,10 @@ Use `mcp__trace-ui__analyze_ollvm`, `mcp__trace-ui__compare_ollvm_traces`, `mcp_
   and NZCV at that closer offset and may read only existing safe X0-X28/SP-relative suggestions.
   Absolute addresses and X29/X30 remain manual. Reusing the new capture in Unicorn requires the same
   prior result as `checkpoint_result_path`; the hash guard is file identity, not runtime attestation.
+- Reusing the closer capture in angr requires the same authorization: report module, prior expected and
+  actual SHA-256, current exact ELF SHA-256, and capture offset must all match. The seed kind is
+  `frida-capture-authorized-checkpoint`, and the result belongs in `checkpointProbes`; its bounded paths
+  remain Candidate/Related and do not prove entry reachability or a recovered CFG.
 - Unicorn round comparison is valid only for two to sixteen ordered results with the same module and exact
   ELF SHA-256. It aligns seeds by exact capture offset rather than cross-file event index. New coverage or
   a new dispatcher remains Candidate/Related; repeated missing memory, lost coverage, configuration drift,
@@ -154,7 +161,9 @@ Prefer comments/colors first. Enable `add_user_xrefs:true` only when the user wa
 Trace UI generates a standalone Python script but does not install or execute angr. The user runs it
 manually. Prefer CFGFast first; enable CFGEmulated only for a narrow scope and accept fallback. Treat
 static CFG reconciliation, unconstrained probes, and bounded seeded-flow paths as Candidate/Related
-evidence, never Verified by themselves. Keep depth within 1-64 and states per probe within 1-256.
+evidence, never Verified by themselves. Keep depth within 1-64 and states per probe within 1-256. A
+closer-checkpoint seed must include the same validated prior Unicorn result as `checkpoint_result_path`;
+never bypass the exact module/ELF/offset authorization.
 
 ## Unicorn bridge boundary
 

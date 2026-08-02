@@ -2,6 +2,7 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use serde::{Deserialize, Serialize};
 
+use crate::query::elf_identity::ElfBinaryIdentity;
 use crate::query::unicorn::{UnicornOllvmResultBundle, UnicornReplayRun};
 use crate::utils::{format_signed_offset_hex, parse_hex_addr, parse_signed_offset};
 
@@ -216,6 +217,29 @@ fn validate_bundle_identity(bundle: &UnicornOllvmResultBundle) -> Result<&str, S
         );
     }
     Ok(module_name)
+}
+
+pub fn authorize_unicorn_checkpoint_offsets(
+    bundle: &UnicornOllvmResultBundle,
+    module_name: &str,
+    expected_binary_identity: &ElfBinaryIdentity,
+) -> Result<BTreeSet<String>, String> {
+    let result_module = validate_bundle_identity(bundle)?;
+    let expected_module = module_name.trim();
+    if expected_module.is_empty() || result_module != expected_module {
+        return Err(format!(
+            "Unicorn checkpoint result module {result_module} does not match OLLVM report module {expected_module}"
+        ));
+    }
+    if !bundle
+        .binary_sha256
+        .eq_ignore_ascii_case(&expected_binary_identity.binary_sha256)
+    {
+        return Err(
+            "Unicorn checkpoint result does not match the selected exact ELF SHA-256".to_string(),
+        );
+    }
+    unicorn_checkpoint_offsets(bundle)
 }
 
 pub fn generate_frida_unicorn_checkpoint_hook(

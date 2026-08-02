@@ -4,7 +4,7 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 import { MaterialRow } from "../src/components/CryptoMaterialsPanel";
 import OllvmUnicornPanel from "../src/components/OllvmUnicornPanel";
 import { filterFridaCaptureEvents } from "../src/utils/fridaCaptureFilter";
-import type { CryptoMaterial, FridaCaptureBundle, FridaCaptureEvent, OllvmReport, UnicornOllvmResultBundle } from "../src/types/trace";
+import type { AngrOllvmScript, CryptoMaterial, FridaCaptureBundle, FridaCaptureEvent, OllvmReport, UnicornOllvmResultBundle } from "../src/types/trace";
 
 const mocks = vi.hoisted(() => ({
   invoke: vi.fn(),
@@ -254,5 +254,117 @@ describe("OLLVM Unicorn concrete replay", () => {
       seedCaptureOffsets: ["0x100"],
       maxEvents: 5000,
     });
+  });
+
+  it("bridges an authorized closer checkpoint into bounded angr", async () => {
+    const user = userEvent.setup();
+    const event = makeEvent({
+      index: 9,
+      moduleName: "libtarget.so",
+      moduleBase: "0x71000000",
+      target: "0x71000180",
+      registers: { x0: "0x1", x1: "0x2", sp: "0x72000000", lr: "0x710001f0", nzcv: "0x40000000" },
+    });
+    const capture: FridaCaptureBundle = {
+      schema: "trace-ui/frida-hook-v1",
+      sourceFormat: "ndjson",
+      events: [event],
+      hookIds: [event.hookId],
+      enterEventCount: 1,
+      leaveEventCount: 0,
+      stalkerEventCount: 0,
+      warnings: [],
+    };
+    const priorResult = {
+      schema: "trace-ui/unicorn-ollvm-v1",
+      moduleName: "libtarget.so",
+      binarySha256: "a".repeat(64),
+      expectedBinarySha256: "a".repeat(64),
+      binaryIdentityMatched: true,
+      architecture: "AArch64",
+      unicornVersion: "2.1.4",
+      capstoneVersion: "5.0.6",
+      config: {},
+      seeds: [{ sourceEventIndex: 7, captureOffset: "0x100" }],
+      seedQualities: [],
+      seedRecapturePlans: [],
+      runs: [{
+        sourceEventIndex: 7,
+        startOffset: "0x100",
+        stopReason: "missing-memory",
+        instructionCount: 4,
+        elapsedMs: 1,
+        terminalOffset: "0x180",
+        matchedDispatcherOffset: null,
+        sourceStateValues: [],
+        targetStateValues: [],
+        blockOffsets: ["0x100", "0x180"],
+        registerChanges: [],
+        memoryWrites: [],
+        missingMemory: [{ pcOffset: "0x180" }],
+        error: null,
+      }],
+      transitionMatrix: [],
+      recaptureSuggestions: [],
+      warnings: [],
+    } as unknown as UnicornOllvmResultBundle;
+    const angrScript: AngrOllvmScript = {
+      fileName: "libtarget-trace-ui-angr.py",
+      script: "print('bounded checkpoint flow')",
+      schemaVersion: "trace-ui/angr-ollvm-v1",
+      fridaSeed: null,
+      fridaSeeds: [{
+        sourceEventIndex: 9,
+        hookId: "hook-1",
+        callId: "call-1",
+        moduleName: "libtarget.so",
+        functionName: "encrypt",
+        captureOffset: "0x180",
+        registersSeeded: ["X0", "X1", "SP", "LR", "NZCV"],
+        memoryRegionCount: 0,
+        matchedProbeOffsets: ["0x180"],
+        matchedBranchOffsets: [],
+        matchedDispatcherOffsets: [],
+      }],
+      expectedBinaryIdentity: { binarySha256: "a".repeat(64) },
+      authorizedCheckpointOffsets: ["0x180"],
+      flowConfig: { enabled: true, maxDepth: 8, maxStatesPerProbe: 32 },
+      warnings: [],
+    };
+    mocks.open
+      .mockResolvedValueOnce("C:\\samples\\libtarget.so")
+      .mockResolvedValueOnce("C:\\samples\\checkpoint.ndjson")
+      .mockResolvedValueOnce("C:\\samples\\round-1.json");
+    mocks.invoke.mockImplementation(async (command: string) => {
+      if (command === "load_frida_capture") return capture;
+      if (command === "load_unicorn_ollvm_results") return priorResult;
+      if (command === "generate_angr_ollvm_script") return angrScript;
+      throw new Error(`unexpected command ${command}`);
+    });
+    const report = { scope: { moduleName: "libtarget.so" } } as OllvmReport;
+    const view = render(<OllvmUnicornPanel report={report} />);
+    const panel = within(view.container);
+
+    await user.click(panel.getByRole("button", { name: "选择 ELF" }));
+    await user.click(panel.getByRole("button", { name: "导入捕获" }));
+    await user.click(panel.getByRole("button", { name: "导入结果 JSON" }));
+    await user.click(await panel.findByRole("button", { name: "生成 bounded angr" }));
+
+    expect(await panel.findByText(/授权 checkpoint：0x180/)).toBeInTheDocument();
+    expect(mocks.invoke).toHaveBeenCalledWith(
+      "generate_angr_ollvm_script",
+      expect.objectContaining({
+        probeOpaqueBranches: false,
+        useCfgEmulated: false,
+        exploreSeededFlows: true,
+        flowMaxDepth: 8,
+        flowMaxStatesPerProbe: 32,
+        fridaIncludeSp: true,
+        fridaIncludeLr: true,
+        staticBinaryPath: "C:\\samples\\libtarget.so",
+        checkpointResultPath: "C:\\samples\\round-1.json",
+        fridaEventIndices: [9],
+      }),
+    );
   });
 });

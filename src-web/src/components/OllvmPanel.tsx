@@ -19,6 +19,7 @@ import type {
   OllvmReport,
   OllvmVersionMapReport,
   TraceSessionInfo,
+  UnicornOllvmResultBundle,
 } from "../types/trace";
 
 interface Props {
@@ -134,6 +135,7 @@ export default function OllvmPanel({ sessionId, onJumpToSeq, onPrepareFridaHook 
   const [angrFridaIncludeSp, setAngrFridaIncludeSp] = useState(false);
   const [angrFridaIncludeLr, setAngrFridaIncludeLr] = useState(true);
   const [angrStaticBinaryPath, setAngrStaticBinaryPath] = useState<string | null>(null);
+  const [angrCheckpointResultPath, setAngrCheckpointResultPath] = useState<string | null>(null);
   const [atlasMaxDispatchers, setAtlasMaxDispatchers] = useState("12");
   const [atlasIdleGapMs, setAtlasIdleGapMs] = useState("1000");
   const [atlasMaxEvents, setAtlasMaxEvents] = useState("50000");
@@ -163,6 +165,7 @@ export default function OllvmPanel({ sessionId, onJumpToSeq, onPrepareFridaHook 
     setAngrFridaPath(null);
     setAngrFridaEventIndices([]);
     setAngrStaticBinaryPath(null);
+    setAngrCheckpointResultPath(null);
     setAtlasScript(null);
     setAtlasBundle(null);
     setAtlasCapturePath(null);
@@ -631,6 +634,29 @@ export default function OllvmPanel({ sessionId, onJumpToSeq, onPrepareFridaHook 
     setAngrScript(null);
   }, []);
 
+  const importAngrCheckpointResult = useCallback(async () => {
+    if (!report) return;
+    const { open } = await import("@tauri-apps/plugin-dialog");
+    const path = await open({
+      multiple: false,
+      directory: false,
+      title: "Select prior Unicorn result that authorizes a closer checkpoint",
+      filters: [{ name: "Trace UI Unicorn result", extensions: ["json"] }],
+    });
+    if (typeof path !== "string") return;
+    try {
+      const bundle = await invoke<UnicornOllvmResultBundle>("load_unicorn_ollvm_results", { path });
+      if (bundle.moduleName !== report.scope.moduleName) {
+        throw new Error(`Unicorn result module ${bundle.moduleName} does not match analyzed module ${report.scope.moduleName}`);
+      }
+      setAngrCheckpointResultPath(path);
+      setAngrScript(null);
+      setError(null);
+    } catch (reason) {
+      setError(String(reason));
+    }
+  }, [report]);
+
   const toggleAngrFridaEvent = useCallback((eventIndex: number) => {
     setAngrFridaEventIndices(current => {
       if (current.includes(eventIndex)) return current.filter(index => index !== eventIndex);
@@ -657,6 +683,7 @@ export default function OllvmPanel({ sessionId, onJumpToSeq, onPrepareFridaHook 
         fridaIncludeSp: angrFridaIncludeSp,
         fridaIncludeLr: angrFridaIncludeLr,
         staticBinaryPath: angrStaticBinaryPath,
+        checkpointResultPath: angrCheckpointResultPath,
       });
       setAngrScript(generated);
       setAngrDisplay("script");
@@ -665,7 +692,7 @@ export default function OllvmPanel({ sessionId, onJumpToSeq, onPrepareFridaHook 
       setError(String(reason));
       return null;
     }
-  }, [angrCfgEmulated, angrExploreFlows, angrFlowDepth, angrFlowStates, angrFridaBundle, angrFridaIncludeLr, angrFridaIncludeSp, angrProbeOpaque, angrStaticBinaryPath, report, selectedAngrFridaEvents]);
+  }, [angrCfgEmulated, angrCheckpointResultPath, angrExploreFlows, angrFlowDepth, angrFlowStates, angrFridaBundle, angrFridaIncludeLr, angrFridaIncludeSp, angrProbeOpaque, angrStaticBinaryPath, report, selectedAngrFridaEvents]);
 
   const saveAngrScript = useCallback(async () => {
     if (!report) return;
@@ -692,12 +719,13 @@ export default function OllvmPanel({ sessionId, onJumpToSeq, onPrepareFridaHook 
         fridaIncludeSp: angrFridaIncludeSp,
         fridaIncludeLr: angrFridaIncludeLr,
         staticBinaryPath: angrStaticBinaryPath,
+        checkpointResultPath: angrCheckpointResultPath,
       });
       setAngrSavedPath(written);
     } catch (reason) {
       setError(String(reason));
     }
-  }, [angrCfgEmulated, angrExploreFlows, angrFlowDepth, angrFlowStates, angrFridaBundle, angrFridaIncludeLr, angrFridaIncludeSp, angrProbeOpaque, angrScript, angrStaticBinaryPath, generateAngrScript, report, selectedAngrFridaEvents]);
+  }, [angrCfgEmulated, angrCheckpointResultPath, angrExploreFlows, angrFlowDepth, angrFlowStates, angrFridaBundle, angrFridaIncludeLr, angrFridaIncludeSp, angrProbeOpaque, angrScript, angrStaticBinaryPath, generateAngrScript, report, selectedAngrFridaEvents]);
 
   const importAngrResults = useCallback(async () => {
     if (!report) return;
@@ -1326,13 +1354,30 @@ export default function OllvmPanel({ sessionId, onJumpToSeq, onPrepareFridaHook 
             </div>
             <div style={{ marginTop: 10, paddingTop: 9, borderTop: "1px solid var(--border-color)" }}>
               <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
+                <strong>Unicorn checkpoint 授权</strong>
+                <span style={{ flex: 1 }} />
+                <button type="button" style={buttonStyle} onClick={importAngrCheckpointResult}>导入上一轮 JSON</button>
+                <button type="button" style={{ ...buttonStyle, opacity: angrCheckpointResultPath ? 1 : 0.5 }} disabled={!angrCheckpointResultPath} onClick={() => { setAngrCheckpointResultPath(null); setAngrScript(null); }}>清除</button>
+              </div>
+              <div style={{ marginTop: 5, color: "var(--text-tertiary)", lineHeight: 1.4 }}>
+                只有当 Frida 捕获来自“更近 checkpoint Hook”时才需要。上一轮结果、当前 OLLVM 模块和所选精确 ELF 的 SHA-256 必须一致；它只授权结果中支持的停滞 offset。
+              </div>
+              {angrCheckpointResultPath && <div title={angrCheckpointResultPath} style={{ marginTop: 5, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", color: "var(--text-secondary)" }}>{angrCheckpointResultPath}</div>}
+              {angrScript && angrScript.authorizedCheckpointOffsets.length > 0 && (
+                <div style={{ marginTop: 5, color: "#3fb950" }}>
+                  已授权 {angrScript.authorizedCheckpointOffsets.length} 个 checkpoint offset：{angrScript.authorizedCheckpointOffsets.join(", ")}
+                </div>
+              )}
+            </div>
+            <div style={{ marginTop: 10, paddingTop: 9, borderTop: "1px solid var(--border-color)" }}>
+              <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
                 <strong>精确偏移 Frida 种子</strong>
                 <span style={{ flex: 1 }} />
                 <button type="button" style={buttonStyle} onClick={importAngrFridaCapture}>导入捕获</button>
                 <button type="button" style={{ ...buttonStyle, opacity: angrFridaBundle ? 1 : 0.5 }} disabled={!angrFridaBundle} onClick={clearAngrFridaCapture}>清除</button>
               </div>
               <div style={{ marginTop: 5, color: "var(--text-tertiary)", lineHeight: 1.4 }}>
-                Select up to 32 events. Every hook-enter/dispatcher-hit target must exactly match an opaque branch, recorded condition-source, or dispatcher-entry module offset. Trace UI embeds the seeds but never runs Frida or angr.
+                Select up to 32 events. Every hook-enter/dispatcher-hit target must exactly match an opaque branch, recorded condition-source, dispatcher-entry, or an offset authorized by the imported Unicorn result. Trace UI embeds the seeds but never runs Frida or angr.
               </div>
               {angrFridaBundle && (
                 <div style={{ marginTop: 7 }}>
@@ -1387,8 +1432,8 @@ export default function OllvmPanel({ sessionId, onJumpToSeq, onPrepareFridaHook 
                     Exact ELF guard {angrResults.binaryIdentityMatched ? "matched" : "mismatch"}
                   </div>
                 )}
-                <div>{angrResults.blocks.length} blocks / {angrResults.branchProbes.length} branch probes / {angrResults.dispatcherProbes.length} dispatcher probes</div>
-                {angrResults.flowConfig?.enabled && <div>{angrResults.branchProbes.filter(probe => probe.flowExploration).length + angrResults.dispatcherProbes.filter(probe => probe.flowExploration).length} bounded flows / depth {angrResults.flowConfig.maxDepth} / {angrResults.flowConfig.maxStatesPerProbe} states each</div>}
+                <div>{angrResults.blocks.length} blocks / {angrResults.branchProbes.length} branch probes / {angrResults.dispatcherProbes.length} dispatcher probes / {angrResults.checkpointProbes.length} checkpoint probes</div>
+                {angrResults.flowConfig?.enabled && <div>{angrResults.branchProbes.filter(probe => probe.flowExploration).length + angrResults.dispatcherProbes.filter(probe => probe.flowExploration).length + angrResults.checkpointProbes.filter(probe => probe.flowExploration).length} bounded flows / depth {angrResults.flowConfig.maxDepth} / {angrResults.flowConfig.maxStatesPerProbe} states each</div>}
                 {angrResults.fridaSeeds.length > 0 && <div>{angrResults.fridaSeeds.length} Frida seeds: {angrResults.fridaSeeds.map(seed => `#${seed.sourceEventIndex}@${seed.captureOffset}`).join(", ")}</div>}
               </div>
             )}
@@ -1412,6 +1457,50 @@ export default function OllvmPanel({ sessionId, onJumpToSeq, onPrepareFridaHook 
                   <span style={{ color: "var(--text-secondary)", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
                     {block.functionName || ""} {block.unobservedStaticSuccessors.length ? `unseen: ${block.unobservedStaticSuccessors.join(", ")}` : ""}
                   </span>
+                </div>
+              ))}
+              {angrResults.checkpointProbes.length > 0 && (
+                <div style={{ padding: "9px 10px", borderBottom: "1px solid var(--border-color)", fontWeight: 600 }}>Unicorn 更近 checkpoint → bounded angr</div>
+              )}
+              {angrResults.checkpointProbes.map(probe => (
+                <div key={`checkpoint-${probe.offset}-${probe.sourceEventIndex}`} style={{ padding: "7px 8px", borderBottom: "1px solid var(--border-color)" }}>
+                  <div style={{ display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap" }}>
+                    <button type="button" style={buttonStyle} onClick={() => jumpOffset(probe.offset)}>{probe.offset}</button>
+                    <code>{probe.status}</code>
+                    <span>Frida event #{probe.sourceEventIndex}</span>
+                    {probe.seededRegisters.length > 0 && <code>{probe.seededRegisters.join(", ")}</code>}
+                    {probe.seededMemoryRegions.length > 0 && <span>{probe.seededMemoryRegions.length} memory regions</span>}
+                    {probe.sourceStateValues.map(value => (
+                      <code key={`${probe.offset}-checkpoint-source-${value.register}`} title={value.alternatives.join(", ")}>
+                        {value.register}={value.value || value.status}
+                      </code>
+                    ))}
+                    {probe.error && <span style={{ color: "#e5484d" }}>{probe.error}</span>}
+                  </div>
+                  <div style={{ marginTop: 4, paddingLeft: 108, color: "var(--text-secondary)" }}>{probe.limitation}</div>
+                  {probe.flowExploration && (
+                    <details style={{ marginTop: 6, marginLeft: 108 }} open>
+                      <summary style={{ cursor: "pointer", color: probe.flowExploration.truncated ? "#d29922" : "#3fb950" }}>
+                        {probe.flowExploration.paths.length} bounded paths / {probe.flowExploration.exploredStates} states{probe.flowExploration.truncated ? " / truncated" : ""}
+                      </summary>
+                      <div style={{ marginTop: 5, color: "var(--text-tertiary)" }}>{probe.flowExploration.limitation}</div>
+                      {probe.flowExploration.paths.map((path, pathIndex) => (
+                        <div key={`${probe.offset}-checkpoint-flow-${pathIndex}`} style={{ display: "grid", gridTemplateColumns: "120px minmax(180px, 1fr) minmax(160px, 0.8fr) 90px", gap: 7, alignItems: "center", marginTop: 5, padding: "4px 6px", background: "var(--bg-secondary)", borderRadius: 3 }}>
+                          <code title={path.constraints.join("\n")}>{path.status} · {path.constraintCount}c</code>
+                          <span title={path.offsets.join(" -> ")} style={{ overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{path.offsets.join(" -> ") || path.terminalAddress}</span>
+                          <span style={{ overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+                            {path.dispatcherStateValues.map(value => `${value.register}=${value.value || value.status}${value.alternatives.length ? `(${value.alternatives.join("|")})` : ""}`).join(", ") || "no concrete target state"}
+                          </span>
+                          {path.matchedDispatcherOffset
+                            ? <button type="button" style={buttonStyle} onClick={() => jumpOffset(path.matchedDispatcherOffset!)}>{path.matchedDispatcherOffset}</button>
+                            : path.terminalOffset
+                              ? <button type="button" style={buttonStyle} onClick={() => jumpOffset(path.terminalOffset!)}>{path.terminalOffset}</button>
+                              : <code>{path.terminalAddress}</code>}
+                          {path.error && <span style={{ gridColumn: "1 / -1", color: "#e5484d" }}>{path.error}</span>}
+                        </div>
+                      ))}
+                    </details>
+                  )}
                 </div>
               ))}
               {angrResults.dispatcherProbes.length > 0 && (

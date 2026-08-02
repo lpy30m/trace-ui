@@ -64,7 +64,10 @@ Use `mcp__trace-ui__list_frida_hook_recipes`, `mcp__trace-ui__generate_frida_hoo
     `generate_frida_unicorn_checkpoint_hook` with the validated prior result and selected original seed
     offsets. It hooks the actual missing-memory PC or supported terminal PC, captures full GPR/NZCV and
     only safe existing X0-X28/SP-relative windows, and must be run manually. Reuse its new `hook-enter`
-    with `generate_unicorn_ollvm_script.checkpoint_result_path` set to that same prior result.
+    with `generate_unicorn_ollvm_script.checkpoint_result_path` set to that same prior result. If concrete
+    replay still lacks state, pass the same capture, exact ELF, and same prior result to
+    `generate_angr_ollvm_script.checkpoint_result_path`; inspect the resulting `checkpointProbes` as
+    bounded Candidate/Related paths.
 
 ## Request fields
 
@@ -114,8 +117,10 @@ Use `mcp__trace-ui__list_frida_hook_recipes`, `mcp__trace-ui__generate_frida_hoo
   offset, and keep unverifiable byteArray/string regions explicit rather than inventing a relation.
 - For a closer Unicorn checkpoint, accept only supported stop reasons from a strictly validated prior
   result. Require the same module and exact ELF SHA-256 again when the checkpoint capture becomes a new
-  Unicorn seed. The prior hash is a file guard, not runtime-image attestation; absolute memory and X29/X30
-  stay manual, and the generated Hook never attaches, spawns, loads, or executes Frida.
+  Unicorn or angr seed. The prior hash is a file guard, not runtime-image attestation; absolute memory and
+  X29/X30 stay manual, and the generated Hook never attaches, spawns, loads, or executes Frida. For angr,
+  keep `checkpoint_result_path` bound to the same prior result and do not reinterpret the capture as a
+  branch or dispatcher seed.
 
 ## Frida 16 boundary
 

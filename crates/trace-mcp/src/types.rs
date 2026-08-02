@@ -1310,11 +1310,11 @@ pub struct GenerateAngrOllvmScriptRequest {
     #[serde(default = "default_angr_flow_states")]
     pub flow_max_states_per_probe: u32,
     #[schemars(
-        description = "Optional absolute path to a user-captured trace-ui/frida-hook-v1 file. Must be paired with frida_event_index or frida_event_indices; Trace UI reads the file but never executes Frida. Every exact offset must match an opaque branch, condition source, or dispatcher entry."
+        description = "Optional absolute path to a user-captured trace-ui/frida-hook-v1 file. Must be paired with frida_event_index or frida_event_indices; Trace UI reads the file but never executes Frida. Every exact offset must match an opaque branch, condition source, dispatcher entry, or an offset authorized by checkpoint_result_path."
     )]
     pub frida_capture_path: Option<String>,
     #[schemars(
-        description = "Normalized hook-enter or ollvm-dispatcher-hit event index whose exact module-relative offset must match an opaque branch, recorded condition source, or dispatcher entry"
+        description = "Normalized hook-enter or ollvm-dispatcher-hit event index whose exact module-relative offset must match an opaque branch, recorded condition source, dispatcher entry, or an authorized closer checkpoint"
     )]
     pub frida_event_index: Option<u64>,
     #[schemars(
@@ -1332,6 +1332,10 @@ pub struct GenerateAngrOllvmScriptRequest {
         description = "Optional exact AArch64 ELF/shared-object path. Its SHA-256 is embedded in the generated script, which refuses to analyze a different file when the user runs it manually."
     )]
     pub static_binary_path: Option<String>,
+    #[schemars(
+        description = "Optional absolute path to a strictly validated prior trace-ui/unicorn-ollvm-v1 result. With the exact ELF, it authorizes bounded angr continuation only from supported closer checkpoint offsets in that same module/build."
+    )]
+    pub checkpoint_result_path: Option<String>,
 }
 
 #[derive(Debug, Deserialize, JsonSchema)]

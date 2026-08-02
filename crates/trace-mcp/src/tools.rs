@@ -15,7 +15,7 @@ use trace_core::{
     analyze_frida_ollvm_dispatcher_capture as build_frida_ollvm_dispatcher_capture,
     api_types::TraceLine, apply_resource_validation, classify_flow_endpoints,
     compare_unicorn_ollvm_rounds as build_unicorn_round_comparison,
-    generate_angr_ollvm_script_with_seeds_flow_and_identity,
+    generate_angr_ollvm_script_with_seeds_flow_identity_and_checkpoint,
     generate_angr_state_seed as build_angr_state_seed, generate_frida_hook as build_frida_hook,
     generate_frida_ollvm_dispatcher_hook as build_frida_ollvm_dispatcher_hook,
     generate_frida_unicorn_checkpoint_hook as build_frida_unicorn_checkpoint_hook,
@@ -4671,7 +4671,7 @@ impl TraceToolHandler {
 
     #[tool(
         name = "generate_angr_ollvm_script",
-        description = "Analyze a trace-scoped function/range and generate a standalone Python angr bridge for manual execution. The script reconciles static/dynamic CFG evidence, runs blank/trace-register branch probes, and can embed up to 32 independent user-captured Frida 16 hook-enter or ollvm-dispatcher-hit seeds when each module-relative offset exactly matches an opaque branch, recorded condition source, or dispatcher entry. Branch seeds get bounded post-branch flow; dispatcher seeds get bounded next-dispatcher/loop/exit exploration with state-register values. An optional exact ELF path embeds a SHA-256 guard that refuses a different file. Trace UI never executes Frida or angr; all structural results remain Candidate/Related."
+        description = "Analyze a trace-scoped function/range and generate a standalone Python angr bridge for manual execution. The script reconciles static/dynamic CFG evidence, runs blank/trace-register branch probes, and can embed up to 32 independent user-captured Frida 16 hook-enter or ollvm-dispatcher-hit seeds when each module-relative offset exactly matches an opaque branch, recorded condition source, dispatcher entry, or a closer checkpoint authorized by an optional strictly validated prior Unicorn result from the same module and exact ELF SHA-256. Branch seeds get bounded post-branch flow; dispatcher and checkpoint seeds get bounded next-dispatcher/loop/exit exploration with state-register values. Trace UI never executes Frida or angr; all structural results remain Candidate/Related."
     )]
     async fn generate_angr_ollvm_script(
         &self,
@@ -4747,8 +4747,19 @@ impl TraceToolHandler {
                 }
                 _ => None,
             };
+            let checkpoint_result = req
+                .checkpoint_result_path
+                .as_deref()
+                .filter(|path| !path.trim().is_empty())
+                .map(|path| {
+                    let bytes = std::fs::read(path).map_err(|error| {
+                        format!("failed to read prior Unicorn checkpoint result: {error}")
+                    })?;
+                    parse_unicorn_ollvm_result_bundle(&bytes)
+                })
+                .transpose()?;
             Ok(json(
-                &generate_angr_ollvm_script_with_seeds_flow_and_identity(
+                &generate_angr_ollvm_script_with_seeds_flow_identity_and_checkpoint(
                     &report,
                     req.probe_opaque_branches,
                     req.use_cfg_emulated,
@@ -4759,6 +4770,7 @@ impl TraceToolHandler {
                         max_states_per_probe: req.flow_max_states_per_probe,
                     },
                     expected_identity.as_ref(),
+                    checkpoint_result.as_ref(),
                 )?,
             ))
         })

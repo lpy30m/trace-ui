@@ -36,10 +36,12 @@ pub use query::analysis_summary::{
 pub use query::angr::{
     generate_angr_ollvm_script, generate_angr_ollvm_script_with_seed,
     generate_angr_ollvm_script_with_seed_and_flow,
-    generate_angr_ollvm_script_with_seeds_flow_and_identity, parse_angr_ollvm_result_bundle,
-    AngrBlockResult, AngrBranchProbe, AngrDispatcherProbe, AngrFlowExploration, AngrFlowPath,
-    AngrOllvmFlowConfig, AngrOllvmFridaSeedProvenance, AngrOllvmResultBundle, AngrOllvmScript,
-    AngrRegisterValue, AngrSuccessor,
+    generate_angr_ollvm_script_with_seeds_flow_and_identity,
+    generate_angr_ollvm_script_with_seeds_flow_identity_and_checkpoint,
+    parse_angr_ollvm_result_bundle, AngrBlockResult, AngrBranchProbe, AngrCheckpointProbe,
+    AngrDispatcherProbe, AngrFlowExploration, AngrFlowPath, AngrOllvmFlowConfig,
+    AngrOllvmFridaSeedProvenance, AngrOllvmResultBundle, AngrOllvmScript, AngrRegisterValue,
+    AngrSuccessor,
 };
 pub use query::crypto_functions::{
     CryptoFamily, CryptoFunctionCandidate, CryptoFunctionIo, CryptoFunctionReport,
@@ -66,9 +68,10 @@ pub use query::frida_capture::{
     FridaCaptureSearchOptions, FridaCaptureValueDetail, FridaCapturedValue,
 };
 pub use query::frida_checkpoint::{
-    generate_frida_unicorn_checkpoint_hook, unicorn_checkpoint_offsets,
-    FridaUnicornCheckpointHookOptions, FridaUnicornCheckpointHookScript,
-    FridaUnicornCheckpointHookTarget, FridaUnicornCheckpointMemorySpec,
+    authorize_unicorn_checkpoint_offsets, generate_frida_unicorn_checkpoint_hook,
+    unicorn_checkpoint_offsets, FridaUnicornCheckpointHookOptions,
+    FridaUnicornCheckpointHookScript, FridaUnicornCheckpointHookTarget,
+    FridaUnicornCheckpointMemorySpec,
 };
 pub use query::frida_hook::{
     generate_frida_hook, FridaArgumentKind, FridaArgumentSpec, FridaCaptureDirection,

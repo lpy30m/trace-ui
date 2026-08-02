@@ -5,7 +5,7 @@ use serde::{Deserialize, Serialize};
 use crate::query::angr::{prepare_frida_seed_with_allowed_offsets, AngrOllvmFridaSeedProvenance};
 use crate::query::elf_identity::ElfBinaryIdentity;
 use crate::query::frida_capture::AngrStateSeed;
-use crate::query::frida_checkpoint::unicorn_checkpoint_offsets;
+use crate::query::frida_checkpoint::authorize_unicorn_checkpoint_offsets;
 use crate::query::ollvm::OllvmReport;
 use crate::utils::{format_signed_offset_hex, parse_hex_addr, parse_signed_offset};
 
@@ -520,26 +520,11 @@ pub fn generate_unicorn_ollvm_script_with_checkpoint_result(
         return Err("at most 32 Frida seeds may be embedded in one Unicorn replay".to_string());
     }
     let allowed_checkpoint_offsets = if let Some(bundle) = checkpoint_result {
-        if bundle.module_name.trim() != report.scope.module_name.trim() {
-            return Err(format!(
-                "Unicorn checkpoint result module {} does not match OLLVM report module {}",
-                bundle.module_name, report.scope.module_name
-            ));
-        }
-        if !bundle.binary_identity_matched
-            || !bundle
-                .binary_sha256
-                .eq_ignore_ascii_case(&bundle.expected_binary_sha256)
-            || !bundle
-                .binary_sha256
-                .eq_ignore_ascii_case(&expected_binary_identity.binary_sha256)
-        {
-            return Err(
-                "Unicorn checkpoint result does not match the selected exact ELF SHA-256"
-                    .to_string(),
-            );
-        }
-        unicorn_checkpoint_offsets(bundle)?
+        authorize_unicorn_checkpoint_offsets(
+            bundle,
+            &report.scope.module_name,
+            expected_binary_identity,
+        )?
     } else {
         BTreeSet::new()
     };

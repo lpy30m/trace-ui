@@ -28,6 +28,9 @@ AES 集成提交：`887968e fix: detect software AES from memory traces`
 - checkpoint Hook 捕获 X0-X28、FP/LR/SP/PC/NZCV；只自动读取结果中已有的 X0-X28/SP register-relative suggestion。absolute、X29/X30、不支持停止原因和无法证明的内存关系保持 warning/manual，不复制旧绝对地址、陈旧字节，也不补零。
 - `generate_unicorn_ollvm_script` 新增可选上一轮 checkpoint result：只有 module、result expected/actual SHA-256 与当前 exact ELF 全部匹配，且新 capture offset 属于该结果推导出的 checkpoint 集合时才接受；provenance 记录为 exact offset，Python 分类为 `frida-capture-exact-offset`。
 - Tauri 增加 checkpoint Hook 生成/保存命令，MCP 工具数增至 64，Tauri invoke 命令增至 83；GUI 导入单轮或比较多轮结果后可选择停滞 seed、生成/保存/复制 checkpoint Hook，再导入新捕获继续 Unicorn。
+- `generate_angr_ollvm_script` 新增 `checkpoint_result_path`；Core 复用同 module、prior expected/actual SHA-256、当前 exact ELF SHA-256 和 supported checkpoint offset 四重授权，生成 `frida-capture-authorized-checkpoint` seed。旧生成入口保持兼容并委托新入口。
+- angr Python 新增 `checkpointProbes`：从授权 checkpoint blank state 应用完整 Frida GPR/NZCV/byteArray memory，按默认 depth 8 / states 32 有界探索下一 dispatcher、loop、external target、dead-end/unconstrained 或配置上限；严格 parser 同步校验 seed kind、offset、provenance、state values、flow bounds。
+- GUI“模拟增强”新增第 6 步“checkpoint → bounded angr 接力”，可生成/保存/复制 `.py`、导入 `trace-ui/angr-ollvm-v1`，并显示 checkpoint probe 的状态、source state、bounded path 和命中 dispatcher。MCP/Tauri 工具/命令总数不变。
 - Release Action 从真实 `src-tauri` 应用目录启动 Tauri，和本地 Windows MSI/NSIS 成功构建路径保持一致。
 
 ### 严重 OLLVM 样本的推荐顺序
@@ -37,7 +40,7 @@ AES 集成提交：`887968e fix: detect software AES from memory traces`
 3. 优先使用 Unicorn“模拟增强”做 exact-seed 具体重放。它速度快、路径确定，适合确认下一 dispatcher、循环、调用边界、寄存器变化和缺失内存。
 4. 遇到 `missing-memory` 时，优先勾选可自动生成的建议创建精确 Frida 重捕获 Hook；用户在相同构建/受控输入下手动运行，并把新捕获再次作为 Unicorn 或 angr seed。寄存器在 seed 点到缺失点之间若已变化，可能需要继续迭代或选择更近的人工捕获点。
 5. 至少完成两轮后，用 GUI“对比多轮 JSON”或 MCP `compare_unicorn_ollvm_rounds` 按时间顺序比较；只有新增覆盖、新 dispatcher 或缺页前移时继续原点重捕获。相同缺页/终点重复时，用 `generate_frida_unicorn_checkpoint_hook` 生成更近 checkpoint，再把新捕获与该上一轮结果一起交给下一次 Unicorn 生成。
-6. 只有需要探索未观测分支或具体重放持续停滞时再生成 angr bridge，保持默认有界深度/状态数，避免严重混淆样本发生状态爆炸。
+6. 如果更近 checkpoint 的具体重放仍缺少状态，在“模拟增强”第 6 步或 MCP `generate_angr_ollvm_script` 中同时提供 exact ELF、新 capture 和同一 `checkpoint_result_path`，生成 bounded angr；保持默认深度 8/状态 32，避免严重混淆样本发生状态爆炸。
 7. 将 Unicorn/angr 结果导回 Trace UI，再用 IDA 注释和多运行对比人工确认。AI/MCP 负责选择候选、组织证据和生成脚本，不自动 attach Frida，也不把结构候选表述为已完成去混淆。
 
 ## 本轮 AES 与 Frida 语义验证增强
@@ -48,7 +51,7 @@ AES 集成提交：`887968e fix: detect software AES from memory traces`
 - 新增 `Native candidate · AES block X0/X1/X2` Frida 配方；从 Crypto Functions 候选进入时保留已预填的 module-relative offset。
 - 真实 nativeInfo trace 回归识别为 AES-128-ECB Encrypt、PKCS#7、7 blocks、112/112 bytes、`VerifiedFull`；动态证据包含 1400 次 S-box read、252 个 distinct index 和 44/44 schedule words。
 - 没有独立 OLLVM 控制流证据时，AES 实现仍保持 `StandardSoftware`，不会仅因查表或复杂代码误标为 `ObfuscatedStandardSoftware`。
-- 2026-08-02 当前工作树回归已通过 `cargo fmt --all -- --check`、`cargo test --workspace`、真实 `sh_security_environment_nativeInfo_trace_0_0xf92d8.log` AES 回归、checkpoint/Frida 闭环定向测试、UI guards、Vitest 4/4、TypeScript/Vite production build 和 `cargo tauri build --ci`；本地成功生成 Windows MSI、NSIS 安装包与 release EXE。
+- 2026-08-02 当前工作树回归已通过 `cargo fmt --all -- --check`、`cargo test --workspace`、真实 `sh_security_environment_nativeInfo_trace_0_0xf92d8.log` AES 回归、checkpoint/Frida 闭环定向测试、UI guards、Vitest 5/5、TypeScript/Vite production build 和 `cargo tauri build --ci`；本地成功生成 Windows MSI、NSIS 安装包与 release EXE。
 
 ## 本轮 MCP 大捕获检索
 
@@ -218,8 +221,9 @@ AES 集成提交：`887968e fix: detect software AES from memory traces`
 - `generate_angr_ollvm_script`
 - `inspect_angr_ollvm_results`
 - `generate_angr_ollvm_script_with_seeds_flow_and_identity`
+- `generate_angr_ollvm_script_with_seeds_flow_identity_and_checkpoint`
 
-生成的脚本输出 `trace-ui/angr-ollvm-v1`，内容包括 CFGFast/CFGEmulated 对账、blank-state probes、trace-register probes、Frida branch probes、dispatcher probes 和 bounded flows。
+生成的脚本输出 `trace-ui/angr-ollvm-v1`，内容包括 CFGFast/CFGEmulated 对账、blank-state probes、trace-register probes、Frida branch probes、dispatcher probes、checkpoint probes 和 bounded flows。
 
 #### Exact ELF guard
 
@@ -234,7 +238,11 @@ GUI 的 `angr` 页面可以选择 exact AArch64 ELF。生成脚本时保存 SHA-
 - `hook-enter`
 - `ollvm-dispatcher-hit`
 
-每个事件必须精确匹配 opaque branch、condition-source 或 dispatcher `startOffset`。每个 seed 独立生成 probe，并在结果中保留 source event、offset、寄存器和内存 provenance。
+每个事件必须精确匹配 opaque branch、condition-source、dispatcher `startOffset`，或在同时提供上一轮 Unicorn result 时匹配其严格授权的更近 checkpoint offset。每个 seed 独立生成 probe，并在结果中保留 source event、offset、寄存器和内存 provenance。
+
+#### 更近 checkpoint 授权
+
+angr 与 Unicorn 共用同一授权器：report module、上一轮 result 的 expected/actual SHA-256、当前 exact ELF SHA-256 必须一致，且 capture offset 必须位于该结果从 supported stalled run 推导出的 checkpoint 集合。授权 seed 使用 `frida-capture-authorized-checkpoint`，结果写入 `checkpointProbes`；branch provenance 不能混入 checkpoint probe。GUI 通用 angr 页可以导入上一轮 Unicorn JSON，“模拟增强”页也可在第 6 步直接接力。
 
 相关 DTO 字段：
 
@@ -282,7 +290,10 @@ open trace
   -> import trace-ui/unicorn-ollvm-v1 JSON
   -> recapture explicit missing memory and replay again while coverage advances
   -> compare 2-16 Unicorn rounds by exact seed offset
-  -> use a closer checkpoint or bounded angr for stalled/diverged seeds
+  -> generate a closer checkpoint Hook for stalled/diverged seeds
+  -> import the new exact checkpoint capture
+  -> continue Unicorn, or pass the same prior result to bounded angr
+  -> import checkpointProbes and review Candidate/Related paths
 ```
 
 跨版本时不能复制旧版本的 source offset、concrete state、Frida capture 或 angr seed；必须为目标 ELF 重新生成 exact-offset Hook 和 seed。

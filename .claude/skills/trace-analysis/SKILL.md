@@ -144,6 +144,9 @@ SIMD, memory, and entry-path state still prevent Verified classification. For th
 Keep bounded seeded-flow enabled to continue the first trace-register seed and exact Frida seed when
 the question is the post-branch execution flow. Interpret loop/depth/state/dead-end/external endings as
 Candidate/Related leads; depth/state limits explicitly mean incomplete exploration.
+For a Frida capture produced by the closer Unicorn checkpoint Hook, also pass the same prior result as
+`checkpoint_result_path` and require the exact ELF. The generator must reject a module, expected/actual
+SHA-256, or authorized-offset mismatch and returns the bounded continuation under `checkpointProbes`.
 
 **"Concrete-replay this OLLVM dispatcher/branch with Unicorn."**
 → `analyze_ollvm` on a narrow scope, generate an exact-offset Frida dispatcher/branch hook, and capture
@@ -169,6 +172,9 @@ strictly validated latest result. The Hook lands at the missing-memory PC or a s
 captures full GPR/NZCV plus only safe existing X0-X28/SP-relative windows. After the user runs it, pass
 the new exact `hook-enter` to `generate_unicorn_ollvm_script` together with `checkpoint_result_path`
 pointing to that same prior result. Module and exact ELF SHA-256 must match; this is not runtime attestation.
+If that closer concrete replay still lacks state, pass the same capture, exact ELF, and same prior result
+to `generate_angr_ollvm_script`; keep bounded flow small and inspect `checkpointProbes` as
+Candidate/Related rather than recovered control flow.
 
 **"Does this dispatcher or opaque branch stay stable across runs?"**
 → open two to sixteen controlled traces, then `compare_ollvm_traces{cases:[...]}` with a scope and

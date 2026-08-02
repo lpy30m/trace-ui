@@ -1136,6 +1136,7 @@ pub fn generate_angr_ollvm_script(
     frida_include_sp: Option<bool>,
     frida_include_lr: Option<bool>,
     static_binary_path: Option<String>,
+    checkpoint_result_path: Option<String>,
 ) -> Result<trace_core::AngrOllvmScript, String> {
     let frida_seeds = build_angr_frida_seeds(
         frida_bundle.as_ref(),
@@ -1145,7 +1146,12 @@ pub fn generate_angr_ollvm_script(
         frida_include_lr.unwrap_or(true),
     )?;
     let expected_identity = inspect_optional_elf_identity(static_binary_path.as_deref())?;
-    trace_core::generate_angr_ollvm_script_with_seeds_flow_and_identity(
+    let checkpoint_result = checkpoint_result_path
+        .as_deref()
+        .filter(|path| !path.trim().is_empty())
+        .map(read_unicorn_ollvm_results)
+        .transpose()?;
+    trace_core::generate_angr_ollvm_script_with_seeds_flow_identity_and_checkpoint(
         &report,
         probe_opaque_branches.unwrap_or(true),
         use_cfg_emulated.unwrap_or(false),
@@ -1156,6 +1162,7 @@ pub fn generate_angr_ollvm_script(
             max_states_per_probe: flow_max_states_per_probe.unwrap_or(32),
         },
         expected_identity.as_ref(),
+        checkpoint_result.as_ref(),
     )
 }
 
@@ -1174,6 +1181,7 @@ pub async fn save_angr_ollvm_script(
     frida_include_sp: Option<bool>,
     frida_include_lr: Option<bool>,
     static_binary_path: Option<String>,
+    checkpoint_result_path: Option<String>,
 ) -> Result<String, String> {
     tauri::async_runtime::spawn_blocking(move || {
         let frida_seeds = build_angr_frida_seeds(
@@ -1184,18 +1192,25 @@ pub async fn save_angr_ollvm_script(
             frida_include_lr.unwrap_or(true),
         )?;
         let expected_identity = inspect_optional_elf_identity(static_binary_path.as_deref())?;
-        let generated = trace_core::generate_angr_ollvm_script_with_seeds_flow_and_identity(
-            &report,
-            probe_opaque_branches.unwrap_or(true),
-            use_cfg_emulated.unwrap_or(false),
-            frida_seeds.iter().collect(),
-            trace_core::AngrOllvmFlowConfig {
-                enabled: explore_seeded_flows.unwrap_or(true),
-                max_depth: flow_max_depth.unwrap_or(8),
-                max_states_per_probe: flow_max_states_per_probe.unwrap_or(32),
-            },
-            expected_identity.as_ref(),
-        )?;
+        let checkpoint_result = checkpoint_result_path
+            .as_deref()
+            .filter(|path| !path.trim().is_empty())
+            .map(read_unicorn_ollvm_results)
+            .transpose()?;
+        let generated =
+            trace_core::generate_angr_ollvm_script_with_seeds_flow_identity_and_checkpoint(
+                &report,
+                probe_opaque_branches.unwrap_or(true),
+                use_cfg_emulated.unwrap_or(false),
+                frida_seeds.iter().collect(),
+                trace_core::AngrOllvmFlowConfig {
+                    enabled: explore_seeded_flows.unwrap_or(true),
+                    max_depth: flow_max_depth.unwrap_or(8),
+                    max_states_per_probe: flow_max_states_per_probe.unwrap_or(32),
+                },
+                expected_identity.as_ref(),
+                checkpoint_result.as_ref(),
+            )?;
         let trimmed = path.trim();
         if trimmed.is_empty() {
             return Err("output path must not be empty".to_string());

@@ -1055,6 +1055,7 @@ export interface AngrOllvmScript {
   fridaSeed: AngrOllvmFridaSeedProvenance | null;
   fridaSeeds: AngrOllvmFridaSeedProvenance[];
   expectedBinaryIdentity: ElfBinaryIdentity | null;
+  authorizedCheckpointOffsets: string[];
   flowConfig: AngrOllvmFlowConfig;
   warnings: string[];
 }
@@ -1158,6 +1159,8 @@ export interface AngrDispatcherProbe {
   error: string | null;
 }
 
+export type AngrCheckpointProbe = AngrDispatcherProbe;
+
 export interface AngrOllvmResultBundle {
   schema: string;
   moduleName: string;
@@ -1174,6 +1177,7 @@ export interface AngrOllvmResultBundle {
   blocks: AngrBlockResult[];
   branchProbes: AngrBranchProbe[];
   dispatcherProbes: AngrDispatcherProbe[];
+  checkpointProbes: AngrCheckpointProbe[];
   warnings: string[];
 }
 

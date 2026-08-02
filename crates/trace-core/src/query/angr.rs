@@ -4,7 +4,9 @@ use serde::{Deserialize, Serialize};
 
 use crate::query::elf_identity::ElfBinaryIdentity;
 use crate::query::frida_capture::AngrStateSeed;
+use crate::query::frida_checkpoint::authorize_unicorn_checkpoint_offsets;
 use crate::query::ollvm::OllvmReport;
+use crate::query::unicorn::UnicornOllvmResultBundle;
 use crate::utils::parse_hex_addr;
 
 #[derive(Clone, Debug, Serialize)]
@@ -19,6 +21,8 @@ pub struct AngrOllvmScript {
     pub frida_seeds: Vec<AngrOllvmFridaSeedProvenance>,
     #[serde(default)]
     pub expected_binary_identity: Option<ElfBinaryIdentity>,
+    #[serde(default)]
+    pub authorized_checkpoint_offsets: Vec<String>,
     pub flow_config: AngrOllvmFlowConfig,
     pub warnings: Vec<String>,
 }
@@ -191,6 +195,29 @@ pub struct AngrDispatcherProbe {
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
+pub struct AngrCheckpointProbe {
+    pub offset: String,
+    pub status: String,
+    pub seed_kind: String,
+    pub source_event_index: u64,
+    pub source_offset: String,
+    #[serde(default)]
+    pub seeded_registers: Vec<String>,
+    #[serde(default)]
+    pub seeded_memory_regions: Vec<String>,
+    #[serde(default)]
+    pub state_registers: Vec<String>,
+    #[serde(default)]
+    pub source_state_values: Vec<AngrRegisterValue>,
+    #[serde(default)]
+    pub flow_exploration: Option<AngrFlowExploration>,
+    pub limitation: String,
+    #[serde(default)]
+    pub error: Option<String>,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct AngrOllvmResultBundle {
     pub schema: String,
     pub module_name: String,
@@ -215,6 +242,8 @@ pub struct AngrOllvmResultBundle {
     pub branch_probes: Vec<AngrBranchProbe>,
     #[serde(default)]
     pub dispatcher_probes: Vec<AngrDispatcherProbe>,
+    #[serde(default)]
+    pub checkpoint_probes: Vec<AngrCheckpointProbe>,
     #[serde(default)]
     pub warnings: Vec<String>,
 }
@@ -261,13 +290,6 @@ fn allowed_seed_register(name: &str) -> bool {
     name.strip_prefix('x')
         .and_then(|value| value.parse::<u8>().ok())
         .is_some_and(|index| index <= 30)
-}
-
-pub(crate) fn prepare_frida_seed(
-    report: &OllvmReport,
-    seed: &AngrStateSeed,
-) -> Result<(serde_json::Value, AngrOllvmFridaSeedProvenance), String> {
-    prepare_frida_seed_with_allowed_offsets(report, seed, &BTreeSet::new())
 }
 
 pub(crate) fn prepare_frida_seed_with_allowed_offsets(
@@ -466,8 +488,28 @@ pub fn generate_angr_ollvm_script_with_seeds_flow_and_identity(
     probe_opaque_branches: bool,
     use_cfg_emulated: bool,
     frida_seeds: Vec<&AngrStateSeed>,
+    flow_config: AngrOllvmFlowConfig,
+    expected_binary_identity: Option<&ElfBinaryIdentity>,
+) -> Result<AngrOllvmScript, String> {
+    generate_angr_ollvm_script_with_seeds_flow_identity_and_checkpoint(
+        report,
+        probe_opaque_branches,
+        use_cfg_emulated,
+        frida_seeds,
+        flow_config,
+        expected_binary_identity,
+        None,
+    )
+}
+
+pub fn generate_angr_ollvm_script_with_seeds_flow_identity_and_checkpoint(
+    report: &OllvmReport,
+    probe_opaque_branches: bool,
+    use_cfg_emulated: bool,
+    frida_seeds: Vec<&AngrStateSeed>,
     mut flow_config: AngrOllvmFlowConfig,
     expected_binary_identity: Option<&ElfBinaryIdentity>,
+    checkpoint_result: Option<&UnicornOllvmResultBundle>,
 ) -> Result<AngrOllvmScript, String> {
     if report.scope.module_name.trim().is_empty() {
         return Err("OLLVM report module name must not be empty".to_string());
@@ -476,6 +518,15 @@ pub fn generate_angr_ollvm_script_with_seeds_flow_and_identity(
     if frida_seeds.len() > 32 {
         return Err("at most 32 Frida seeds may be embedded in one angr bridge".to_string());
     }
+    let allowed_checkpoint_offsets = if let Some(bundle) = checkpoint_result {
+        let identity = expected_binary_identity.ok_or_else(|| {
+            "Unicorn checkpoint authorization for angr requires the exact AArch64 ELF identity"
+                .to_string()
+        })?;
+        authorize_unicorn_checkpoint_offsets(bundle, &report.scope.module_name, identity)?
+    } else {
+        BTreeSet::new()
+    };
     let mut frida_seed_payloads = Vec::with_capacity(frida_seeds.len());
     let mut frida_seed_provenances = Vec::with_capacity(frida_seeds.len());
     let mut source_event_indices = std::collections::HashSet::new();
@@ -486,7 +537,8 @@ pub fn generate_angr_ollvm_script_with_seeds_flow_and_identity(
                 seed.source_event_index
             ));
         }
-        let (payload, provenance) = prepare_frida_seed(report, seed)?;
+        let (payload, provenance) =
+            prepare_frida_seed_with_allowed_offsets(report, seed, &allowed_checkpoint_offsets)?;
         frida_seed_payloads.push(payload);
         frida_seed_provenances.push(provenance);
     }
@@ -498,12 +550,19 @@ pub fn generate_angr_ollvm_script_with_seeds_flow_and_identity(
     let has_branch_seed = frida_seed_provenances
         .iter()
         .any(|provenance| !provenance.matched_branch_offsets.is_empty());
-    if has_branch_seed && !probe_opaque_branches && !has_dispatcher_seed {
+    let has_checkpoint_seed = frida_seed_provenances.iter().any(|provenance| {
+        provenance.matched_branch_offsets.is_empty()
+            && provenance.matched_dispatcher_offsets.is_empty()
+            && allowed_checkpoint_offsets
+                .iter()
+                .any(|offset| offset.eq_ignore_ascii_case(&provenance.capture_offset))
+    });
+    if has_branch_seed && !probe_opaque_branches {
         return Err(
             "Frida branch/condition-source seed merging requires opaque branch probes".to_string(),
         );
     }
-    if !probe_opaque_branches && !has_dispatcher_seed {
+    if !probe_opaque_branches && !has_dispatcher_seed && !has_checkpoint_seed {
         flow_config.enabled = false;
     }
     let frida_seed_json = serde_json::to_string(&frida_seed_json)
@@ -521,6 +580,11 @@ pub fn generate_angr_ollvm_script_with_seeds_flow_and_identity(
         .unwrap_or_else(|| "null".to_string());
     let expected_binary_literal = serde_json::to_string(&expected_binary_json)
         .map_err(|error| format!("quote expected ELF identity failed: {error}"))?;
+    let checkpoint_offsets_json =
+        serde_json::to_string(&allowed_checkpoint_offsets.iter().collect::<Vec<_>>())
+            .map_err(|error| format!("serialize authorized checkpoint offsets failed: {error}"))?;
+    let checkpoint_offsets_literal = serde_json::to_string(&checkpoint_offsets_json)
+        .map_err(|error| format!("quote authorized checkpoint offsets failed: {error}"))?;
     let function_name = report
         .scope
         .function_name
@@ -553,6 +617,9 @@ DEFAULT_FLOW_MAX_DEPTH = __FLOW_MAX_DEPTH__
 DEFAULT_FLOW_MAX_STATES = __FLOW_MAX_STATES__
 FRIDA_SEEDS = json.loads(__FRIDA_SEEDS_JSON__)
 EXPECTED_BINARY_IDENTITY = json.loads(__EXPECTED_BINARY_IDENTITY__)
+AUTHORIZED_CHECKPOINT_OFFSETS = {
+    value.lower() for value in json.loads(__AUTHORIZED_CHECKPOINT_OFFSETS__)
+}
 
 
 def configure_state(state):
@@ -779,11 +846,11 @@ def _dispatcher_candidates():
     }
 
 
-def _explore_dispatcher_flow(project, source_offset, initial_state, max_depth, max_states):
+def _explore_dispatcher_flow(project, source_offset, initial_state, max_depth, max_states, source_kind="dispatcher-entry"):
     limitation = (
-        "Bounded symbolic continuation starts at an exact dispatcher-entry Frida capture and stops at the next observed dispatcher entry, loop, external target, dead end, or configured bound. "
+        "Bounded symbolic continuation starts at an exact {} Frida capture and stops at the next observed dispatcher entry, loop, external target, dead end, or configured bound. "
         "It does not prove function-entry reachability, complete state-machine recovery, or OLLVM removal."
-    )
+    ).format(source_kind)
     dispatchers = _dispatcher_candidates()
     queue = [(initial_state, 0, [source_offset], [])]
     paths = []
@@ -1190,6 +1257,80 @@ def _probe_dispatcher_with_frida(project, candidate, seed, explore_flow=False, f
         }
 
 
+def _checkpoint_state_registers():
+    names = []
+    for candidate in REPORT.get("dispatcherCandidates", []):
+        for name in candidate.get("stateRegisters", []):
+            normalized = name.upper()
+            if normalized not in names:
+                names.append(normalized)
+            if len(names) >= 16:
+                return names
+    return names
+
+
+def _probe_checkpoint_with_frida(project, seed, explore_flow=False, flow_max_depth=8, flow_max_states=32):
+    source_offset = seed["captureOffset"].lower()
+    provenance = seed.get("provenance") or {}
+    if source_offset not in AUTHORIZED_CHECKPOINT_OFFSETS:
+        return None
+    if provenance.get("matchedBranchOffsets") or provenance.get("matchedDispatcherOffsets"):
+        return None
+    limitation = (
+        "The Frida capture is an exact closer checkpoint authorized by a strictly validated prior Unicorn result for the same module and exact ELF. "
+        "Bounded angr continuation can explore alternatives from this partial runtime state, but missing SIMD/TLS/system state, unread memory, and entry-path constraints keep every path Candidate/Related."
+    )
+    state_registers = _checkpoint_state_registers()
+    try:
+        address = project.loader.main_object.mapped_base + _offset(source_offset)
+        state = configure_state(project.factory.blank_state(addr=address))
+        seeded_registers, seeded_memory, seed_errors = _apply_frida_seed(state, seed)
+        state.options.add(angr.options.LAZY_SOLVES)
+        source_state_values = _register_values(state, state_registers)
+        flow = None
+        if explore_flow:
+            flow = _explore_dispatcher_flow(
+                project,
+                source_offset,
+                state,
+                flow_max_depth,
+                flow_max_states,
+                source_kind="authorized closer-checkpoint",
+            )
+        status = "checkpoint_flow_explored" if flow is not None else "checkpoint_seed_applied"
+        if seed_errors:
+            status += "_with_seed_warnings"
+        return {
+            "offset": source_offset,
+            "status": status,
+            "seedKind": "frida-capture-authorized-checkpoint",
+            "sourceEventIndex": seed.get("sourceEventIndex"),
+            "sourceOffset": source_offset,
+            "seededRegisters": seeded_registers,
+            "seededMemoryRegions": seeded_memory,
+            "stateRegisters": state_registers,
+            "sourceStateValues": source_state_values,
+            "flowExploration": flow,
+            "limitation": limitation,
+            "error": "; ".join(seed_errors) if seed_errors else None,
+        }
+    except Exception as error:
+        return {
+            "offset": source_offset,
+            "status": "probe_error",
+            "seedKind": "frida-capture-authorized-checkpoint",
+            "sourceEventIndex": seed.get("sourceEventIndex"),
+            "sourceOffset": source_offset,
+            "seededRegisters": [],
+            "seededMemoryRegions": [],
+            "stateRegisters": state_registers,
+            "sourceStateValues": [],
+            "flowExploration": None,
+            "limitation": limitation,
+            "error": str(error),
+        }
+
+
 def analyze(binary_path, prefer_emulated, probe_opaque, explore_flows, flow_max_depth, flow_max_states):
     with open(binary_path, "rb") as source:
         binary_sha256 = hashlib.sha256(source.read()).hexdigest()
@@ -1249,16 +1390,30 @@ def analyze(binary_path, prefer_emulated, probe_opaque, explore_flows, flow_max_
                 )
                 if dispatcher_probe is not None:
                     dispatcher_probes.append(dispatcher_probe)
+    checkpoint_probes = []
+    if FRIDA_SEEDS and AUTHORIZED_CHECKPOINT_OFFSETS:
+        for frida_seed in FRIDA_SEEDS:
+            checkpoint_probe = _probe_checkpoint_with_frida(
+                project,
+                frida_seed,
+                explore_flow=explore_flows,
+                flow_max_depth=flow_max_depth,
+                flow_max_states=flow_max_states,
+            )
+            if checkpoint_probe is not None:
+                checkpoint_probes.append(checkpoint_probe)
     warnings.extend([
         "Static CFG successors absent from the dynamic trace may be unexecuted, infeasible, or CFG recovery artifacts.",
         "Dynamic-only edges may indicate indirect control flow or static CFG recovery gaps.",
         "Unconstrained branch probes are hypothesis generators, not proof of real-input reachability.",
         "Trace-seeded probes contain selected register values only; missing memory and architectural state can change feasibility.",
     ])
-    if explore_flows and (probe_opaque or dispatcher_probes):
+    if explore_flows and (probe_opaque or dispatcher_probes or checkpoint_probes):
         warnings.append("Bounded seeded-flow paths stop at configured depth/state limits and remain candidate execution-flow evidence.")
     if FRIDA_SEEDS:
-        warnings.append("Frida-seeded probes are emitted only for exact module-relative branch, condition-source, or dispatcher-entry offset matches; they remain candidate evidence.")
+        warnings.append("Frida-seeded probes are emitted only for exact module-relative branch, condition-source, dispatcher-entry, or strictly authorized Unicorn checkpoint offset matches; they remain candidate evidence.")
+    if checkpoint_probes:
+        warnings.append("Closer-checkpoint angr probes were authorized by a prior same-module, same-ELF Unicorn result. That file guard does not attest the runtime image or complete architectural state.")
     if binary_identity_matched:
         warnings.append("The manually supplied ELF matched the SHA-256 embedded when this script was generated. This validates the selected file, not the image mapped during the original trace.")
     return {
@@ -1274,13 +1429,14 @@ def analyze(binary_path, prefer_emulated, probe_opaque, explore_flows, flow_max_
         "fridaSeed": FRIDA_SEEDS[0].get("provenance") if FRIDA_SEEDS else None,
         "fridaSeeds": [seed.get("provenance") for seed in FRIDA_SEEDS],
         "flowConfig": {
-            "enabled": bool(explore_flows and (probe_opaque or dispatcher_probes)),
+            "enabled": bool(explore_flows and (probe_opaque or dispatcher_probes or checkpoint_probes)),
             "maxDepth": flow_max_depth,
             "maxStatesPerProbe": flow_max_states,
         },
         "blocks": blocks,
         "branchProbes": probes,
         "dispatcherProbes": dispatcher_probes,
+        "checkpointProbes": checkpoint_probes,
         "warnings": warnings,
     }
 
@@ -1314,8 +1470,9 @@ def main():
         json.dump(result, output, ensure_ascii=False, indent=2)
     flow_count = sum(1 for probe in result["branchProbes"] if probe.get("flowExploration") is not None)
     flow_count += sum(1 for probe in result["dispatcherProbes"] if probe.get("flowExploration") is not None)
-    print("[Trace UI] wrote {} block reconciliations, {} branch probes, {} dispatcher probes, and {} bounded flows to {}".format(
-        len(result["blocks"]), len(result["branchProbes"]), len(result["dispatcherProbes"]), flow_count, output_path
+    flow_count += sum(1 for probe in result["checkpointProbes"] if probe.get("flowExploration") is not None)
+    print("[Trace UI] wrote {} block reconciliations, {} branch probes, {} dispatcher probes, {} checkpoint probes, and {} bounded flows to {}".format(
+        len(result["blocks"]), len(result["branchProbes"]), len(result["dispatcherProbes"]), len(result["checkpointProbes"]), flow_count, output_path
     ))
 
 
@@ -1346,7 +1503,11 @@ if __name__ == "__main__":
             &flow_config.max_states_per_probe.to_string(),
         )
         .replace("__FRIDA_SEEDS_JSON__", &frida_seed_literal)
-        .replace("__EXPECTED_BINARY_IDENTITY__", &expected_binary_literal);
+        .replace("__EXPECTED_BINARY_IDENTITY__", &expected_binary_literal)
+        .replace(
+            "__AUTHORIZED_CHECKPOINT_OFFSETS__",
+            &checkpoint_offsets_literal,
+        );
     let mut warnings = vec![
         "Trace UI generates the script but does not install or execute angr; run it manually in an isolated Python environment.".to_string(),
         "Use the exact ELF/shared object that produced the trace. Module offsets are aligned to angr's main-object mapped base.".to_string(),
@@ -1354,20 +1515,26 @@ if __name__ == "__main__":
     ];
     if flow_config.enabled {
         warnings.push(format!(
-            "Bounded symbolic flow continuation is enabled for the first trace-register branch seed and each exact Frida branch/dispatcher seed (depth {}, at most {} states per probe). Paths remain Candidate/Related evidence.",
+            "Bounded symbolic flow continuation is enabled for the first trace-register branch seed and each exact Frida branch/dispatcher/authorized-checkpoint seed (depth {}, at most {} states per probe). Paths remain Candidate/Related evidence.",
             flow_config.max_depth, flow_config.max_states_per_probe
         ));
     }
     if frida_seed_provenance.is_some() {
         warnings.push(
-            "Each embedded Frida seed is applied only to exact branch/condition-source or dispatcher-entry offset matches. Missing flags, SIMD state, memory, and entry-path constraints can still change feasibility."
+            "Each embedded Frida seed is applied only to exact branch/condition-source, dispatcher-entry, or strictly authorized Unicorn checkpoint offset matches. Missing flags, SIMD state, memory, and entry-path constraints can still change feasibility."
                 .to_string(),
         );
     } else {
         warnings.push(
             "Edit configure_state(state) in the generated script to seed registers and memory from Trace UI or Frida evidence."
-                .to_string(),
+            .to_string(),
         );
+    }
+    if checkpoint_result.is_some() {
+        warnings.push(format!(
+            "{} closer checkpoint offset(s) were authorized from a strictly validated prior Unicorn result for the same module and exact ELF. This is file provenance, not runtime-image attestation.",
+            allowed_checkpoint_offsets.len()
+        ));
     }
     Ok(AngrOllvmScript {
         file_name,
@@ -1376,6 +1543,7 @@ if __name__ == "__main__":
         frida_seed: frida_seed_provenance,
         frida_seeds: frida_seed_provenances,
         expected_binary_identity: expected_binary_identity.cloned(),
+        authorized_checkpoint_offsets: allowed_checkpoint_offsets.into_iter().collect(),
         flow_config,
         warnings,
     })
@@ -1590,9 +1758,14 @@ pub fn parse_angr_ollvm_result_bundle(bytes: &[u8]) -> Result<AngrOllvmResultBun
                         && probe.source_event_index == seed.source_event_index
                         && probe.seed_kind == "frida-capture-exact-dispatcher"
                 });
-                if !branch_match && !dispatcher_match {
+                let checkpoint_match = bundle.checkpoint_probes.iter().any(|probe| {
+                    probe.offset.eq_ignore_ascii_case(offset)
+                        && probe.source_event_index == seed.source_event_index
+                        && probe.seed_kind == "frida-capture-authorized-checkpoint"
+                });
+                if !branch_match && !dispatcher_match && !checkpoint_match {
                     return Err(format!(
-                    "angr result Frida provenance has no matching branch or dispatcher probe at {offset}"
+                    "angr result Frida provenance has no matching branch, dispatcher, or checkpoint probe at {offset}"
                 ));
                 }
             }
@@ -1628,9 +1801,10 @@ pub fn parse_angr_ollvm_result_bundle(bytes: &[u8]) -> Result<AngrOllvmResultBun
                 .as_deref()
                 .is_some_and(|kind| kind.starts_with("frida-capture-"))
     }) || !bundle.dispatcher_probes.is_empty()
+        || !bundle.checkpoint_probes.is_empty()
     {
         return Err(
-            "angr result contains a Frida branch/dispatcher probe without top-level provenance"
+            "angr result contains a Frida branch/dispatcher/checkpoint probe without top-level provenance"
                 .to_string(),
         );
     }
@@ -1644,6 +1818,10 @@ pub fn parse_angr_ollvm_result_bundle(bytes: &[u8]) -> Result<AngrOllvmResultBun
                 || bundle
                     .dispatcher_probes
                     .iter()
+                    .any(|probe| probe.flow_exploration.is_some())
+                || bundle
+                    .checkpoint_probes
+                    .iter()
                     .any(|probe| probe.flow_exploration.is_some()))
         {
             return Err(
@@ -1656,6 +1834,10 @@ pub fn parse_angr_ollvm_result_bundle(bytes: &[u8]) -> Result<AngrOllvmResultBun
         .any(|probe| probe.flow_exploration.is_some())
         || bundle
             .dispatcher_probes
+            .iter()
+            .any(|probe| probe.flow_exploration.is_some())
+        || bundle
+            .checkpoint_probes
             .iter()
             .any(|probe| probe.flow_exploration.is_some())
     {
@@ -1755,6 +1937,56 @@ pub fn parse_angr_ollvm_result_bundle(bytes: &[u8]) -> Result<AngrOllvmResultBun
             validate_angr_flow(&probe.offset, flow, config, true)?;
         }
     }
+    for probe in &bundle.checkpoint_probes {
+        parse_hex_addr(&probe.offset)?;
+        parse_hex_addr(&probe.source_offset)?;
+        if probe.seed_kind != "frida-capture-authorized-checkpoint" {
+            return Err(format!(
+                "angr checkpoint probe at {} has unsupported seedKind {}",
+                probe.offset, probe.seed_kind
+            ));
+        }
+        if !probe.offset.eq_ignore_ascii_case(&probe.source_offset) {
+            return Err(format!(
+                "angr checkpoint probe sourceOffset does not match probe offset {}",
+                probe.offset
+            ));
+        }
+        let seed = frida_provenances
+            .iter()
+            .find(|seed| seed.source_event_index == probe.source_event_index)
+            .ok_or_else(|| "angr checkpoint probe lacks matching Frida provenance".to_string())?;
+        if !seed.capture_offset.eq_ignore_ascii_case(&probe.offset)
+            || !seed
+                .matched_probe_offsets
+                .iter()
+                .any(|offset| offset.eq_ignore_ascii_case(&probe.offset))
+            || !seed.matched_branch_offsets.is_empty()
+            || !seed.matched_dispatcher_offsets.is_empty()
+        {
+            return Err(format!(
+                "angr checkpoint probe provenance mismatch at {}",
+                probe.offset
+            ));
+        }
+        if probe.state_registers.len() > 16 {
+            return Err(format!(
+                "angr checkpoint probe has more than 16 state registers at {}",
+                probe.offset
+            ));
+        }
+        validate_angr_register_values(
+            &probe.source_state_values,
+            &format!("angr checkpoint probe at {}", probe.offset),
+        )?;
+        if let Some(flow) = &probe.flow_exploration {
+            let config = bundle
+                .flow_config
+                .as_ref()
+                .ok_or_else(|| "angr checkpoint flow result lacks flowConfig".to_string())?;
+            validate_angr_flow(&probe.offset, flow, config, true)?;
+        }
+    }
     Ok(bundle)
 }
 
@@ -1766,6 +1998,10 @@ mod tests {
     use crate::query::ollvm::{
         BranchStateObservation, DispatcherCandidate, DynamicBasicBlock, DynamicBranchProfile,
         OllvmScope, OpaqueBranchCandidate,
+    };
+    use crate::query::unicorn::{
+        UnicornMissingMemory, UnicornOllvmConfig, UnicornRecaptureSuggestion, UnicornReplayRun,
+        UnicornSeedQuality,
     };
 
     fn sample_report() -> OllvmReport {
@@ -1920,6 +2156,100 @@ mod tests {
         }
     }
 
+    fn sample_identity() -> ElfBinaryIdentity {
+        ElfBinaryIdentity {
+            binary_path: "/tmp/libtarget.so".to_string(),
+            binary_sha256: "ab".repeat(32),
+            file_size: 123,
+            format: "ELF64".to_string(),
+            architecture: "AArch64".to_string(),
+            elf_machine: 183,
+            build_id: Some("build".to_string()),
+        }
+    }
+
+    fn sample_checkpoint_result(identity: &ElfBinaryIdentity) -> UnicornOllvmResultBundle {
+        UnicornOllvmResultBundle {
+            schema: "trace-ui/unicorn-ollvm-v1".to_string(),
+            module_name: "libtarget.so".to_string(),
+            binary_sha256: identity.binary_sha256.clone(),
+            expected_binary_sha256: identity.binary_sha256.clone(),
+            binary_identity_matched: true,
+            architecture: "AArch64".to_string(),
+            unicorn_version: "2.1.4".to_string(),
+            capstone_version: "5.0.6".to_string(),
+            config: UnicornOllvmConfig::default(),
+            seeds: vec![AngrOllvmFridaSeedProvenance {
+                source_event_index: 7,
+                hook_id: "dispatcher-seed".to_string(),
+                call_id: None,
+                module_name: "libtarget.so".to_string(),
+                function_name: "dispatcher".to_string(),
+                capture_offset: "0x100".to_string(),
+                registers_seeded: vec!["X0".to_string(), "SP".to_string()],
+                memory_region_count: 0,
+                matched_probe_offsets: vec!["0x104".to_string()],
+                matched_branch_offsets: vec!["0x104".to_string()],
+                matched_dispatcher_offsets: Vec::new(),
+            }],
+            seed_qualities: vec![UnicornSeedQuality {
+                source_event_index: 7,
+                capture_offset: "0x100".to_string(),
+                status: "partial".to_string(),
+                register_count: 2,
+                missing_registers: vec!["X1".to_string()],
+                memory_region_count: 0,
+                captured_memory_bytes: 0,
+                stack_memory_captured: false,
+                warnings: Vec::new(),
+            }],
+            seed_recapture_plans: Vec::new(),
+            runs: vec![UnicornReplayRun {
+                source_event_index: 7,
+                seed_kind: "frida-capture-exact-condition-source".to_string(),
+                start_offset: "0x100".to_string(),
+                mapped_base: "0x40000000".to_string(),
+                stop_reason: "missing-memory".to_string(),
+                instruction_count: 8,
+                elapsed_ms: 1,
+                terminal_address: "0x40000180".to_string(),
+                terminal_offset: Some("0x180".to_string()),
+                matched_dispatcher_offset: None,
+                source_state_values: Vec::new(),
+                target_state_values: Vec::new(),
+                executed_offsets: vec!["0x100".to_string(), "0x180".to_string()],
+                executed_offsets_truncated: false,
+                block_offsets: vec!["0x100".to_string(), "0x180".to_string()],
+                block_offsets_truncated: false,
+                register_changes: Vec::new(),
+                memory_writes: Vec::new(),
+                memory_writes_truncated: false,
+                call_boundaries: Vec::new(),
+                missing_memory: vec![UnicornMissingMemory {
+                    access: "read".to_string(),
+                    address: "0x90000020".to_string(),
+                    size: 8,
+                    pc_offset: Some("0x180".to_string()),
+                    instruction: Some("ldr x0, [x19, #0x20]".to_string()),
+                    base_register: Some("X19".to_string()),
+                    displacement: Some("0x20".to_string()),
+                }],
+                warnings: Vec::new(),
+                error: None,
+            }],
+            transition_matrix: Vec::new(),
+            recapture_suggestions: vec![UnicornRecaptureSuggestion {
+                pc_offset: "0x180".to_string(),
+                base_register: Some("X19".to_string()),
+                displacement: Some("0x20".to_string()),
+                byte_length: 8,
+                reason: "checkpoint memory".to_string(),
+                source_event_indices: vec![7],
+            }],
+            warnings: Vec::new(),
+        }
+    }
+
     #[test]
     fn generates_manual_angr_bridge_with_cfg_and_symbolic_probe() {
         let generated = generate_angr_ollvm_script(&sample_report(), true, false).unwrap();
@@ -2033,6 +2363,107 @@ mod tests {
         assert!(generated.flow_config.enabled);
         assert!(generated.script.contains("frida-capture-exact-dispatcher"));
         assert!(generated.script.contains("dispatcherProbes"));
+    }
+
+    #[test]
+    fn authorizes_closer_checkpoint_seed_for_bounded_angr_flow() {
+        let identity = sample_identity();
+        let prior = sample_checkpoint_result(&identity);
+        let mut seed = sample_frida_seed("0x180");
+        seed.source_event_index = 9;
+        seed.hook_id = "unicorn-checkpoint-180".to_string();
+        seed.function_name = "unicorn-checkpoint-180".to_string();
+        seed.capture_target = Some("0x71000180".to_string());
+
+        let without_prior = generate_angr_ollvm_script_with_seeds_flow_and_identity(
+            &sample_report(),
+            false,
+            false,
+            vec![&seed],
+            AngrOllvmFlowConfig::default(),
+            Some(&identity),
+        )
+        .unwrap_err();
+        assert!(without_prior.contains("authorized Unicorn checkpoint"));
+
+        let generated = generate_angr_ollvm_script_with_seeds_flow_identity_and_checkpoint(
+            &sample_report(),
+            false,
+            false,
+            vec![&seed],
+            AngrOllvmFlowConfig::default(),
+            Some(&identity),
+            Some(&prior),
+        )
+        .unwrap();
+        assert_eq!(generated.authorized_checkpoint_offsets, vec!["0x180"]);
+        assert_eq!(generated.frida_seeds[0].capture_offset, "0x180");
+        assert_eq!(
+            generated.frida_seeds[0].matched_probe_offsets,
+            vec!["0x180"]
+        );
+        assert!(generated.frida_seeds[0].matched_branch_offsets.is_empty());
+        assert!(generated.frida_seeds[0]
+            .matched_dispatcher_offsets
+            .is_empty());
+        assert!(generated.flow_config.enabled);
+        assert!(generated
+            .script
+            .contains("frida-capture-authorized-checkpoint"));
+        assert!(generated.script.contains("checkpointProbes"));
+        assert!(generated.script.contains("AUTHORIZED_CHECKPOINT_OFFSETS"));
+        assert!(generated
+            .warnings
+            .iter()
+            .any(|warning| warning.contains("1 closer checkpoint offset")));
+    }
+
+    #[test]
+    fn rejects_checkpoint_angr_without_matching_module_or_elf() {
+        let identity = sample_identity();
+        let mut seed = sample_frida_seed("0x180");
+        seed.source_event_index = 9;
+
+        let mut wrong_module = sample_checkpoint_result(&identity);
+        wrong_module.module_name = "libother.so".to_string();
+        let error = generate_angr_ollvm_script_with_seeds_flow_identity_and_checkpoint(
+            &sample_report(),
+            false,
+            false,
+            vec![&seed],
+            AngrOllvmFlowConfig::default(),
+            Some(&identity),
+            Some(&wrong_module),
+        )
+        .unwrap_err();
+        assert!(error.contains("does not match OLLVM report module"));
+
+        let mut wrong_hash = sample_checkpoint_result(&identity);
+        wrong_hash.binary_sha256 = "f".repeat(64);
+        wrong_hash.expected_binary_sha256 = wrong_hash.binary_sha256.clone();
+        let error = generate_angr_ollvm_script_with_seeds_flow_identity_and_checkpoint(
+            &sample_report(),
+            false,
+            false,
+            vec![&seed],
+            AngrOllvmFlowConfig::default(),
+            Some(&identity),
+            Some(&wrong_hash),
+        )
+        .unwrap_err();
+        assert!(error.contains("exact ELF SHA-256"));
+
+        let error = generate_angr_ollvm_script_with_seeds_flow_identity_and_checkpoint(
+            &sample_report(),
+            false,
+            false,
+            vec![&seed],
+            AngrOllvmFlowConfig::default(),
+            None,
+            Some(&sample_checkpoint_result(&identity)),
+        )
+        .unwrap_err();
+        assert!(error.contains("requires the exact AArch64 ELF identity"));
     }
 
     #[test]
@@ -2187,7 +2618,7 @@ mod tests {
         }"#;
 
         let error = parse_angr_ollvm_result_bundle(result).unwrap_err();
-        assert!(error.contains("no matching branch or dispatcher probe at 0x104"));
+        assert!(error.contains("no matching branch, dispatcher, or checkpoint probe at 0x104"));
     }
 
     #[test]
@@ -2392,5 +2823,61 @@ mod tests {
         )
         .unwrap_err()
         .contains("max depth"));
+    }
+
+    #[test]
+    fn parses_authorized_checkpoint_probe_and_rejects_bad_provenance() {
+        let valid = br#"{
+          "schema":"trace-ui/angr-ollvm-v1",
+          "moduleName":"libtarget.so",
+          "binarySha256":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          "expectedBinarySha256":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          "binaryIdentityMatched":true,
+          "mappedBase":"0x400000",
+          "architecture":"AARCH64",
+          "angrVersion":"9.2",
+          "cfgKind":"CFGFast",
+          "fridaSeeds":[{
+            "sourceEventIndex":9,
+            "hookId":"unicorn-checkpoint-180",
+            "moduleName":"libtarget.so",
+            "functionName":"unicorn-checkpoint-180",
+            "captureOffset":"0x180",
+            "registersSeeded":["X0","SP","NZCV"],
+            "memoryRegionCount":1,
+            "matchedProbeOffsets":["0x180"],
+            "matchedBranchOffsets":[],
+            "matchedDispatcherOffsets":[]
+          }],
+          "flowConfig":{"enabled":true,"maxDepth":8,"maxStatesPerProbe":32},
+          "blocks":[],
+          "branchProbes":[],
+          "dispatcherProbes":[],
+          "checkpointProbes":[{
+            "offset":"0x180",
+            "status":"checkpoint_seed_applied",
+            "seedKind":"frida-capture-authorized-checkpoint",
+            "sourceEventIndex":9,
+            "sourceOffset":"0x180",
+            "seededRegisters":["X0","SP","NZCV"],
+            "seededMemoryRegions":["checkpoint-memory"],
+            "stateRegisters":["X8"],
+            "sourceStateValues":[{"register":"X8","status":"concrete","value":"0x1","alternatives":[]}],
+            "flowExploration":null,
+            "limitation":"candidate only",
+            "error":null
+          }],
+          "warnings":[]
+        }"#;
+        let parsed = parse_angr_ollvm_result_bundle(valid).unwrap();
+        assert_eq!(parsed.checkpoint_probes.len(), 1);
+        assert_eq!(parsed.checkpoint_probes[0].offset, "0x180");
+
+        let mut invalid: serde_json::Value = serde_json::from_slice(valid).unwrap();
+        invalid["fridaSeeds"][0]["matchedBranchOffsets"] = serde_json::json!(["0x180"]);
+        let bytes = serde_json::to_vec(&invalid).unwrap();
+        assert!(parse_angr_ollvm_result_bundle(&bytes)
+            .unwrap_err()
+            .contains("checkpoint probe provenance mismatch"));
     }
 }
