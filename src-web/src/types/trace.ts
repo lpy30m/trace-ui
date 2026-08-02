@@ -496,6 +496,7 @@ export interface FridaOllvmDispatcherHookScript {
   maxEvents: number;
   capturePointerRegisters: number[];
   pointerCaptureBytes: number;
+  stackCaptureBytes: number;
   script: string;
   warnings: string[];
   protocolVersion: string;
@@ -1163,6 +1164,138 @@ export interface AngrOllvmResultBundle {
   blocks: AngrBlockResult[];
   branchProbes: AngrBranchProbe[];
   dispatcherProbes: AngrDispatcherProbe[];
+  warnings: string[];
+}
+
+export interface UnicornOllvmConfig {
+  maxInstructions: number;
+  timeoutMs: number;
+  maxMemoryWrites: number;
+  maxRecordedOffsets: number;
+  stopOnCall: boolean;
+  loopVisitLimit: number;
+}
+
+export interface UnicornSeedQuality {
+  sourceEventIndex: number;
+  captureOffset: string;
+  status: string;
+  registerCount: number;
+  missingRegisters: string[];
+  memoryRegionCount: number;
+  capturedMemoryBytes: number;
+  stackMemoryCaptured: boolean;
+  warnings: string[];
+}
+
+export interface UnicornOllvmScript {
+  fileName: string;
+  script: string;
+  schemaVersion: string;
+  seeds: AngrOllvmFridaSeedProvenance[];
+  seedQualities: UnicornSeedQuality[];
+  expectedBinaryIdentity: ElfBinaryIdentity;
+  config: UnicornOllvmConfig;
+  warnings: string[];
+}
+
+export interface UnicornStateValue {
+  register: string;
+  status: string;
+  value: string | null;
+}
+
+export interface UnicornRegisterChange {
+  register: string;
+  before: string;
+  after: string;
+}
+
+export interface UnicornMemoryWrite {
+  address: string;
+  offset: string | null;
+  size: number;
+  valueHex: string | null;
+  pcOffset: string | null;
+}
+
+export interface UnicornMissingMemory {
+  access: string;
+  address: string;
+  size: number;
+  pcOffset: string | null;
+  instruction: string | null;
+  baseRegister: string | null;
+  displacement: string | null;
+}
+
+export interface UnicornCallBoundary {
+  pcOffset: string;
+  mnemonic: string;
+  targetAddress: string | null;
+  targetOffset: string | null;
+}
+
+export interface UnicornReplayRun {
+  sourceEventIndex: number;
+  seedKind: string;
+  startOffset: string;
+  mappedBase: string;
+  stopReason: string;
+  instructionCount: number;
+  elapsedMs: number;
+  terminalAddress: string;
+  terminalOffset: string | null;
+  matchedDispatcherOffset: string | null;
+  sourceStateValues: UnicornStateValue[];
+  targetStateValues: UnicornStateValue[];
+  executedOffsets: string[];
+  executedOffsetsTruncated: boolean;
+  blockOffsets: string[];
+  blockOffsetsTruncated: boolean;
+  registerChanges: UnicornRegisterChange[];
+  memoryWrites: UnicornMemoryWrite[];
+  memoryWritesTruncated: boolean;
+  callBoundaries: UnicornCallBoundary[];
+  missingMemory: UnicornMissingMemory[];
+  warnings: string[];
+  error: string | null;
+}
+
+export interface UnicornTransitionEvidence {
+  sourceOffset: string;
+  sourceState: string;
+  targetOffset: string;
+  targetState: string;
+  stopReason: string;
+  executionCount: number;
+  sourceEventIndices: number[];
+}
+
+export interface UnicornRecaptureSuggestion {
+  pcOffset: string;
+  baseRegister: string | null;
+  displacement: string | null;
+  byteLength: number;
+  reason: string;
+  sourceEventIndices: number[];
+}
+
+export interface UnicornOllvmResultBundle {
+  schema: string;
+  moduleName: string;
+  binarySha256: string;
+  expectedBinarySha256: string;
+  binaryIdentityMatched: boolean;
+  architecture: string;
+  unicornVersion: string;
+  capstoneVersion: string;
+  config: UnicornOllvmConfig;
+  seeds: AngrOllvmFridaSeedProvenance[];
+  seedQualities: UnicornSeedQuality[];
+  runs: UnicornReplayRun[];
+  transitionMatrix: UnicornTransitionEvidence[];
+  recaptureSuggestions: UnicornRecaptureSuggestion[];
   warnings: string[];
 }
 

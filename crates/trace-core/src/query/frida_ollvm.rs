@@ -56,6 +56,8 @@ pub struct FridaOllvmDispatcherHookOptions {
     pub capture_pointer_registers: Vec<u8>,
     #[serde(default = "default_pointer_capture_bytes")]
     pub pointer_capture_bytes: u32,
+    #[serde(default)]
+    pub stack_capture_bytes: u32,
 }
 
 impl Default for FridaOllvmDispatcherHookOptions {
@@ -66,6 +68,7 @@ impl Default for FridaOllvmDispatcherHookOptions {
             max_events: default_max_events(),
             capture_pointer_registers: Vec::new(),
             pointer_capture_bytes: default_pointer_capture_bytes(),
+            stack_capture_bytes: 0,
         }
     }
 }
@@ -121,6 +124,7 @@ pub struct FridaOllvmDispatcherHookScript {
     pub max_events: u32,
     pub capture_pointer_registers: Vec<u8>,
     pub pointer_capture_bytes: u32,
+    pub stack_capture_bytes: u32,
     pub script: String,
     pub warnings: Vec<String>,
     pub protocol_version: String,
@@ -232,20 +236,23 @@ fn validate_hook_options(options: &FridaOllvmDispatcherHookOptions) -> Result<()
         .iter()
         .copied()
         .collect::<HashSet<_>>();
-    if options.capture_pointer_registers.len() > 8
+    if options.capture_pointer_registers.len() > 29
         || pointer_registers.len() != options.capture_pointer_registers.len()
         || options
             .capture_pointer_registers
             .iter()
-            .any(|index| *index > 7)
+            .any(|index| *index > 28)
     {
         return Err(
-            "Frida OLLVM pointer capture registers must be unique X0-X7 entries (maximum 8)"
+            "Frida OLLVM pointer capture registers must be unique X0-X28 entries (maximum 29)"
                 .to_string(),
         );
     }
     if !(1..=4096).contains(&options.pointer_capture_bytes) {
         return Err("Frida OLLVM pointer capture bytes must be between 1 and 4096".to_string());
+    }
+    if options.stack_capture_bytes > 16_384 {
+        return Err("Frida OLLVM stack capture bytes must be between 0 and 16384".to_string());
     }
     Ok(())
 }
@@ -361,6 +368,7 @@ const IDLE_GAP_MS = __IDLE_GAP_MS__;
 const MAX_EVENTS = __MAX_EVENTS__;
 const POINTER_CAPTURE_REGISTERS = __POINTER_CAPTURE_REGISTERS__;
 const POINTER_CAPTURE_BYTES = __POINTER_CAPTURE_BYTES__;
+const STACK_CAPTURE_BYTES = __STACK_CAPTURE_BYTES__;
 const CAPTURE_SESSION_ID = 'ollvm:' + Date.now().toString(16) + ':' + Process.id;
 let resolvedModuleBase = null;
 let resolvedModuleSize = 0;
@@ -433,6 +441,28 @@ function capturePointerRegisters(context) {
   return captures;
 }
 
+function captureStack(context) {
+  if (STACK_CAPTURE_BYTES <= 0) return [];
+  let pointer = null;
+  try {
+    pointer = context.sp;
+    const pointerText = pointer !== null && pointer !== undefined ? pointer.toString() : null;
+    if (!pointerText || pointerText === '0x0') {
+      return [{ index: 29, label: 'sp-stack-memory', kind: 'byteArray', direction: 'input', phase: 'enter', pointer: pointerText, value: null, byteLength: 0, requestedLength: STACK_CAPTURE_BYTES, readError: 'null SP' }];
+    }
+    const bytes = pointer.readByteArray(STACK_CAPTURE_BYTES);
+    if (bytes === null) {
+      return [{ index: 29, label: 'sp-stack-memory', kind: 'byteArray', direction: 'input', phase: 'enter', pointer: pointerText, value: null, byteLength: 0, requestedLength: STACK_CAPTURE_BYTES, readError: 'readByteArray returned null' }];
+    }
+    const array = new Uint8Array(bytes);
+    let value = '';
+    for (let i = 0; i < array.length; i++) value += ('0' + array[i].toString(16)).slice(-2);
+    return [{ index: 29, label: 'sp-stack-memory', kind: 'byteArray', direction: 'input', phase: 'enter', pointer: pointerText, value: value, byteLength: array.length, requestedLength: STACK_CAPTURE_BYTES }];
+  } catch (error) {
+    return [{ index: 29, label: 'sp-stack-memory', kind: 'byteArray', direction: 'input', phase: 'enter', pointer: pointer ? pointer.toString() : null, value: null, byteLength: 0, requestedLength: STACK_CAPTURE_BYTES, readError: String(error) }];
+  }
+}
+
 function nextFlow(threadId, now) {
   const key = String(threadId);
   let state = threadFlows[key];
@@ -492,7 +522,7 @@ function install() {
             hitSequence: flow.hitSequence,
             candidateStateRegisters: spec.stateRegisters,
             registers: captureRegisters(this.context),
-            captures: capturePointerRegisters(this.context)
+            captures: capturePointerRegisters(this.context).concat(captureStack(this.context))
           });
         }
       });
@@ -522,6 +552,10 @@ setImmediate(install);
         .replace(
             "__POINTER_CAPTURE_BYTES__",
             &options.pointer_capture_bytes.to_string(),
+        )
+        .replace(
+            "__STACK_CAPTURE_BYTES__",
+            &options.stack_capture_bytes.to_string(),
         );
     Ok(FridaOllvmDispatcherHookScript {
         schema_version: FRIDA_OLLVM_HOOK_SCHEMA.to_string(),
@@ -536,12 +570,14 @@ setImmediate(install);
             "Each target is an exact module-relative dispatcher candidate startOffset from the current dynamic OLLVM report; confirm the loaded module is the same binary build.".to_string(),
             "Flow IDs split a thread after the configured idle gap. They are capture-session grouping aids, not proof of function-invocation boundaries.".to_string(),
             "The script captures full ARM64 GPR context at dispatcher hits and emits bounded trace-ui/frida-hook-v1 events for manual import.".to_string(),
-            "Pointer-register memory capture is opt-in, limited to X0-X7 and the configured byte count; unreadable pointers are reported as readError without retrying unbounded reads.".to_string(),
+            "Pointer-register memory capture is opt-in, supports unique X0-X28 entries, and remains bounded by the configured byte count; unreadable pointers are reported as readError.".to_string(),
+            "SP stack capture is opt-in and reads only the configured bytes starting at the captured SP; unreadable or guard-page-crossing ranges are reported as readError without fallback data.".to_string(),
         ],
         protocol_version: FRIDA_HOOK_PROTOCOL.to_string(),
         frida_api_version: "16.x".to_string(),
         capture_pointer_registers,
         pointer_capture_bytes: options.pointer_capture_bytes,
+        stack_capture_bytes: options.stack_capture_bytes,
     })
 }
 
@@ -1209,21 +1245,27 @@ mod tests {
         let generated = generate_frida_ollvm_dispatcher_hook(
             &sample_report(),
             &FridaOllvmDispatcherHookOptions {
-                capture_pointer_registers: vec![3, 0],
+                capture_pointer_registers: vec![19, 3, 0],
                 pointer_capture_bytes: 96,
+                stack_capture_bytes: 4096,
                 ..Default::default()
             },
         )
         .unwrap();
-        assert_eq!(generated.capture_pointer_registers, vec![0, 3]);
+        assert_eq!(generated.capture_pointer_registers, vec![0, 3, 19]);
         assert_eq!(generated.pointer_capture_bytes, 96);
+        assert_eq!(generated.stack_capture_bytes, 4096);
         assert!(generated
             .script
-            .contains("const POINTER_CAPTURE_REGISTERS = [0,3]"));
+            .contains("const POINTER_CAPTURE_REGISTERS = [0,3,19]"));
         assert!(generated
             .script
             .contains("const POINTER_CAPTURE_BYTES = 96"));
+        assert!(generated
+            .script
+            .contains("const STACK_CAPTURE_BYTES = 4096"));
         assert!(generated.script.contains("pointer.readByteArray"));
+        assert!(generated.script.contains("sp-stack-memory"));
         assert!(generated.script.contains("readError"));
     }
 

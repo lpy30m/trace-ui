@@ -261,7 +261,7 @@ fn allowed_seed_register(name: &str) -> bool {
         .is_some_and(|index| index <= 30)
 }
 
-fn prepare_frida_seed(
+pub(crate) fn prepare_frida_seed(
     report: &OllvmReport,
     seed: &AngrStateSeed,
 ) -> Result<(serde_json::Value, AngrOllvmFridaSeedProvenance), String> {
@@ -337,8 +337,9 @@ fn prepare_frida_seed(
             capture_offset
         ));
     }
-    if seed.registers.len() > 32 {
-        return Err("Frida seed contains more than 32 registers".to_string());
+    // X0-X30 plus SP and NZCV are all valid in one complete ARM64 capture.
+    if seed.registers.len() > 33 {
+        return Err("Frida seed contains more than 33 registers".to_string());
     }
     for register in &seed.registers {
         if !allowed_seed_register(&register.name) {

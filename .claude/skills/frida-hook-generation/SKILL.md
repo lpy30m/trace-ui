@@ -9,7 +9,8 @@ Use `mcp__trace-ui__list_frida_hook_recipes`, `mcp__trace-ui__generate_frida_hoo
 `mcp__trace-ui__generate_frida_ollvm_dispatcher_hook`, `mcp__trace-ui__inspect_frida_capture`,
 `mcp__trace-ui__search_frida_capture_events`, `mcp__trace-ui__get_frida_capture_event`,
 `mcp__trace-ui__analyze_frida_crypto_materials`, `mcp__trace-ui__analyze_frida_ollvm_dispatcher_capture`, and
-`mcp__trace-ui__generate_angr_state_seed`. Generated hooks target Frida 16.x JavaScript APIs and emit
+`mcp__trace-ui__generate_angr_state_seed`, `mcp__trace-ui__generate_unicorn_ollvm_script`, and
+`mcp__trace-ui__inspect_unicorn_ollvm_results`. Generated hooks target Frida 16.x JavaScript APIs and emit
 `trace-ui/frida-hook-v1` messages with `send()` plus `TRACE_UI_JSON` strict-JSON log lines.
 
 ## Workflow
@@ -44,8 +45,13 @@ Use `mcp__trace-ui__list_frida_hook_recipes`, `mcp__trace-ui__generate_frida_hoo
     capture. Prefer dedicated `ollvm-dispatcher-hit` events with `captureSessionId`, `flowId`, and
     contiguous `hitSequence`; treat legacy idle-gap-derived flows and every atlas edge as
     Candidate/Related only.
-    If angr needs memory context, set a small explicit X0-X7 pointer register list and byte cap. Keep
-    this opt-in because pointer validity and buffer semantics are unknown; inspect `readError` values.
+    If angr or Unicorn needs memory context, set a small explicit X0-X28 pointer register list and byte
+    cap. For concrete replay, optionally capture a bounded window starting at SP. Keep both opt-in because
+    pointer validity and buffer semantics are unknown; inspect `readError` values.
+12. For concrete OLLVM replay, select one to 32 exact branch/condition-source/dispatcher events and call
+    `generate_unicorn_ollvm_script` with the mandatory exact AArch64 ELF. The user runs the Python
+    manually and imports the JSON with `inspect_unicorn_ollvm_results`. Use missing-memory
+    `baseRegister`/`displacement` suggestions to refine the next bounded Frida capture.
 
 ## Request fields
 
@@ -58,6 +64,8 @@ Use `mcp__trace-ui__list_frida_hook_recipes`, `mcp__trace-ui__generate_frida_hoo
 - `capture_registers`, `capture_return`, `capture_backtrace`.
 - `stalker`: `off`, `calls`, `blocks`, or `instructions`.
 - `stalker_duration_ms` and `max_bytes`: keep bounded.
+- Dispatcher capture additionally accepts unique `capture_pointer_registers` X0-X28,
+  `pointer_capture_bytes` 1-4096, and `stack_capture_bytes` 0-16384 starting at SP.
 
 ## Selection rules
 

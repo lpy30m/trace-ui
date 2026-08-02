@@ -1,10 +1,20 @@
 # Trace UI 当前开发记录与后续交接
 
-最后更新：2026-07-22  
-当前分支：`main`  
+最后更新：2026-08-02
+当前分支：`feat/unicorn-ollvm-replay`
 功能基线提交：`9211fdc feat: harden OLLVM angr handoff`（其后的提交继续记录界面中文化与文档交接）
 
 这份文档是后续 Codex/开发者进入项目时的快速入口。它记录当前已经实现的 Frida 16、OLLVM、IDA、angr 和密码材料分析能力，以及每项能力对应的代码位置和边界。
+
+## 本轮 Unicorn OLLVM 模拟增强
+
+- 新增 `trace-ui/unicorn-ollvm-v1` 生成器和严格结果解析器，强制 exact AArch64 ELF SHA-256 与 1–32 个精确 Frida seed。
+- 生成的独立 Python 使用 Unicorn 2.x、Capstone 和 pyelftools，支持 next-dispatcher、return、call、loop、missing-memory/register、SIMD/system-state、timeout 和 instruction-limit 等显式停止原因。
+- 新增 seed 完整度、dispatcher 转移矩阵、寄存器变化、内存写入和 `baseRegister + displacement` Frida 重捕获建议。
+- OLLVM GUI 新增“模拟增强”页签；MCP 新增 `generate_unicorn_ollvm_script` 与 `inspect_unicorn_ollvm_results`。Trace UI 仍只生成/保存脚本并导入结果，不自动执行模拟器。
+- Dispatcher Frida 捕获扩展为可选 X0-X28 pointer snapshot 与从 SP 开始的 0–16 KiB 栈窗口；默认均关闭，读取失败保持 `readError`。
+- Frida 捕获导入同步接受 X8-X28 和合成 SP 栈 capture index，避免新增内存在生成 angr/Unicorn seed 时被旧 X0-X7 过滤器静默丢弃。
+- Release Action 从真实 `src-tauri` 应用目录启动 Tauri，和本地 Windows MSI/NSIS 成功构建路径保持一致。
 
 ## 本轮 MCP 大捕获检索
 

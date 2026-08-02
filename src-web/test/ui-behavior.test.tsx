@@ -1,9 +1,19 @@
 import { render, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
-import { describe, expect, it } from "vitest";
+import { beforeEach, describe, expect, it, vi } from "vitest";
 import { MaterialRow } from "../src/components/CryptoMaterialsPanel";
+import OllvmUnicornPanel from "../src/components/OllvmUnicornPanel";
 import { filterFridaCaptureEvents } from "../src/utils/fridaCaptureFilter";
-import type { CryptoMaterial, FridaCaptureEvent } from "../src/types/trace";
+import type { CryptoMaterial, FridaCaptureBundle, FridaCaptureEvent, OllvmReport } from "../src/types/trace";
+
+const mocks = vi.hoisted(() => ({
+  invoke: vi.fn(),
+  open: vi.fn(),
+  save: vi.fn(),
+}));
+
+vi.mock("@tauri-apps/api/core", () => ({ invoke: mocks.invoke }));
+vi.mock("@tauri-apps/plugin-dialog", () => ({ open: mocks.open, save: mocks.save }));
 
 const fullHex = "00112233445566778899aabbccddeeff";
 const maskedHex = "0011223344556677••••••••ccddeeff";
@@ -92,5 +102,78 @@ describe("Frida 捕获筛选", () => {
     expect(filterFridaCaptureEvents(events, { query: "libcrypto" }).map(event => event.index)).toEqual([1]);
     expect(filterFridaCaptureEvents(events, { eventType: "hook-leave" }).map(event => event.index)).toEqual([2]);
     expect(filterFridaCaptureEvents(events, { onlyPayload: true }).map(event => event.index)).toEqual([1, 3]);
+  });
+});
+
+describe("OLLVM Unicorn concrete replay", () => {
+  beforeEach(() => {
+    mocks.invoke.mockReset();
+    mocks.open.mockReset();
+    mocks.save.mockReset();
+  });
+
+  it("requires exact ELF and Frida event, then exposes seed quality", async () => {
+    const user = userEvent.setup();
+    const event = makeEvent({
+      index: 7,
+      event: "ollvm-dispatcher-hit",
+      dispatcherOffset: "0x100",
+      registers: { x0: "0x1", sp: "0x50000000", nzcv: "0x0" },
+    });
+    const capture: FridaCaptureBundle = {
+      schema: "trace-ui/frida-hook-v1",
+      sourceFormat: "json",
+      events: [event],
+      hookIds: [event.hookId],
+      enterEventCount: 0,
+      leaveEventCount: 0,
+      stalkerEventCount: 0,
+      warnings: [],
+    };
+    mocks.open
+      .mockResolvedValueOnce("C:\\samples\\libtarget.so")
+      .mockResolvedValueOnce("C:\\samples\\capture.ndjson");
+    mocks.invoke.mockImplementation(async (command: string) => {
+      if (command === "load_frida_capture") return capture;
+      if (command === "generate_unicorn_ollvm_script") {
+        return {
+          fileName: "target-trace-ui-unicorn.py",
+          script: "print('replay')",
+          schemaVersion: "trace-ui/unicorn-ollvm-v1",
+          seeds: [],
+          seedQualities: [{
+            sourceEventIndex: 7,
+            captureOffset: "0x100",
+            status: "partial",
+            registerCount: 3,
+            missingRegisters: ["X1"],
+            memoryRegionCount: 0,
+            capturedMemoryBytes: 0,
+            stackMemoryCaptured: false,
+            warnings: [],
+          }],
+          expectedBinaryIdentity: { binarySha256: "a".repeat(64) },
+          config: {},
+          warnings: [],
+        };
+      }
+      throw new Error(`unexpected command ${command}`);
+    });
+    const report = { scope: { moduleName: "libtarget.so" } } as OllvmReport;
+    render(<OllvmUnicornPanel report={report} />);
+
+    await user.click(screen.getByRole("button", { name: "选择 ELF" }));
+    await user.click(screen.getByRole("button", { name: "导入捕获" }));
+    expect(await screen.findByText(/#7/)).toBeInTheDocument();
+    await user.click(screen.getByRole("button", { name: "生成 Unicorn Python" }));
+
+    expect(await screen.findByText("Seed 完整度")).toBeInTheDocument();
+    expect(screen.getByText(/partial/)).toBeInTheDocument();
+    expect(screen.getByText(/pip install unicorn==2\.1\.4/)).toBeInTheDocument();
+    expect(mocks.invoke).toHaveBeenCalledWith("generate_unicorn_ollvm_script", expect.objectContaining({
+      staticBinaryPath: "C:\\samples\\libtarget.so",
+      fridaEventIndices: [7],
+      stopOnCall: true,
+    }));
   });
 });

@@ -1,14 +1,15 @@
 ---
 name: ida-ollvm-analysis
-description: Analyze ARM64 dynamic traces for OLLVM control-flow-flattening and opaque-branch candidates, compare dispatcher/state/branch stability across controlled runs, map dispatcher/state structural candidates across distinct ELF versions, bridge module-relative evidence and exact-offset Frida captures to IDA and angr, continue trace/Frida seeds through bounded symbolic flows, and inspect exported results through the trace-ui MCP server. Use for ASLR-stable dynamic CFG evidence, dispatcher state trajectories, cross-version relocation candidates, opaque predicate leads, seeded execution-flow candidates, trace-to-IDA annotations, or static/dynamic CFG reconciliation. Treat all OLLVM and angr structural classifications as candidates unless independently proven.
+description: Analyze ARM64 dynamic traces for OLLVM control-flow-flattening and opaque-branch candidates, compare dispatcher/state/branch stability across controlled runs, map dispatcher/state structural candidates across distinct ELF versions, bridge module-relative evidence and exact-offset Frida captures to IDA, angr, and Unicorn, continue seeds through bounded symbolic or concrete flows, and inspect exported results through the trace-ui MCP server. Use for ASLR-stable dynamic CFG evidence, dispatcher state trajectories, cross-version relocation candidates, opaque predicate leads, seeded execution-flow candidates, trace-to-IDA annotations, concrete replay, or static/dynamic CFG reconciliation. Treat all OLLVM, angr, and Unicorn structural classifications as candidates unless independently proven.
 ---
 
-# Analyze OLLVM traces and bridge them to IDA or angr
+# Analyze OLLVM traces and bridge them to IDA, angr, or Unicorn
 
 Use `mcp__trace-ui__analyze_ollvm`, `mcp__trace-ui__compare_ollvm_traces`, `mcp__trace-ui__map_ollvm_versions`, `mcp__trace-ui__generate_ida_ollvm_script`,
 `mcp__trace-ui__inspect_ida_annotations`, `mcp__trace-ui__generate_angr_ollvm_script`,
 `mcp__trace-ui__inspect_angr_ollvm_results`, `mcp__trace-ui__inspect_frida_capture`, and
-`mcp__trace-ui__generate_angr_state_seed`. For multi-dispatcher manual capture, also use
+`mcp__trace-ui__generate_angr_state_seed`, `mcp__trace-ui__generate_unicorn_ollvm_script`, and
+`mcp__trace-ui__inspect_unicorn_ollvm_results`. For multi-dispatcher manual capture, also use
 `mcp__trace-ui__generate_frida_ollvm_dispatcher_hook` and
 `mcp__trace-ui__analyze_frida_ollvm_dispatcher_capture`.
 
@@ -27,6 +28,9 @@ Use `mcp__trace-ui__analyze_ollvm`, `mcp__trace-ui__compare_ollvm_traces`, `mcp_
    - Run `generate_angr_ollvm_script` for manual execution in a separate Python/angr environment
      against the exact ELF/shared object. Import `trace-ui/angr-ollvm-v1` JSON with
      `inspect_angr_ollvm_results`.
+   - Run `generate_unicorn_ollvm_script` when one to 32 exact-offset Frida events provide concrete
+     state. The exact AArch64 ELF is mandatory. Run the Python manually, then import
+     `trace-ui/unicorn-ollvm-v1` JSON with `inspect_unicorn_ollvm_results`.
 6. For controlled runs, call `compare_ollvm_traces` with two to sixteen case-specific scopes and the
    exact `static_binary_path` for every case. Enable `require_matching_binary:true`; differing SHA-256
    values must stop the comparison. Prioritize
@@ -44,6 +48,10 @@ Use `mcp__trace-ui__analyze_ollvm`, `mcp__trace-ui__compare_ollvm_traces`, `mcp_
    user run it manually. Import the `hook-enter` event and pass it to `generate_angr_ollvm_script`.
    Keep bounded flow enabled to stop at the next dispatcher, loop, external target, dead end, or bound;
    inspect source/target state-register values as Candidate/Related leads only.
+   For a fast concrete confirmation, pass the same exact event and exact ELF to
+   `generate_unicorn_ollvm_script`. Prefer a bounded SP stack capture and only the X0-X28 pointer
+   snapshots justified by missing-memory evidence. Review next-dispatcher transition groups,
+   register changes, missing-memory stops, and recapture suggestions before escalating to angr.
 10. To observe several ranked dispatchers in one user-controlled run, call
     `generate_frida_ollvm_dispatcher_hook`, return/save the Frida 16.x script, and stop until the user
     supplies its capture. Then call `analyze_frida_ollvm_dispatcher_capture` on the same OLLVM scope.
@@ -97,6 +105,11 @@ Use `mcp__trace-ui__analyze_ollvm`, `mcp__trace-ui__compare_ollvm_traces`, `mcp_
 - Do not mark OLLVM findings `Verified` solely from structural evidence.
 - Cross-version operation/CFG/state-role similarity is a relocation lead only. Module renames and offset
   changes are allowed, while equal hashes are rejected to keep cross-version and same-build semantics separate.
+- Unicorn is concrete replay, not path exploration. A successful next-dispatcher transition applies only
+  to the exact captured seed. Missing memory, uncaptured registers, SIMD state, TLS/system registers,
+  calls, loops, timeouts, and instruction bounds must remain explicit stop reasons.
+- Writable ELF segment bytes are not assumed to equal runtime state. Prefer exact Frida byteArray regions;
+  use register-relative recapture suggestions to improve a partial seed instead of silently filling zeros.
 
 ## IDA bridge boundary
 
@@ -110,6 +123,13 @@ Trace UI generates a standalone Python script but does not install or execute an
 manually. Prefer CFGFast first; enable CFGEmulated only for a narrow scope and accept fallback. Treat
 static CFG reconciliation, unconstrained probes, and bounded seeded-flow paths as Candidate/Related
 evidence, never Verified by themselves. Keep depth within 1-64 and states per probe within 1-256.
+
+## Unicorn bridge boundary
+
+Trace UI generates a standalone Python script but does not install or execute Unicorn. Require the exact
+AArch64 ELF and at least one exact-offset Frida event. Keep instructions within 1-2,000,000 and timeout
+within 1-60,000 ms; begin with 50,000 instructions and 5,000 ms. Stop on calls by default. Treat the
+transition matrix as grouped exact-seed replay evidence, never a complete state machine or recovered CFG.
 
 ## Reporting
 

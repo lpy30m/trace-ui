@@ -23,6 +23,9 @@ const MAX_FRIDA_PBKDF2_ITERATIONS: u32 = 1_000_000;
 const DEFAULT_FRIDA_EVENT_PAGE_SIZE: u32 = 50;
 const MAX_FRIDA_EVENT_PAGE_SIZE: u32 = 200;
 const MAX_FRIDA_EVENT_DETAIL_BYTES: u32 = 1_048_576;
+// Generic hook arguments use X0-X7. OLLVM dispatcher hooks additionally use
+// X8-X28 pointer snapshots and the synthetic index 29 for an SP stack window.
+const MAX_FRIDA_CAPTURE_INDEX: u64 = 29;
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -270,7 +273,7 @@ fn object_field<'a>(object: &'a Map<String, Value>, name: &str) -> Option<&'a Ma
 fn parse_capture(value: &Value) -> Option<FridaCapturedValue> {
     let object = value.as_object()?;
     let index = u64_field(object, "index")?;
-    if index > 7 {
+    if index > MAX_FRIDA_CAPTURE_INDEX {
         return None;
     }
     Some(FridaCapturedValue {
@@ -1934,6 +1937,68 @@ TRACE_UI_JSON {"protocol":"trace-ui/frida-hook-v1","eventId":"one:event:2","hook
             .iter()
             .any(|register| register.name == "nzcv"));
         assert_eq!(seed.memory_regions.len(), 1);
+    }
+
+    #[test]
+    fn preserves_extended_ollvm_pointer_and_stack_captures_in_state_seed() {
+        let capture = serde_json::json!([{
+            "protocol": FRIDA_HOOK_PROTOCOL,
+            "hookId": "ollvm-dispatchers",
+            "event": "ollvm-dispatcher-hit",
+            "functionName": "dispatcher-100",
+            "timestampMs": 1,
+            "threadId": 1,
+            "module": "libtarget.so",
+            "moduleBase": "0x71000000",
+            "moduleSize": 0x4000,
+            "target": "0x71000100",
+            "dispatcherOffset": "0x100",
+            "registers": {
+                "x19": "0x90000000",
+                "sp": "0xa0000000",
+                "pc": "0x71000100",
+                "nzcv": "0x0"
+            },
+            "captures": [
+                {
+                    "index": 19,
+                    "label": "x19-memory",
+                    "kind": "byteArray",
+                    "direction": "input",
+                    "phase": "enter",
+                    "pointer": "0x90000000",
+                    "value": "00112233",
+                    "byteLength": 4,
+                    "requestedLength": 4
+                },
+                {
+                    "index": 29,
+                    "label": "sp-stack-memory",
+                    "kind": "byteArray",
+                    "direction": "input",
+                    "phase": "enter",
+                    "pointer": "0xa0000000",
+                    "value": "aabbccdd",
+                    "byteLength": 4,
+                    "requestedLength": 4
+                }
+            ]
+        }]);
+        let bundle = parse_frida_capture_bundle(&serde_json::to_vec(&capture).unwrap()).unwrap();
+        assert_eq!(bundle.events[0].captures.len(), 2);
+        assert_eq!(bundle.events[0].captures[0].index, 19);
+        assert_eq!(bundle.events[0].captures[1].index, 29);
+
+        let seed = generate_angr_state_seed(&bundle, 0, true, true).unwrap();
+        assert_eq!(seed.memory_regions.len(), 2);
+        assert!(seed
+            .memory_regions
+            .iter()
+            .any(|region| region.label == "x19-memory" && region.address == "0x90000000"));
+        assert!(seed
+            .memory_regions
+            .iter()
+            .any(|region| { region.label == "sp-stack-memory" && region.address == "0xa0000000" }));
     }
 
     #[test]

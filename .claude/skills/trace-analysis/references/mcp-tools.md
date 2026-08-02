@@ -84,7 +84,8 @@ Line numbers in taint `@LINE` specs are **1-based**; `start_seq`/`end_seq`/`seq`
   plus NZCV when the Frida 16 ARM64 context exposes it; buffer argument selection remains X0-X7.
 - **generate_frida_ollvm_dispatcher_hook** accepts an OLLVM scope plus
   `max_dispatchers?=12`, `idle_gap_ms?=1000`, `max_events?=50000`,
-  `capture_pointer_registers?=[]` (unique X0-X7), and `pointer_capture_bytes?=64` (1-4096). It
+  `capture_pointer_registers?=[]` (unique X0-X28), `pointer_capture_bytes?=64` (1-4096), and
+  `stack_capture_bytes?=0` (0-16384 bytes starting at SP). It
   generates one bounded Frida 16.x script for ranked dispatcher `startOffset` values, up to 64 targets
   and 200000 hits. Dedicated `ollvm-dispatcher-hit` events include full ARM64 GPRs,
   `dispatcherOffset`, `captureSessionId`, `flowId`, `hitSequence`, candidate state registers, and
@@ -177,6 +178,20 @@ Line numbers in taint `@LINE` specs are **1-based**; `start_seq`/`end_seq`/`seq`
   successors, dynamic-only successors, optional branch probes, and optional exact dispatcher-entry
   probes with bounded paths and state-register values. Blank-state and dispatcher-flow results are
   candidate evidence and do not prove real-entry reachability or a recovered/deobfuscated CFG.
+- **generate_unicorn_ollvm_script** accepts the same trace scope plus mandatory
+  `frida_capture_path`, one to 32 exact `frida_event_indices` (legacy `frida_event_index` is accepted),
+  mandatory `static_binary_path`, and bounded concrete limits: `max_instructions?=50000`,
+  `timeout_ms?=5000`, `max_memory_writes?=4096`, `max_recorded_offsets?=50000`,
+  `stop_on_call?=true`, and `loop_visit_limit?=2`. Every event must exactly match an opaque branch,
+  condition-source offset, or dispatcher entry. The generated Python requires Unicorn, Capstone, and
+  pyelftools, verifies the AArch64 ELF SHA-256, maps PT_LOAD segments, applies captured registers and
+  byteArray memory, and stops explicitly at next-dispatcher, return, call, loop, missing register/memory,
+  unsupported SIMD/system state, timeout, or bounds. It never silently treats uncaptured runtime memory
+  as valid zero state.
+- **inspect_unicorn_ollvm_results** `{file_path}` strictly validates
+  `trace-ui/unicorn-ollvm-v1`, including exact ELF identity, per-event concrete replay runs,
+  dispatcher transition groups, register changes, memory writes, missing-state evidence, and bounded
+  register-relative Frida recapture suggestions. Results remain Candidate/Related.
 
 ## Taint (data-flow slicing)
 

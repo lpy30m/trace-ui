@@ -1,6 +1,7 @@
 import React, { useCallback, useEffect, useMemo, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { useSelectedSeq } from "../stores/selectedSeqStore";
+import OllvmUnicornPanel from "./OllvmUnicornPanel";
 import type {
   AngrOllvmResultBundle,
   AngrOllvmScript,
@@ -73,7 +74,7 @@ function parsePointerRegisters(value: string): number[] | null {
   if (!trimmed) return [];
   const result = new Set<number>();
   for (const token of trimmed.split(/[\s,;]+/)) {
-    const match = /^x?([0-7])$/i.exec(token);
+    const match = /^x?([0-9]|1[0-9]|2[0-8])$/i.exec(token);
     if (!match) return null;
     result.add(Number(match[1]));
   }
@@ -111,7 +112,7 @@ export default function OllvmPanel({ sessionId, onJumpToSeq, onPrepareFridaHook 
   const [mappingVersions, setMappingVersions] = useState(false);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const [section, setSection] = useState<"dispatchers" | "state" | "opaque" | "blocks" | "edges" | "compare" | "versions" | "atlas" | "ida" | "angr">("dispatchers");
+  const [section, setSection] = useState<"dispatchers" | "state" | "opaque" | "blocks" | "edges" | "compare" | "versions" | "atlas" | "ida" | "angr" | "unicorn">("dispatchers");
   const [openBlock, setOpenBlock] = useState<string | null>(null);
   const [idaImageBase, setIdaImageBase] = useState("");
   const [addUserXrefs, setAddUserXrefs] = useState(false);
@@ -138,6 +139,7 @@ export default function OllvmPanel({ sessionId, onJumpToSeq, onPrepareFridaHook 
   const [atlasMaxEvents, setAtlasMaxEvents] = useState("50000");
   const [atlasPointerRegisters, setAtlasPointerRegisters] = useState("");
   const [atlasPointerBytes, setAtlasPointerBytes] = useState("64");
+  const [atlasStackBytes, setAtlasStackBytes] = useState("0");
   const [atlasScript, setAtlasScript] = useState<FridaOllvmDispatcherHookScript | null>(null);
   const [atlasBundle, setAtlasBundle] = useState<FridaCaptureBundle | null>(null);
   const [atlasCapturePath, setAtlasCapturePath] = useState<string | null>(null);
@@ -396,7 +398,7 @@ export default function OllvmPanel({ sessionId, onJumpToSeq, onPrepareFridaHook 
     setError(null);
     try {
       const capturePointerRegisters = parsePointerRegisters(atlasPointerRegisters);
-      if (capturePointerRegisters == null) throw new Error("Pointer registers must be a comma-separated subset of X0-X7");
+      if (capturePointerRegisters == null) throw new Error("Pointer registers must be a comma-separated subset of X0-X28");
       const generated = await invoke<FridaOllvmDispatcherHookScript>("generate_frida_ollvm_dispatcher_hook", {
         report,
         maxDispatchers: optionalNumber(atlasMaxDispatchers) ?? 12,
@@ -404,6 +406,7 @@ export default function OllvmPanel({ sessionId, onJumpToSeq, onPrepareFridaHook 
         maxEvents: optionalNumber(atlasMaxEvents) ?? 50_000,
         capturePointerRegisters,
         pointerCaptureBytes: optionalNumber(atlasPointerBytes) ?? 64,
+        stackCaptureBytes: optionalNumber(atlasStackBytes) ?? 0,
       });
       setAtlasScript(generated);
       setAtlasDisplay("script");
@@ -414,7 +417,7 @@ export default function OllvmPanel({ sessionId, onJumpToSeq, onPrepareFridaHook 
     } finally {
       setAtlasBusy(false);
     }
-  }, [atlasIdleGapMs, atlasMaxDispatchers, atlasMaxEvents, atlasPointerBytes, atlasPointerRegisters, report]);
+  }, [atlasIdleGapMs, atlasMaxDispatchers, atlasMaxEvents, atlasPointerBytes, atlasPointerRegisters, atlasStackBytes, report]);
 
   const saveAtlasHook = useCallback(async () => {
     if (!report) return;
@@ -428,7 +431,7 @@ export default function OllvmPanel({ sessionId, onJumpToSeq, onPrepareFridaHook 
     if (typeof path !== "string") return;
     try {
       const capturePointerRegisters = parsePointerRegisters(atlasPointerRegisters);
-      if (capturePointerRegisters == null) throw new Error("Pointer registers must be a comma-separated subset of X0-X7");
+      if (capturePointerRegisters == null) throw new Error("Pointer registers must be a comma-separated subset of X0-X28");
       const written = await invoke<string>("save_frida_ollvm_dispatcher_hook", {
         path,
         report,
@@ -437,13 +440,14 @@ export default function OllvmPanel({ sessionId, onJumpToSeq, onPrepareFridaHook 
         maxEvents: optionalNumber(atlasMaxEvents) ?? 50_000,
         capturePointerRegisters,
         pointerCaptureBytes: optionalNumber(atlasPointerBytes) ?? 64,
+        stackCaptureBytes: optionalNumber(atlasStackBytes) ?? 0,
       });
       setAtlasSavedPath(written);
       setError(null);
     } catch (reason) {
       setError(String(reason));
     }
-  }, [atlasIdleGapMs, atlasMaxDispatchers, atlasMaxEvents, atlasPointerBytes, atlasPointerRegisters, atlasScript, generateAtlasHook, report]);
+  }, [atlasIdleGapMs, atlasMaxDispatchers, atlasMaxEvents, atlasPointerBytes, atlasPointerRegisters, atlasScript, atlasStackBytes, generateAtlasHook, report]);
 
   const importAtlasCapture = useCallback(async () => {
     const { open } = await import("@tauri-apps/plugin-dialog");
@@ -757,6 +761,7 @@ export default function OllvmPanel({ sessionId, onJumpToSeq, onPrepareFridaHook 
         {sectionButton("atlas", "Frida Atlas")}
         {sectionButton("ida", "IDA 桥接")}
         {sectionButton("angr", "angr 桥接")}
+        {sectionButton("unicorn", "模拟增强")}
         <label style={{ display: "flex", alignItems: "center", gap: 4, marginLeft: 10, color: "var(--text-secondary)", fontSize: 10, flexShrink: 0, whiteSpace: "nowrap" }}>
           <input type="checkbox" checked={includeChildCalls} onChange={event => setIncludeChildCalls(event.target.checked)} />
           包含子调用
@@ -1132,9 +1137,11 @@ export default function OllvmPanel({ sessionId, onJumpToSeq, onPrepareFridaHook 
               <input id="atlas-pointer-registers" placeholder="X0,X1" style={inputStyle} value={atlasPointerRegisters} onChange={event => { setAtlasPointerRegisters(event.target.value); setAtlasScript(null); }} />
               <label htmlFor="atlas-pointer-bytes">每个指针读取字节数</label>
               <input id="atlas-pointer-bytes" type="number" min={1} max={4096} style={inputStyle} value={atlasPointerBytes} onChange={event => { setAtlasPointerBytes(event.target.value); setAtlasScript(null); }} />
+              <label htmlFor="atlas-stack-bytes">SP 栈捕获字节数</label>
+              <input id="atlas-stack-bytes" type="number" min={0} max={16384} style={inputStyle} value={atlasStackBytes} onChange={event => { setAtlasStackBytes(event.target.value); setAtlasScript(null); }} />
             </div>
             <div style={{ marginTop: 6, color: "var(--text-tertiary)", lineHeight: 1.4 }}>
-              Optional X0-X7 memory snapshots are bounded and become byteArray regions for later angr seeds. Invalid or unreadable pointers emit readError; no automatic retry or process control is performed.
+              Optional X0-X28 pointer snapshots and the bounded SP stack window become byteArray regions for later angr/Unicorn seeds. Invalid or unreadable ranges emit readError; no automatic retry or process control is performed.
             </div>
             <div style={{ display: "flex", gap: 6, flexWrap: "wrap", marginTop: 10 }}>
               <button type="button" style={{ ...buttonStyle, background: "var(--btn-primary)", color: "#fff", border: "none", opacity: atlasBusy ? 0.6 : 1 }} disabled={atlasBusy} onClick={generateAtlasHook}>{atlasBusy ? "处理中…" : "生成 Frida 16 脚本"}</button>
@@ -1163,6 +1170,7 @@ export default function OllvmPanel({ sessionId, onJumpToSeq, onPrepareFridaHook 
                 <strong>{atlasScript.targets.length} dispatcher targets</strong>
                 <div>{atlasScript.fridaApiVersion} · idle {atlasScript.idleGapMs} ms · limit {atlasScript.maxEvents.toLocaleString()}</div>
                 <div>{atlasScript.capturePointerRegisters.length > 0 ? `${atlasScript.capturePointerRegisters.map(index => `X${index}`).join(", ")} · ${atlasScript.pointerCaptureBytes} bytes each` : "pointer memory capture disabled"}</div>
+                <div>{atlasScript.stackCaptureBytes > 0 ? `SP stack · ${atlasScript.stackCaptureBytes} bytes` : "stack capture disabled"}</div>
                 <div style={{ marginTop: 4, display: "flex", gap: 4, flexWrap: "wrap" }}>
                   {atlasScript.targets.map(target => <button key={target.offset} type="button" style={buttonStyle} onClick={() => jumpOffset(target.offset)}>{target.offset} · {target.score}</button>)}
                 </div>
@@ -1489,6 +1497,7 @@ export default function OllvmPanel({ sessionId, onJumpToSeq, onPrepareFridaHook 
           )}
         </div>
       )}
+      {report && section === "unicorn" && <OllvmUnicornPanel report={report} />}
     </div>
   );
 }

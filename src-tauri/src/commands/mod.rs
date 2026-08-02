@@ -718,6 +718,7 @@ pub fn generate_frida_ollvm_dispatcher_hook(
     max_events: Option<u32>,
     capture_pointer_registers: Option<Vec<u8>>,
     pointer_capture_bytes: Option<u32>,
+    stack_capture_bytes: Option<u32>,
 ) -> Result<trace_core::FridaOllvmDispatcherHookScript, String> {
     trace_core::generate_frida_ollvm_dispatcher_hook(
         &report,
@@ -727,6 +728,7 @@ pub fn generate_frida_ollvm_dispatcher_hook(
             max_events: max_events.unwrap_or(50_000),
             capture_pointer_registers: capture_pointer_registers.unwrap_or_default(),
             pointer_capture_bytes: pointer_capture_bytes.unwrap_or(64),
+            stack_capture_bytes: stack_capture_bytes.unwrap_or(0),
         },
     )
 }
@@ -740,6 +742,7 @@ pub async fn save_frida_ollvm_dispatcher_hook(
     max_events: Option<u32>,
     capture_pointer_registers: Option<Vec<u8>>,
     pointer_capture_bytes: Option<u32>,
+    stack_capture_bytes: Option<u32>,
 ) -> Result<String, String> {
     tauri::async_runtime::spawn_blocking(move || {
         let generated = trace_core::generate_frida_ollvm_dispatcher_hook(
@@ -750,6 +753,7 @@ pub async fn save_frida_ollvm_dispatcher_hook(
                 max_events: max_events.unwrap_or(50_000),
                 capture_pointer_registers: capture_pointer_registers.unwrap_or_default(),
                 pointer_capture_bytes: pointer_capture_bytes.unwrap_or(64),
+                stack_capture_bytes: stack_capture_bytes.unwrap_or(0),
             },
         )?;
         let trimmed = path.trim();
@@ -1230,6 +1234,150 @@ pub async fn load_angr_ollvm_results(
         let bytes = std::fs::read(trimmed)
             .map_err(|error| format!("failed to read angr results: {error}"))?;
         trace_core::parse_angr_ollvm_result_bundle(&bytes)
+    })
+    .await
+    .map_err(|error| format!("Task execution failed: {error}"))?
+}
+
+fn inspect_required_unicorn_elf(
+    static_binary_path: &str,
+) -> Result<trace_core::ElfBinaryIdentity, String> {
+    let path = static_binary_path.trim();
+    if path.is_empty() {
+        return Err("Unicorn OLLVM replay requires an exact ELF path".to_string());
+    }
+    let identity = trace_core::inspect_elf_binary(path)?;
+    if identity.elf_machine != 183 {
+        return Err(format!(
+            "Unicorn OLLVM replay requires an AArch64 ELF, got {}",
+            identity.architecture
+        ));
+    }
+    Ok(identity)
+}
+
+#[tauri::command]
+pub fn generate_unicorn_ollvm_script(
+    report: trace_core::OllvmReport,
+    max_instructions: Option<u64>,
+    timeout_ms: Option<u64>,
+    max_memory_writes: Option<u64>,
+    max_recorded_offsets: Option<u64>,
+    stop_on_call: Option<bool>,
+    loop_visit_limit: Option<u32>,
+    frida_bundle: Option<trace_core::FridaCaptureBundle>,
+    frida_event_index: Option<u64>,
+    frida_event_indices: Option<Vec<u64>>,
+    static_binary_path: String,
+) -> Result<trace_core::UnicornOllvmScript, String> {
+    let seeds = build_angr_frida_seeds(
+        frida_bundle.as_ref(),
+        frida_event_index,
+        frida_event_indices,
+        true,
+        true,
+    )?;
+    if seeds.is_empty() {
+        return Err(
+            "Unicorn concrete replay requires at least one selected Frida event".to_string(),
+        );
+    }
+    let identity = inspect_required_unicorn_elf(&static_binary_path)?;
+    trace_core::generate_unicorn_ollvm_script(
+        &report,
+        seeds.iter().collect(),
+        trace_core::UnicornOllvmConfig {
+            max_instructions: max_instructions.unwrap_or(50_000),
+            timeout_ms: timeout_ms.unwrap_or(5_000),
+            max_memory_writes: max_memory_writes.unwrap_or(4_096),
+            max_recorded_offsets: max_recorded_offsets.unwrap_or(50_000),
+            stop_on_call: stop_on_call.unwrap_or(true),
+            loop_visit_limit: loop_visit_limit.unwrap_or(2),
+        },
+        &identity,
+    )
+}
+
+#[tauri::command]
+pub async fn save_unicorn_ollvm_script(
+    path: String,
+    report: trace_core::OllvmReport,
+    max_instructions: Option<u64>,
+    timeout_ms: Option<u64>,
+    max_memory_writes: Option<u64>,
+    max_recorded_offsets: Option<u64>,
+    stop_on_call: Option<bool>,
+    loop_visit_limit: Option<u32>,
+    frida_bundle: Option<trace_core::FridaCaptureBundle>,
+    frida_event_index: Option<u64>,
+    frida_event_indices: Option<Vec<u64>>,
+    static_binary_path: String,
+) -> Result<String, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        let seeds = build_angr_frida_seeds(
+            frida_bundle.as_ref(),
+            frida_event_index,
+            frida_event_indices,
+            true,
+            true,
+        )?;
+        if seeds.is_empty() {
+            return Err(
+                "Unicorn concrete replay requires at least one selected Frida event".to_string(),
+            );
+        }
+        let identity = inspect_required_unicorn_elf(&static_binary_path)?;
+        let generated = trace_core::generate_unicorn_ollvm_script(
+            &report,
+            seeds.iter().collect(),
+            trace_core::UnicornOllvmConfig {
+                max_instructions: max_instructions.unwrap_or(50_000),
+                timeout_ms: timeout_ms.unwrap_or(5_000),
+                max_memory_writes: max_memory_writes.unwrap_or(4_096),
+                max_recorded_offsets: max_recorded_offsets.unwrap_or(50_000),
+                stop_on_call: stop_on_call.unwrap_or(true),
+                loop_visit_limit: loop_visit_limit.unwrap_or(2),
+            },
+            &identity,
+        )?;
+        let trimmed = path.trim();
+        if trimmed.is_empty() {
+            return Err("output path must not be empty".to_string());
+        }
+        let mut output_path = std::path::PathBuf::from(trimmed);
+        if output_path.extension().and_then(|value| value.to_str()) != Some("py") {
+            output_path.set_extension("py");
+        }
+        let parent = output_path
+            .parent()
+            .filter(|value| !value.as_os_str().is_empty())
+            .ok_or_else(|| "output path must include a parent directory".to_string())?;
+        if !parent.is_dir() {
+            return Err(format!(
+                "output directory does not exist: {}",
+                parent.display()
+            ));
+        }
+        std::fs::write(&output_path, generated.script.as_bytes())
+            .map_err(|error| format!("failed to save Unicorn replay script: {error}"))?;
+        Ok(output_path.to_string_lossy().into_owned())
+    })
+    .await
+    .map_err(|error| format!("Task execution failed: {error}"))?
+}
+
+#[tauri::command]
+pub async fn load_unicorn_ollvm_results(
+    path: String,
+) -> Result<trace_core::UnicornOllvmResultBundle, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        let trimmed = path.trim();
+        if trimmed.is_empty() {
+            return Err("Unicorn result path must not be empty".to_string());
+        }
+        let bytes = std::fs::read(trimmed)
+            .map_err(|error| format!("failed to read Unicorn results: {error}"))?;
+        trace_core::parse_unicorn_ollvm_result_bundle(&bytes)
     })
     .await
     .map_err(|error| format!("Task execution failed: {error}"))?

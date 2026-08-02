@@ -93,7 +93,7 @@ claude mcp add trace-ui --transport http http://127.0.0.1:19821/mcp
 | 密码分析 | `analyze_crypto_functions`、`analyze_crypto_implementations`、`analyze_crypto_materials`、`analyze_known_digest` |
 | 多 trace 参数隔离 | `compare_crypto_material_traces`、`compare_crypto_table_traces` |
 | Frida 16 脚本与回导 | `list_frida_hook_recipes`、`generate_frida_hook`、`generate_frida_ollvm_dispatcher_hook`、`inspect_frida_capture`、`search_frida_capture_events`、`get_frida_capture_event`、`analyze_frida_crypto_materials`、`analyze_frida_ollvm_dispatcher_capture`、`generate_angr_state_seed`（用户手动执行 Hook） |
-| IDA / angr / OLLVM | `analyze_ollvm`、`compare_ollvm_traces`、`map_ollvm_versions`、`generate_ida_ollvm_script`、`inspect_ida_annotations`、`generate_angr_ollvm_script`、`inspect_angr_ollvm_results` |
+| IDA / angr / Unicorn / OLLVM | `analyze_ollvm`、`compare_ollvm_traces`、`map_ollvm_versions`、`generate_ida_ollvm_script`、`inspect_ida_annotations`、`generate_angr_ollvm_script`、`inspect_angr_ollvm_results`、`generate_unicorn_ollvm_script`、`inspect_unicorn_ollvm_results` |
 | 证据与编排 | `list_analyses`、`get_analysis`、`compare_analyses`、`auto_investigate` |
 
 > 详细的工具参数和分析套路请参考仓库内的 [trace-analysis MCP 工具表](.claude/skills/trace-analysis/references/mcp-tools.md) 与 [实战案例](.claude/skills/trace-analysis/references/playbook-examples.md)。
@@ -168,15 +168,27 @@ Crypto 面板新增四条面向 native 逆向的工作流：
 
 - **Materials**：从调用 ABI、hexdump 和语义复算中汇总 key/input/output/IV/nonce/salt/AAD/tag 等材料。只有确定性复算结果会进入 Verified；仅凭参数位置推断的角色保持 Related。
 - **Frida Hook**：可从 Crypto Function/Material 或 OLLVM branch/condition-source/dispatcher-entry 候选预填 module-relative offset，也可套用 OpenSSL/BoringSSL、Apple CommonCrypto 的 MD5/SHA、HMAC、PBKDF2、EVP、CCCrypt 审计配方，生成 `trace-ui/frida-hook-v1` 的 Frida 16.x JavaScript。参数 buffer 仍限定 X0-X7；开启寄存器捕获时记录 X0-X28、FP/LR/SP/PC 和运行时可提供的 NZCV。支持固定长度、长度寄存器、返回时 `*Xn` 输出长度、backtrace 和有界 Stalker。长度指针读取失败会输出 `readError`，不会回退读取最大缓冲区。用户手动执行并保存结果；应用不会 attach、spawn、load 或执行脚本。
-- **Frida OLLVM Dispatcher Atlas**：`generate_frida_ollvm_dispatcher_hook` 从当前 OLLVM report 的 ranked dispatcher 候选生成一个有界 Frida 16.x 脚本（默认 12 个目标、50,000 hits），脚本只在精确入口命中时发送完整 ARM64 GPR、运行时 `target - moduleBase`、`captureSessionId`、`flowId` 与 `hitSequence`。可选指定 X0-X7 对应的 bounded pointer memory snapshot，供后续 angr memory seed 使用；默认关闭。用户自行 attach/spawn/load/run 并保存 JSON/NDJSON 后，`analyze_frida_ollvm_dispatcher_capture` 只接受与当前报告 `startOffset` 精确匹配的事件，构建节点、相邻 transition、state-register value distribution、state changes 和 flow paths；不同 session/线程/flow 或缺失连续序号不会连边。module basename + offset 不能证明 exact binary，legacy flow 也只是 idle-gap 启发式。
+- **Frida OLLVM Dispatcher Atlas**：`generate_frida_ollvm_dispatcher_hook` 从当前 OLLVM report 的 ranked dispatcher 候选生成一个有界 Frida 16.x 脚本（默认 12 个目标、50,000 hits），脚本只在精确入口命中时发送完整 ARM64 GPR、运行时 `target - moduleBase`、`captureSessionId`、`flowId` 与 `hitSequence`。可选指定 X0-X28 的 bounded pointer memory snapshot，并可选从 SP 开始捕获最多 16 KiB 栈窗口，供后续 angr/Unicorn seed 使用；默认关闭。用户自行 attach/spawn/load/run 并保存 JSON/NDJSON 后，`analyze_frida_ollvm_dispatcher_capture` 只接受与当前报告 `startOffset` 精确匹配的事件，构建节点、相邻 transition、state-register value distribution、state changes 和 flow paths；不同 session/线程/flow 或缺失连续序号不会连边。module basename + offset 不能证明 exact binary，legacy flow 也只是 idle-gap 启发式。
 - **IDA / OLLVM**：按 ASLR 稳定的 module offset 生成动态 basic blocks/edges，排序控制流平坦化 dispatcher 与 opaque branch 候选，并从寄存器 checkpoint 重建 dispatcher block-entry 状态值及变化边。条件分支会聚合条件寄存器/NZCV 的观察值、N/Z/C/V set/clear 分布及 outcome 对应关系，并明确显示缺失观察；该 profile 可帮助定位 opaque predicate，但不能证明未执行路径不可达。IDAPython 会写入候选、状态变化和 branch register snapshot 注释。动态 trace 只覆盖实际执行路径，因此这些结论始终是候选证据，不代表完整静态 CFG 或自动去混淆。
 - **多运行 OLLVM**：可为 2–16 个已打开 trace 分别填写 node/range，并为选中的运行绑定 exact ELF。默认要求所有 ELF 的 SHA-256 完全一致；不同哈希会直接拒绝按 module offset 对齐。报告同时保存 Build ID（若 ELF 提供）和身份状态。`alternate-outcomes-observed` 是反对“全局 opaque”的直接动态证据；`stable-single-outcome-across-runs` 仍不能证明未执行路径不可达，ELF 一致也不会把结构证据升级为 Verified。
 - **跨版本 OLLVM**：独立的 Cross-version 页面和 `map_ollvm_versions` MCP 工具接受 2–8 个版本；每个版本必须提供唯一 version ID、独立 trace scope 与 exact AArch64 ELF，并要求 SHA-256 两两不同。baseline dispatcher 会在其他版本的动态 blocks 中按最长公共归一化操作序列、终止操作、出入度、edge kind、dispatcher role 和 state-register 行为匹配 top-N 候选；前两名分差不超过 5 时明确标记 ambiguous。模块名和 offset 可以变化，但 source offset、concrete state value、Frida capture 与 angr seed 绝不能直接套到目标版本，必须为每个版本重新生成 exact-offset Hook/seed。全部结果保持 Candidate/Related。
 - **angr / OLLVM**：基于同一份动态报告生成独立 Python 脚本，用户在自己的 angr 环境中手动运行。GUI/MCP 可选一个 exact AArch64 ELF；Trace UI 在生成时记录其 SHA-256，脚本在建立 angr Project、CFG 或 symbolic state 前重新计算并拒绝哈希不一致的文件。一次可从同一用户捕获文件选择最多 32 个 `hook-enter`/`ollvm-dispatcher-hit` 事件，每个 event 独立匹配 branch、condition-source 或 dispatcher `startOffset` 并保留 source event provenance。默认 CFGFast，可选 CFGEmulated 并自动回退；结果对账 static successor、unobserved static successor 与 dynamic-only successor。每个 opaque 候选会做 blank-state 和 trace-register probe；首个 trace-register seed 以及每个 exact-offset Frida seed 还可继续做有界 symbolic flow exploration，默认深度 8、每个 probe 最多 32 个状态，并记录 loop/depth-limit/state-limit/dead-end/external-target、constraint 数量及末尾 4 条有界约束。dispatcher-entry seed 会在下一 dispatcher、循环、外部目标、死路或配置边界停止，并回导目标 state-register 的 `concrete`、最多两个 `symbolic` alternatives 或 `unavailable`；这只是 Candidate/Related 执行流线索，不代表自动去平坦化、完整 CFG 恢复或真实入口可达。SHA-256 只验证用户选择的文件，不能反向证明原 trace 运行时映射的就是该 ELF。
+- **Unicorn 模拟增强 / OLLVM**：独立“模拟增强”页签和 MCP 工具接受 exact AArch64 ELF，以及 1–32 个精确匹配 branch、condition-source 或 dispatcher 的 Frida 事件。生成的 Python 使用 Unicorn + Capstone + pyelftools 做有界具体重放，默认每个 seed 最多 50,000 条指令、5 秒、遇调用停止。ELF 哈希不一致会拒绝执行；只有只读 ELF 文件字节、Frida 捕获内存和回放先写后读的字节被视为有效运行状态，缺失寄存器、栈/堆内存、SIMD、TLS/系统状态均明确停止，不会静默补零。结果包含具体执行偏移、下一 dispatcher、状态寄存器变化、内存写入、转移矩阵与基于 `baseRegister + displacement` 的下次 Frida 捕获建议。这些仍是 exact-seed Candidate/Related 证据，不代表完整 CFG 或自动去平坦化。
 
 IDA 脚本中的 `export_ida_annotations()` 可手动导出 `trace-ui/ida-ollvm-v1` JSON，再导回 Trace UI 显示 IDA 名称与注释。
 
 angr 脚本输出 `trace-ui/angr-ollvm-v1` JSON，并记录实际 ELF SHA-256、可选 expected SHA-256/match 状态、全部 Frida seed provenance、mapped base、angr 版本和 CFG 类型。Trace UI 只生成/保存脚本和导入结果，不安装或自动执行 angr。
+
+Unicorn 脚本输出 `trace-ui/unicorn-ollvm-v1` JSON，并记录 exact ELF 身份、每个 Frida seed 的完整度、具体停止原因、dispatcher 转移分组和缺失状态建议。Trace UI 只生成/保存脚本和导入结果，不安装或自动执行 Unicorn。
+
+GUI 使用顺序为：先在 `IDA / OLLVM > 模拟增强` 选择与捕获同一构建的 AArch64 ELF，再导入 Frida JSON/NDJSON 并选择 1–32 个精确事件，生成并保存 Python。然后在隔离环境中手动执行：
+
+```powershell
+python -m pip install unicorn==2.1.4 capstone==5.0.6 pyelftools==0.32
+python .\target-trace-ui-unicorn.py .\libtarget.so -o .\trace-ui-unicorn-ollvm.json
+```
+
+最后回到“模拟增强”页签导入结果 JSON。若停止原因为 `missing-memory`，按页面给出的寄存器、位移和建议窗口扩大下一轮 Frida pointer/SP 捕获；不要把缺失字节补零后继续。
 
 Frida 捕获回导支持 JSON object/array、标准 send envelope、NDJSON 和带前缀的 CLI 日志。选中一次捕获后可生成 `trace-ui/angr-state-seed-v1` Python，填充 X0-X7、X8-X28、可选 SP/LR、可用的 NZCV 和已捕获内存；module 内指针会按 mapped base 重定位，heap/stack 地址仍属于单次进程证据。NZCV 会优先按 AArch64 packed flags 写入 angr，必要时回退到 N/Z/C/V 单独寄存器，仍需人工确认捕获点语义一致。
 

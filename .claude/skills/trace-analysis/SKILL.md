@@ -145,6 +145,15 @@ Keep bounded seeded-flow enabled to continue the first trace-register seed and e
 the question is the post-branch execution flow. Interpret loop/depth/state/dead-end/external endings as
 Candidate/Related leads; depth/state limits explicitly mean incomplete exploration.
 
+**"Concrete-replay this OLLVM dispatcher/branch with Unicorn."**
+→ `analyze_ollvm` on a narrow scope, generate an exact-offset Frida dispatcher/branch hook, and capture
+full GPR/NZCV plus only the bounded X0-X28 pointer regions and SP stack window needed by the question.
+Call `generate_unicorn_ollvm_script` with one to 32 exact events and the mandatory exact AArch64 ELF.
+The user runs the Python manually; inspect `trace-ui/unicorn-ollvm-v1` with
+`inspect_unicorn_ollvm_results`. Prioritize next-dispatcher transitions, state-register changes,
+explicit missing-memory stops, and register-relative recapture suggestions. Unicorn follows concrete
+captured states only; it does not explore alternate branches or recover a complete CFG.
+
 **"Does this dispatcher or opaque branch stay stable across runs?"**
 → open two to sixteen controlled traces, then `compare_ollvm_traces{cases:[...]}` with a scope and
 `static_binary_path` for each run; enable `require_matching_binary:true`. Differing supplied ELF SHA-256
@@ -209,7 +218,7 @@ recomputes to a known digest.
 | Functions | `analyze_function` (node_id / name / list) |
 | Diff | `compare_traces`, `start_trace_diff` |
 | Frida | `list_frida_hook_recipes`, `generate_frida_hook`, `generate_frida_ollvm_dispatcher_hook`, `inspect_frida_capture`, `search_frida_capture_events`, `get_frida_capture_event`, `analyze_frida_crypto_materials`, `analyze_frida_ollvm_dispatcher_capture`, `generate_angr_state_seed` (user executes hooks manually) |
-| IDA / angr / OLLVM | `analyze_ollvm`, `compare_ollvm_traces`, `map_ollvm_versions`, `generate_ida_ollvm_script`, `inspect_ida_annotations`, `generate_angr_ollvm_script`, `inspect_angr_ollvm_results` |
+| IDA / angr / Unicorn / OLLVM | `analyze_ollvm`, `compare_ollvm_traces`, `map_ollvm_versions`, `generate_ida_ollvm_script`, `inspect_ida_annotations`, `generate_angr_ollvm_script`, `inspect_angr_ollvm_results`, `generate_unicorn_ollvm_script`, `inspect_unicorn_ollvm_results` |
 | Orchestration | `auto_investigate`, `start_auto_investigation`, `start_crypto_investigation` |
 | Evidence store | `list_analyses`, `get_analysis`, `compare_analyses`, `export_analysis_report`, `delete_analysis` |
 | Recipes | `list_analysis_recipes`, `run_analysis_recipe`, `save_analysis_recipe`, `delete_analysis_recipe` |

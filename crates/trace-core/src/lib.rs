@@ -101,6 +101,12 @@ pub use query::source_sink::{
     apply_resource_validation, classify_flow_endpoints, CallResourceContext,
     FlowEndpointClassification, ResourceValidation,
 };
+pub use query::unicorn::{
+    generate_unicorn_ollvm_script, parse_unicorn_ollvm_result_bundle, UnicornCallBoundary,
+    UnicornMemoryWrite, UnicornMissingMemory, UnicornOllvmConfig, UnicornOllvmResultBundle,
+    UnicornOllvmScript, UnicornRecaptureSuggestion, UnicornRegisterChange, UnicornReplayRun,
+    UnicornSeedQuality, UnicornStateValue, UnicornTransitionEvidence,
+};
 pub use query::value_search::{
     ValueEndian, ValueInterpretation, ValueSearchKind, ValueSearchMatch, ValueSearchRequest,
     ValueSearchResponse, ValueSearchSource,

@@ -1108,7 +1108,7 @@ pub struct GenerateFridaOllvmDispatcherHookRequest {
     #[serde(default = "default_frida_ollvm_events")]
     pub max_events: u32,
     #[schemars(
-        description = "Optional unique ARM64 pointer registers X0-X7 to read at every dispatcher hit; empty by default"
+        description = "Optional unique ARM64 pointer registers X0-X28 to read at every dispatcher hit; empty by default"
     )]
     #[serde(default)]
     pub capture_pointer_registers: Vec<u8>,
@@ -1117,6 +1117,11 @@ pub struct GenerateFridaOllvmDispatcherHookRequest {
     )]
     #[serde(default = "default_frida_ollvm_pointer_bytes")]
     pub pointer_capture_bytes: u32,
+    #[schemars(
+        description = "Optional bytes captured starting at SP for concrete replay state (0-16384, default: 0)"
+    )]
+    #[serde(default)]
+    pub stack_capture_bytes: u32,
 }
 
 #[derive(Debug, Deserialize, JsonSchema)]
@@ -1337,12 +1342,91 @@ pub struct InspectAngrOllvmResultsRequest {
     pub file_path: String,
 }
 
+#[derive(Debug, Deserialize, JsonSchema)]
+pub struct GenerateUnicornOllvmScriptRequest {
+    #[schemars(description = "Session ID (optional if only one session is open)")]
+    pub session_id: Option<String>,
+    pub node_id: Option<u32>,
+    pub module_name: Option<String>,
+    pub start_seq: Option<u32>,
+    pub end_seq: Option<u32>,
+    #[serde(default)]
+    pub include_child_calls: bool,
+    #[serde(default = "default_ollvm_blocks")]
+    pub max_blocks: u32,
+    #[serde(default = "default_ollvm_edges")]
+    pub max_edges: u32,
+    #[schemars(
+        description = "Absolute path to a user-captured trace-ui/frida-hook-v1 JSON/NDJSON file"
+    )]
+    pub frida_capture_path: String,
+    #[schemars(description = "Legacy single exact Frida event index")]
+    pub frida_event_index: Option<u64>,
+    #[schemars(
+        description = "One to 32 hook-enter or ollvm-dispatcher-hit event indices. Every capture offset must exactly match a branch, condition source, or dispatcher entry."
+    )]
+    #[serde(default)]
+    pub frida_event_indices: Vec<u64>,
+    #[schemars(description = "Required exact AArch64 ELF/shared-object path")]
+    pub static_binary_path: String,
+    #[schemars(description = "Maximum concrete instructions per seed (1-2000000, default: 50000)")]
+    #[serde(default = "default_unicorn_max_instructions")]
+    pub max_instructions: u64,
+    #[schemars(
+        description = "Wall-clock timeout per seed in milliseconds (1-60000, default: 5000)"
+    )]
+    #[serde(default = "default_unicorn_timeout_ms")]
+    pub timeout_ms: u64,
+    #[schemars(description = "Maximum recorded memory writes per seed (1-100000, default: 4096)")]
+    #[serde(default = "default_unicorn_memory_writes")]
+    pub max_memory_writes: u64,
+    #[schemars(
+        description = "Maximum recorded instruction offsets per seed (1-500000, default: 50000)"
+    )]
+    #[serde(default = "default_unicorn_recorded_offsets")]
+    pub max_recorded_offsets: u64,
+    #[schemars(description = "Stop before BL/BLR call boundaries (default: true)")]
+    #[serde(default = "default_true")]
+    pub stop_on_call: bool,
+    #[schemars(description = "Visits allowed per offset before loop-detected (1-100, default: 2)")]
+    #[serde(default = "default_unicorn_loop_visits")]
+    pub loop_visit_limit: u32,
+}
+
+#[derive(Debug, Deserialize, JsonSchema)]
+pub struct InspectUnicornOllvmResultsRequest {
+    #[schemars(
+        description = "Absolute path to trace-ui/unicorn-ollvm-v1 JSON produced by a manually executed generated Unicorn script"
+    )]
+    pub file_path: String,
+}
+
 fn default_ollvm_blocks() -> u32 {
     1_000
 }
 
 fn default_ollvm_edges() -> u32 {
     3_000
+}
+
+fn default_unicorn_max_instructions() -> u64 {
+    50_000
+}
+
+fn default_unicorn_timeout_ms() -> u64 {
+    5_000
+}
+
+fn default_unicorn_memory_writes() -> u64 {
+    4_096
+}
+
+fn default_unicorn_recorded_offsets() -> u64 {
+    50_000
+}
+
+fn default_unicorn_loop_visits() -> u32 {
+    2
 }
 
 fn default_frida_ollvm_dispatchers() -> u32 {
@@ -1644,6 +1728,7 @@ mod tests {
         assert_eq!(hook.max_events, 50_000);
         assert!(hook.capture_pointer_registers.is_empty());
         assert_eq!(hook.pointer_capture_bytes, 64);
+        assert_eq!(hook.stack_capture_bytes, 0);
 
         let atlas: AnalyzeFridaOllvmDispatcherCaptureRequest =
             serde_json::from_value(serde_json::json!({
@@ -1671,6 +1756,24 @@ mod tests {
         assert!(request.explore_seeded_flows);
         assert_eq!(request.flow_max_depth, 8);
         assert_eq!(request.flow_max_states_per_probe, 32);
+    }
+
+    #[test]
+    fn unicorn_ollvm_request_uses_bounded_concrete_defaults() {
+        let request: GenerateUnicornOllvmScriptRequest =
+            serde_json::from_value(serde_json::json!({
+                "frida_capture_path": "capture.ndjson",
+                "static_binary_path": "libtarget.so"
+            }))
+            .unwrap();
+        assert!(request.frida_event_index.is_none());
+        assert!(request.frida_event_indices.is_empty());
+        assert_eq!(request.max_instructions, 50_000);
+        assert_eq!(request.timeout_ms, 5_000);
+        assert_eq!(request.max_memory_writes, 4_096);
+        assert_eq!(request.max_recorded_offsets, 50_000);
+        assert!(request.stop_on_call);
+        assert_eq!(request.loop_visit_limit, 2);
     }
 
     #[test]

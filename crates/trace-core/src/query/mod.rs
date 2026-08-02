@@ -23,6 +23,7 @@ pub mod slice;
 pub mod software_crypto;
 pub mod source_sink;
 pub mod strings;
+pub mod unicorn;
 pub mod value_search;
 pub mod whitebox_aes;
 pub mod whitebox_compare;
