@@ -24,7 +24,7 @@
 - **Frida OLLVM Dispatcher Atlas** — 从 OLLVM 报告一次生成最多 64 个 ranked dispatcher `startOffset` 的 Frida 16.x 手动脚本；用户自行运行后导入 `ollvm-dispatcher-hit`，按 capture session、线程、flow 和连续 hit sequence 汇总 dispatcher 节点、状态寄存器分布、相邻 transition 与候选执行路径。legacy 捕获使用 idle-gap 启发式分 flow，所有结果保持 Candidate/Related。
 - **IDA / OLLVM 动态桥接** — 按 module offset 构建动态 CFG、排序 dispatcher/opaque branch 候选，重建 dispatcher state-register 轨迹，并生成可手动运行的 IDAPython 注释/着色/双向 JSON 脚本
 - **angr / OLLVM 静动态对账** — 生成由用户手动运行的 Python/angr 脚本，将 CFGFast/CFGEmulated 静态后继与动态 trace 边对账；可一次嵌入最多 32 个 exact-offset Frida seed，并可把用户选择的 exact AArch64 ELF SHA-256 写入脚本，在 CFG/符号执行前拒绝错误二进制；dispatcher-entry seed 以及由上一轮 Unicorn 严格授权的更近 checkpoint seed 都可有界探索下一 dispatcher/循环/退出并回导候选 state-register 值
-- **Unicorn / OLLVM 模拟增强闭环** — 从 1–32 个 exact-offset Frida seed 做有界具体重放；遇到 missing-memory 时可把 `baseRegister + displacement` 建议直接生成 Frida 16.x 精确重捕获 Hook，再将新捕获重新作为 Unicorn seed；可对 2–16 轮结果按 exact seed offset 判断新增覆盖、停滞、回退和新 dispatcher，并在更近 checkpoint 仍停滞时直接接力生成 bounded angr
+- **Unicorn / OLLVM 模拟增强闭环** — 从 1–32 个 exact-offset Frida seed 做有界具体重放；遇到 missing-memory 时可把 `baseRegister + displacement` 建议直接生成 Frida 16.x 精确重捕获 Hook，遇到 BL/BLR `call-boundary` 时可在真实 `PC+4` 返回点生成 post-call checkpoint，再将新捕获重新作为 Unicorn/angr seed；可对 2–16 轮结果按 exact seed offset 判断新增覆盖、停滞、回退和新 dispatcher，并在更近 checkpoint 仍停滞时直接接力生成 bounded angr
 - **OLLVM 多运行稳定性矩阵** — 对比 2–16 条受控 trace 的 dispatcher、状态寄存器和分支结果；可为每条运行绑定 exact ELF，SHA-256 不一致时拒绝错位比较；alternate outcome 明确反对全局 opaque
 - **OLLVM 跨版本结构候选映射** — 为 2–8 个不同 ELF 版本分别绑定 trace scope、version ID 和 exact SHA-256，允许模块重命名与 offset 迁移，按归一化操作序列、动态 CFG 形状和 state-register 行为寻找 dispatcher 对应候选并标记歧义
 - **调用树与函数分析** — 自动识别 BL/BLR/RET 构建函数调用树，支持折叠/展开、函数重命名、函数列表聚合查看
@@ -183,7 +183,7 @@ IDA 脚本中的 `export_ida_annotations()` 可手动导出 `trace-ui/ida-ollvm-
 
 angr 脚本输出 `trace-ui/angr-ollvm-v1` JSON，并记录实际 ELF SHA-256、可选 expected SHA-256/match 状态、全部 Frida seed provenance、mapped base、angr 版本和 CFG 类型。由更近 Unicorn checkpoint 接力的结果写入独立 `checkpointProbes`，保留 `frida-capture-authorized-checkpoint` provenance、source state、bounded paths、终止原因与命中的 dispatcher。Trace UI 只生成/保存脚本和导入结果，不安装或自动执行 angr。
 
-Unicorn 脚本输出 `trace-ui/unicorn-ollvm-v1` JSON，并记录 exact ELF 身份、每个 Frida seed 的完整度、可跨轮重读的寄存器相对内存计划、具体停止原因、dispatcher 转移分组和缺失状态建议。大于 4096 字节的已验证 byteArray 区域会拆成多个有界窗口；旧版结果没有计划时仍可生成新建议 Hook，但会明确提示旧 seed 内存不能自动保留。原点重捕获生成器返回 `trace-ui/frida-unicorn-recapture-hook-v1`；更近停滞点生成器返回 `trace-ui/frida-unicorn-checkpoint-hook-v1`；两者都输出兼容 `trace-ui/frida-hook-v1` 的 Frida 事件。多轮比较返回 `trace-ui/unicorn-ollvm-round-comparison-v1`，严格拒绝不同 SHA-256。Trace UI 只生成/保存脚本和导入/比较结果，不安装或自动执行 Unicorn/Frida/angr。
+Unicorn 脚本输出 `trace-ui/unicorn-ollvm-v1` JSON，并记录 exact ELF 身份、每个 Frida seed 的完整度、可跨轮重读的寄存器相对内存计划、具体停止原因、dispatcher 转移分组和缺失状态建议。`call-boundary` 还记录 BL/BLR 目标及固定 `PC+4` return offset；旧版结果缺少该字段时不会推断 post-call 目标。大于 4096 字节的已验证 byteArray 区域会拆成多个有界窗口；旧版结果没有计划时仍可生成新建议 Hook，但会明确提示旧 seed 内存不能自动保留。原点重捕获生成器返回 `trace-ui/frida-unicorn-recapture-hook-v1`；更近停滞点生成器返回 `trace-ui/frida-unicorn-checkpoint-hook-v1`；两者都输出兼容 `trace-ui/frida-hook-v1` 的 Frida 事件。多轮比较返回 `trace-ui/unicorn-ollvm-round-comparison-v1`，严格拒绝不同 SHA-256。Trace UI 只生成/保存脚本和导入/比较结果，不安装或自动执行 Unicorn/Frida/angr。
 
 GUI 使用顺序为：先在 `IDA / OLLVM > 模拟增强` 选择与捕获同一构建的 AArch64 ELF，再导入 Frida JSON/NDJSON 并选择 1–32 个精确事件，生成并保存 Python。然后在隔离环境中手动执行：
 
@@ -192,7 +192,7 @@ python -m pip install unicorn==2.1.4 capstone==5.0.6 pyelftools==0.32
 python .\target-trace-ui-unicorn.py .\libtarget.so -o .\trace-ui-unicorn-ollvm.json
 ```
 
-最后回到“模拟增强”页签导入结果 JSON。若停止原因为 `missing-memory`，可先勾选页面中标为“可自动生成”的建议创建原 seed 位置“重捕获 Hook”，由用户在相同构建和受控输入下手动运行。若重复缺页、循环、超时、缺寄存器或指令上限仍使原 seed 停滞，则在“更近 checkpoint 捕获”中选择该原 seed，生成落在实际 missing/terminal PC 的 Hook。手动执行后把新的 `hook-enter` JSON/NDJSON 再次导入；页面会保留上一轮结果路径，并在生成下一轮 Unicorn Python 时将其作为 checkpoint 授权。如果更近 checkpoint 的具体重放仍缺少状态，可在同页第 6 步直接选择深度/状态上限，生成 bounded angr `.py`；该请求会把同一捕获、exact ELF 和上一轮结果一起交给严格授权逻辑，并可导回 `checkpointProbes` JSON。absolute、X29/X30 等不支持项保持“需手动捕获”。完成至少两轮后，按基线到最新轮次的顺序选择“对比多轮 JSON”；第一轮显示的是基线覆盖，后续轮次才表示相对此前所有轮次的首次新增。不要把缺失字节补零后继续。
+最后回到“模拟增强”页签导入结果 JSON。若停止原因为 `missing-memory`，可先勾选页面中标为“可自动生成”的建议创建原 seed 位置“重捕获 Hook”，由用户在相同构建和受控输入下手动运行；若停止原因为 `call-boundary`，选择“更近 checkpoint 捕获”会自动把目标落到结果记录的 `PC+4` post-call return site，并重新读取当前寄存器对应的已验证 seed 窗口。若重复缺页、循环、超时、缺寄存器或指令上限仍使原 seed 停滞，则在“更近 checkpoint 捕获”中选择该原 seed，生成落在实际 missing/terminal PC 的 Hook。手动执行后把新的 `hook-enter` JSON/NDJSON 再次导入；页面会保留上一轮结果路径，并在生成下一轮 Unicorn Python 时将其作为 checkpoint 授权。如果更近 checkpoint 的具体重放仍缺少状态，可在同页第 6 步直接选择深度/状态上限，生成 bounded angr `.py`；该请求会把同一捕获、exact ELF 和上一轮结果一起交给严格授权逻辑，并可导回 `checkpointProbes` JSON。absolute、X29/X30 等不支持项保持“需手动捕获”。完成至少两轮后，按基线到最新轮次的顺序选择“对比多轮 JSON”；第一轮显示的是基线覆盖，后续轮次才表示相对此前所有轮次的首次新增。不要把缺失字节补零后继续。
 
 对于严重 OLLVM 样本，推荐先用 Unicorn 具体重放确认“这个已捕获状态下一步实际走到哪里”，再只对少数需要探索的 branch/condition-source 或已严格授权的更近 checkpoint 使用 angr 有界符号执行。Unicorn 更适合快速发现下一 dispatcher、循环、调用边界和缺失内存；angr 更适合比较未观测分支，或在具体状态仍不完整时给出 bounded 候选路径，但必须限制深度与状态数。两者都依赖 exact ELF 和精确捕获点，结果导回后仍需结合动态 trace、IDA 和多运行对比人工确认。
 

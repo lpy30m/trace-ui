@@ -205,6 +205,7 @@ describe("OLLVM Unicorn concrete replay", () => {
         blockOffsets: ["0x100", "0x180"],
         registerChanges: [],
         memoryWrites: [],
+        callBoundaries: [],
         missingMemory: [],
         error: null,
       }],
@@ -256,6 +257,93 @@ describe("OLLVM Unicorn concrete replay", () => {
     });
   });
 
+  it("offers a post-call return checkpoint for a Unicorn call boundary", async () => {
+    const user = userEvent.setup();
+    const result = {
+      schema: "trace-ui/unicorn-ollvm-v1",
+      moduleName: "libtarget.so",
+      binarySha256: "a".repeat(64),
+      expectedBinarySha256: "a".repeat(64),
+      binaryIdentityMatched: true,
+      architecture: "AArch64",
+      unicornVersion: "2.1.4",
+      capstoneVersion: "5.0.6",
+      config: {},
+      seeds: [{ sourceEventIndex: 7, captureOffset: "0x100" }],
+      seedQualities: [],
+      seedRecapturePlans: [],
+      runs: [{
+        sourceEventIndex: 7,
+        startOffset: "0x100",
+        stopReason: "call-boundary",
+        instructionCount: 4,
+        elapsedMs: 1,
+        terminalOffset: "0x180",
+        matchedDispatcherOffset: null,
+        sourceStateValues: [],
+        targetStateValues: [],
+        blockOffsets: ["0x100", "0x180"],
+        registerChanges: [],
+        memoryWrites: [],
+        callBoundaries: [{
+          pcOffset: "0x180",
+          mnemonic: "blr x9",
+          targetAddress: "0x70001000",
+          targetOffset: null,
+          returnAddress: "0x40000184",
+          returnOffset: "0x184",
+        }],
+        missingMemory: [],
+        error: null,
+      }],
+      transitionMatrix: [],
+      recaptureSuggestions: [],
+      warnings: [],
+    } as unknown as UnicornOllvmResultBundle;
+    mocks.open.mockResolvedValueOnce("C:\\samples\\call-boundary.json");
+    mocks.invoke.mockImplementation(async (command: string) => {
+      if (command === "load_unicorn_ollvm_results") return result;
+      if (command === "generate_frida_unicorn_checkpoint_hook") {
+        return {
+          schemaVersion: "trace-ui/frida-unicorn-checkpoint-hook-v1",
+          moduleName: "libtarget.so",
+          fileName: "libtarget-post-call-checkpoint.js",
+          expectedBinarySha256: "a".repeat(64),
+          selectedSeedOffsets: ["0x100"],
+          targets: [{
+            hookId: "unicorn-checkpoint-184",
+            offset: "0x184",
+            sourceEventIndices: [7],
+            sourceSeedOffsets: ["0x100"],
+            stopReasons: ["call-boundary"],
+            captures: [],
+          }],
+          captureWindowCount: 0,
+          maxEvents: 5000,
+          script: "Interceptor.attach(moduleBase.add(0x184), {})",
+          warnings: [],
+          protocolVersion: "trace-ui/frida-hook-v1",
+          fridaApiVersion: "16.x",
+        };
+      }
+      throw new Error(`unexpected command ${command}`);
+    });
+    const report = { scope: { moduleName: "libtarget.so" } } as OllvmReport;
+    const view = render(<OllvmUnicornPanel report={report} />);
+    const panel = within(view.container);
+
+    await user.click(panel.getByRole("button", { name: "导入结果 JSON" }));
+    expect(await panel.findByText(/post-call return checkpoint 0x184/)).toBeInTheDocument();
+    await user.click(panel.getByRole("button", { name: "生成更近 checkpoint Hook" }));
+
+    expect(await panel.findByText(/0x184 \(call-boundary\)/)).toBeInTheDocument();
+    expect(mocks.invoke).toHaveBeenCalledWith("generate_frida_unicorn_checkpoint_hook", {
+      unicornResultPath: "C:\\samples\\call-boundary.json",
+      seedCaptureOffsets: ["0x100"],
+      maxEvents: 5000,
+    });
+  });
+
   it("bridges an authorized closer checkpoint into bounded angr", async () => {
     const user = userEvent.setup();
     const event = makeEvent({
@@ -301,6 +389,7 @@ describe("OLLVM Unicorn concrete replay", () => {
         blockOffsets: ["0x100", "0x180"],
         registerChanges: [],
         memoryWrites: [],
+        callBoundaries: [],
         missingMemory: [{ pcOffset: "0x180" }],
         error: null,
       }],

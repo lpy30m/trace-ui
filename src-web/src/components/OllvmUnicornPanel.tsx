@@ -70,6 +70,7 @@ function automaticRecaptureSupported(suggestion: UnicornRecaptureSuggestion): bo
 const checkpointStopReasons = new Set([
   "missing-memory",
   "missing-register",
+  "call-boundary",
   "loop-detected",
   "instruction-limit",
   "timeout",
@@ -85,6 +86,9 @@ function checkpointSeedOffsets(bundle: UnicornOllvmResultBundle): string[] {
         ? run.missingMemory.map(missing => missing.pcOffset).filter((offset): offset is string => Boolean(offset))
         : [];
       if (missingOffsets.length > 0) return missingOffsets.some(offset => offset.toLowerCase() !== start);
+      if (run.stopReason === "call-boundary") {
+        return (run.callBoundaries || []).some(boundary => Boolean(boundary.returnOffset && boundary.returnOffset.toLowerCase() !== start));
+      }
       return Boolean(run.terminalOffset && run.terminalOffset.toLowerCase() !== start);
     })
     .map(run => seedsByEvent.get(run.sourceEventIndex))
@@ -102,6 +106,7 @@ function comparisonCheckpointSeedOffsets(report: UnicornOllvmRoundComparisonRepo
     if (observation.stopReasons.includes("missing-memory") && observation.missingPcOffsets.length > 0) {
       return observation.missingPcOffsets.some(offset => offset.toLowerCase() !== start);
     }
+    if (observation.stopReasons.includes("call-boundary")) return observation.terminalOffsets.some(offset => offset.toLowerCase() !== start);
     return observation.terminalOffsets.some(offset => offset.toLowerCase() !== start);
   }).map(seed => seed.captureOffset).slice(0, 32);
 }
@@ -975,6 +980,13 @@ export default function OllvmUnicornPanel({ report }: Props) {
                 </div>
                 <div style={{ marginTop: 5 }}>state: {stateText(run.sourceStateValues)} → {stateText(run.targetStateValues)}</div>
                 <div style={{ marginTop: 4, color: "var(--text-secondary)" }}>{run.blockOffsets.length} block hits · {run.registerChanges.length} register changes · {run.memoryWrites.length} writes · {run.missingMemory.length} missing reads</div>
+                {(run.callBoundaries || []).map((boundary, index) => (
+                  <div key={`${run.sourceEventIndex}-call-${index}`} style={{ marginTop: 4, color: "#d29922" }}>
+                    call {boundary.mnemonic} at <code>{boundary.pcOffset}</code>
+                    {boundary.targetOffset ? ` → ${boundary.targetOffset}` : boundary.targetAddress ? ` → ${boundary.targetAddress}` : ""}
+                    {boundary.returnOffset ? ` · post-call return checkpoint ${boundary.returnOffset}` : " · legacy result has no return checkpoint offset"}
+                  </div>
+                ))}
                 {run.missingMemory.map((missing, index) => (
                   <div key={`${run.sourceEventIndex}-missing-${index}`} style={{ marginTop: 4, color: "#d29922" }}>
                     {missing.pcOffset || "outside"}: {missing.access} {missing.address} ({missing.size}) · {missing.instruction || "unknown instruction"}

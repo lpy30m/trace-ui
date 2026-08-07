@@ -2000,8 +2000,8 @@ mod tests {
         OllvmScope, OpaqueBranchCandidate,
     };
     use crate::query::unicorn::{
-        UnicornMissingMemory, UnicornOllvmConfig, UnicornRecaptureSuggestion, UnicornReplayRun,
-        UnicornSeedQuality,
+        UnicornCallBoundary, UnicornMissingMemory, UnicornOllvmConfig, UnicornRecaptureSuggestion,
+        UnicornReplayRun, UnicornSeedQuality,
     };
 
     fn sample_report() -> OllvmReport {
@@ -2416,6 +2416,44 @@ mod tests {
             .warnings
             .iter()
             .any(|warning| warning.contains("1 closer checkpoint offset")));
+    }
+
+    #[test]
+    fn authorizes_post_call_return_checkpoint_for_bounded_angr_flow() {
+        let identity = sample_identity();
+        let mut prior = sample_checkpoint_result(&identity);
+        prior.runs[0].stop_reason = "call-boundary".to_string();
+        prior.runs[0].terminal_offset = Some("0x180".to_string());
+        prior.runs[0].terminal_address = "0x40000180".to_string();
+        prior.runs[0].missing_memory.clear();
+        prior.runs[0].call_boundaries = vec![UnicornCallBoundary {
+            pc_offset: "0x180".to_string(),
+            mnemonic: "blr x9".to_string(),
+            target_address: Some("0x70001000".to_string()),
+            target_offset: None,
+            return_address: Some("0x40000184".to_string()),
+            return_offset: Some("0x184".to_string()),
+        }];
+        prior.recapture_suggestions.clear();
+
+        let mut seed = sample_frida_seed("0x184");
+        seed.source_event_index = 9;
+        seed.hook_id = "unicorn-checkpoint-184".to_string();
+        seed.function_name = "unicorn-checkpoint-184".to_string();
+        seed.capture_target = Some("0x71000184".to_string());
+        let generated = generate_angr_ollvm_script_with_seeds_flow_identity_and_checkpoint(
+            &sample_report(),
+            false,
+            false,
+            vec![&seed],
+            AngrOllvmFlowConfig::default(),
+            Some(&identity),
+            Some(&prior),
+        )
+        .unwrap();
+        assert_eq!(generated.authorized_checkpoint_offsets, vec!["0x184"]);
+        assert_eq!(generated.frida_seeds[0].capture_offset, "0x184");
+        assert!(generated.script.contains("checkpointProbes"));
     }
 
     #[test]

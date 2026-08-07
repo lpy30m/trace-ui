@@ -140,6 +140,10 @@ pub struct UnicornCallBoundary {
     pub target_address: Option<String>,
     #[serde(default)]
     pub target_offset: Option<String>,
+    #[serde(default)]
+    pub return_address: Option<String>,
+    #[serde(default)]
+    pub return_offset: Option<String>,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -892,6 +896,99 @@ pub fn parse_unicorn_ollvm_result_bundle(bytes: &[u8]) -> Result<UnicornOllvmRes
                 run.source_event_index
             ));
         }
+        if run.call_boundaries.len() > 64 {
+            return Err(format!(
+                "Unicorn replay run {} contains more than 64 call-boundary records",
+                run.source_event_index
+            ));
+        }
+        for boundary in &run.call_boundaries {
+            validate_offset(&boundary.pc_offset, "call-boundary pcOffset")?;
+            if boundary.mnemonic.trim().is_empty() || boundary.mnemonic.len() > 256 {
+                return Err(
+                    "Unicorn call-boundary mnemonic must contain 1-256 characters".to_string(),
+                );
+            }
+            if let Some(address) = &boundary.target_address {
+                validate_offset(address, "call-boundary targetAddress")?;
+            }
+            if let Some(offset) = &boundary.target_offset {
+                validate_offset(offset, "call-boundary targetOffset")?;
+            }
+            match (&boundary.return_address, &boundary.return_offset) {
+                (None, None) => {}
+                (Some(address), Some(offset)) => {
+                    validate_offset(address, "call-boundary returnAddress")?;
+                    validate_offset(offset, "call-boundary returnOffset")?;
+                    let pc = parse_hex_addr(&boundary.pc_offset)
+                        .map_err(|error| format!("invalid call-boundary pcOffset: {error}"))?;
+                    let expected = pc
+                        .checked_add(4)
+                        .ok_or_else(|| "Unicorn call-boundary returnOffset overflow".to_string())?;
+                    let actual = parse_hex_addr(offset)
+                        .map_err(|error| format!("invalid call-boundary returnOffset: {error}"))?;
+                    if actual != expected {
+                        return Err(format!(
+                            "Unicorn call-boundary returnOffset {offset} is not PC+4 from {}",
+                            boundary.pc_offset
+                        ));
+                    }
+                    let mapped_base = parse_hex_addr(&run.mapped_base)
+                        .map_err(|error| format!("invalid mappedBase: {error}"))?;
+                    let expected_address = mapped_base.checked_add(actual).ok_or_else(|| {
+                        "Unicorn call-boundary returnAddress overflow".to_string()
+                    })?;
+                    let actual_address = parse_hex_addr(address)
+                        .map_err(|error| format!("invalid call-boundary returnAddress: {error}"))?;
+                    if actual_address != expected_address {
+                        return Err(format!(
+                            "Unicorn call-boundary returnAddress {address} does not match mappedBase + returnOffset"
+                        ));
+                    }
+                }
+                _ => return Err(
+                    "Unicorn call-boundary returnAddress and returnOffset must be present together"
+                        .to_string(),
+                ),
+            }
+        }
+        if run.stop_reason == "call-boundary" {
+            let boundary = run.call_boundaries.last().ok_or_else(|| {
+                format!(
+                    "Unicorn call-boundary run {} has no call-boundary record",
+                    run.source_event_index
+                )
+            })?;
+            let terminal_offset = run.terminal_offset.as_deref().ok_or_else(|| {
+                format!(
+                    "Unicorn call-boundary run {} requires terminalOffset",
+                    run.source_event_index
+                )
+            })?;
+            let terminal_offset = parse_hex_addr(terminal_offset)
+                .map_err(|error| format!("invalid call-boundary terminalOffset: {error}"))?;
+            let call_offset = parse_hex_addr(&boundary.pc_offset)
+                .map_err(|error| format!("invalid call-boundary pcOffset: {error}"))?;
+            if terminal_offset != call_offset {
+                return Err(format!(
+                    "Unicorn call-boundary run {} terminalOffset does not match the recorded call PC",
+                    run.source_event_index
+                ));
+            }
+            let mapped_base = parse_hex_addr(&run.mapped_base)
+                .map_err(|error| format!("invalid mappedBase: {error}"))?;
+            let expected_terminal_address = mapped_base
+                .checked_add(call_offset)
+                .ok_or_else(|| "Unicorn call-boundary terminalAddress overflow".to_string())?;
+            let terminal_address = parse_hex_addr(&run.terminal_address)
+                .map_err(|error| format!("invalid call-boundary terminalAddress: {error}"))?;
+            if terminal_address != expected_terminal_address {
+                return Err(format!(
+                    "Unicorn call-boundary run {} terminalAddress does not match mappedBase + call PC",
+                    run.source_event_index
+                ));
+            }
+        }
     }
     if run_events != seed_events {
         return Err(
@@ -946,6 +1043,10 @@ mod tests {
     use crate::query::elf_identity::inspect_elf_bytes;
     use crate::query::evidence_score::{score_evidence, EvidenceScoreSignal};
     use crate::query::frida_capture::{AngrSeedMemoryRegion, AngrSeedRegister};
+    use crate::query::frida_checkpoint::{
+        generate_frida_unicorn_checkpoint_hook, unicorn_checkpoint_offsets,
+        FridaUnicornCheckpointHookOptions,
+    };
     use crate::query::ollvm::{
         DispatcherCandidate, DynamicBasicBlock, OllvmScope, OpaqueBranchCandidate,
     };
@@ -1220,6 +1321,7 @@ mod tests {
         assert!(generated.script.contains("Uc(UC_ARCH_ARM64"));
         assert!(generated.script.contains("missing-memory"));
         assert!(generated.script.contains("seedRecapturePlans"));
+        assert!(generated.script.contains("returnOffset"));
         assert!(generated.script.contains(&identity.binary_sha256));
     }
 
@@ -1338,6 +1440,40 @@ mod tests {
     }
 
     #[test]
+    fn authorizes_post_call_return_capture_as_a_new_unicorn_seed() {
+        let identity = inspect_elf_bytes("libtarget.so", &minimal_aarch64_elf()).unwrap();
+        let mut prior = checkpoint_result(&identity);
+        prior.runs[0].stop_reason = "call-boundary".to_string();
+        prior.runs[0].terminal_address = "0x40000180".to_string();
+        prior.runs[0].terminal_offset = Some("0x180".to_string());
+        prior.runs[0].missing_memory.clear();
+        prior.runs[0].call_boundaries = vec![UnicornCallBoundary {
+            pc_offset: "0x180".to_string(),
+            mnemonic: "bl 0x40000300".to_string(),
+            target_address: Some("0x40000300".to_string()),
+            target_offset: Some("0x300".to_string()),
+            return_address: Some("0x40000184".to_string()),
+            return_offset: Some("0x184".to_string()),
+        }];
+        prior.recapture_suggestions.clear();
+
+        let seed = checkpoint_seed("0x184");
+        let generated = generate_unicorn_ollvm_script_with_checkpoint_result(
+            &sample_report(),
+            vec![&seed],
+            UnicornOllvmConfig::default(),
+            &identity,
+            Some(&prior),
+        )
+        .unwrap();
+        assert_eq!(generated.seeds[0].capture_offset, "0x184");
+        assert!(generated
+            .warnings
+            .iter()
+            .any(|warning| warning.contains("1 closer checkpoint offset")));
+    }
+
+    #[test]
     fn result_parser_requires_one_run_for_every_seed_event() {
         let identity = inspect_elf_bytes("libtarget.so", &minimal_aarch64_elf()).unwrap();
         let generated = generate_unicorn_ollvm_script(
@@ -1448,6 +1584,69 @@ mod tests {
     }
 
     #[test]
+    fn result_parser_validates_post_call_return_checkpoint_metadata() {
+        let identity = inspect_elf_bytes("libtarget.so", &minimal_aarch64_elf()).unwrap();
+        let mut bundle = checkpoint_result(&identity);
+        bundle.runs[0].stop_reason = "call-boundary".to_string();
+        bundle.runs[0].terminal_address = "0x40000180".to_string();
+        bundle.runs[0].terminal_offset = Some("0x180".to_string());
+        bundle.runs[0].missing_memory.clear();
+        bundle.runs[0].call_boundaries = vec![UnicornCallBoundary {
+            pc_offset: "0x180".to_string(),
+            mnemonic: "blr x9".to_string(),
+            target_address: Some("0x70001000".to_string()),
+            target_offset: None,
+            return_address: Some("0x40000184".to_string()),
+            return_offset: Some("0x184".to_string()),
+        }];
+        bundle.recapture_suggestions.clear();
+
+        let parsed =
+            parse_unicorn_ollvm_result_bundle(&serde_json::to_vec(&bundle).unwrap()).unwrap();
+        assert_eq!(
+            parsed.runs[0].call_boundaries[0].return_offset.as_deref(),
+            Some("0x184")
+        );
+
+        let mut invalid = bundle.clone();
+        invalid.runs[0].call_boundaries[0].return_offset = Some("0x188".to_string());
+        let error =
+            parse_unicorn_ollvm_result_bundle(&serde_json::to_vec(&invalid).unwrap()).unwrap_err();
+        assert!(error.contains("not PC+4"));
+
+        let mut invalid = bundle.clone();
+        invalid.runs[0].call_boundaries[0].return_address = None;
+        let error =
+            parse_unicorn_ollvm_result_bundle(&serde_json::to_vec(&invalid).unwrap()).unwrap_err();
+        assert!(error.contains("must be present together"));
+
+        let mut invalid = bundle.clone();
+        invalid.runs[0].terminal_offset = None;
+        let error =
+            parse_unicorn_ollvm_result_bundle(&serde_json::to_vec(&invalid).unwrap()).unwrap_err();
+        assert!(error.contains("requires terminalOffset"));
+
+        let mut invalid = bundle.clone();
+        invalid.runs[0].terminal_offset = Some("0x17c".to_string());
+        let error =
+            parse_unicorn_ollvm_result_bundle(&serde_json::to_vec(&invalid).unwrap()).unwrap_err();
+        assert!(error.contains("terminalOffset does not match"));
+
+        let mut invalid = bundle.clone();
+        invalid.runs[0].terminal_address = "0x4000017c".to_string();
+        let error =
+            parse_unicorn_ollvm_result_bundle(&serde_json::to_vec(&invalid).unwrap()).unwrap_err();
+        assert!(error.contains("terminalAddress does not match"));
+
+        let mut legacy = bundle;
+        legacy.runs[0].call_boundaries[0].return_address = None;
+        legacy.runs[0].call_boundaries[0].return_offset = None;
+        let parsed =
+            parse_unicorn_ollvm_result_bundle(&serde_json::to_vec(&legacy).unwrap()).unwrap();
+        assert!(unicorn_checkpoint_offsets(&parsed).unwrap().is_empty());
+    }
+
+    #[test]
     fn generated_script_replays_to_next_dispatcher_when_python_modules_exist() {
         use std::process::Command;
 
@@ -1503,6 +1702,74 @@ mod tests {
             .target_state_values
             .iter()
             .any(|value| value.register == "X8" && value.value.as_deref() == Some("0x2")));
+        std::fs::remove_dir_all(temp).unwrap();
+    }
+
+    #[test]
+    fn generated_script_records_call_target_and_post_call_return_site_when_python_modules_exist() {
+        use std::process::Command;
+
+        let python = if cfg!(windows) { "python" } else { "python3" };
+        if !Command::new(python)
+            .args(["-c", "import unicorn, capstone, elftools"])
+            .status()
+            .is_ok_and(|status| status.success())
+        {
+            eprintln!(
+                "skipping Unicorn call-boundary smoke test because Python modules are unavailable"
+            );
+            return;
+        }
+        let mut elf = minimal_aarch64_elf();
+        // bl +8 from offset 0x100 to the in-image target at offset 0x108.
+        elf[0x100..0x104].copy_from_slice(&0x94000002u32.to_le_bytes());
+        let identity = inspect_elf_bytes("libtarget.so", &elf).unwrap();
+        let generated = generate_unicorn_ollvm_script(
+            &sample_report(),
+            vec![&sample_seed()],
+            UnicornOllvmConfig::default(),
+            &identity,
+        )
+        .unwrap();
+        let temp = std::env::temp_dir().join(format!(
+            "trace-ui-unicorn-call-boundary-test-{}",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_dir_all(&temp);
+        std::fs::create_dir_all(&temp).unwrap();
+        let binary_path = temp.join("libtarget.so");
+        let script_path = temp.join("replay.py");
+        let result_path = temp.join("result.json");
+        std::fs::write(&binary_path, elf).unwrap();
+        std::fs::write(&script_path, generated.script).unwrap();
+        let output = Command::new(python)
+            .arg(&script_path)
+            .arg(&binary_path)
+            .arg("-o")
+            .arg(&result_path)
+            .output()
+            .unwrap();
+        assert!(
+            output.status.success(),
+            "generated Unicorn call-boundary script failed: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        let parsed =
+            parse_unicorn_ollvm_result_bundle(&std::fs::read(&result_path).unwrap()).unwrap();
+        assert_eq!(parsed.runs[0].stop_reason, "call-boundary");
+        let boundary = &parsed.runs[0].call_boundaries[0];
+        assert_eq!(boundary.pc_offset, "0x100");
+        assert_eq!(boundary.target_offset.as_deref(), Some("0x108"));
+        assert_eq!(boundary.return_offset.as_deref(), Some("0x104"));
+        assert_eq!(boundary.return_address.as_deref(), Some("0x40000104"));
+        let checkpoint = generate_frida_unicorn_checkpoint_hook(
+            &parsed,
+            &["0x100".to_string()],
+            &FridaUnicornCheckpointHookOptions::default(),
+        )
+        .unwrap();
+        assert_eq!(checkpoint.targets[0].offset, "0x104");
+        assert!(!checkpoint.targets[0].captures.is_empty());
         std::fs::remove_dir_all(temp).unwrap();
     }
 

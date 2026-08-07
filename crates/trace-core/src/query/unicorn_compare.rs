@@ -466,6 +466,7 @@ fn build_delta(
                     reason.as_str(),
                     "missing-memory"
                         | "missing-register"
+                        | "call-boundary"
                         | "instruction-limit"
                         | "timeout"
                         | "loop-detected"
@@ -532,6 +533,12 @@ fn build_delta(
                     "regressed-coverage",
                     "The later round retained less recorded coverage and did not add new offsets.",
                     "Restore the prior seed context and inspect unsupported or failed recapture windows before another replay.",
+                )
+            } else if same_terminal && current.stop_reasons.contains("call-boundary") {
+                (
+                    "stalled-same-terminal",
+                    "The later round ended at the same external call boundary without new recorded coverage.",
+                    "Generate a closer post-call return checkpoint Hook and continue only if the real call returns through PC+4; otherwise switch to a bounded angr probe or manual callee capture.",
                 )
             } else if same_terminal {
                 (

@@ -1267,6 +1267,8 @@ export interface UnicornCallBoundary {
   mnemonic: string;
   targetAddress: string | null;
   targetOffset: string | null;
+  returnAddress: string | null;
+  returnOffset: string | null;
 }
 
 export interface UnicornReplayRun {

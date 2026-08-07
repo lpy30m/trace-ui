@@ -62,8 +62,10 @@ Use `mcp__trace-ui__list_frida_hook_recipes`, `mcp__trace-ui__generate_frida_hoo
     `hook-enter` as a new seed; never copy the prior absolute address or stale captured bytes. If the
     same seed still stops on missing-memory/register, loop, timeout, or instruction limit, call
     `generate_frida_unicorn_checkpoint_hook` with the validated prior result and selected original seed
-    offsets. It hooks the actual missing-memory PC or supported terminal PC, captures full GPR/NZCV and
-    only safe existing X0-X28/SP-relative windows, and must be run manually. Reuse its new `hook-enter`
+    offsets. It hooks the actual missing-memory PC, supported terminal PC, or the recorded `PC+4`
+    return site for a `call-boundary`, captures full GPR/NZCV and only verified current-register
+    X0-X28/SP-relative seed windows, and must be run manually. A post-call Hook emits only when the
+    real call returns through that continuation. Reuse its new `hook-enter`
     with `generate_unicorn_ollvm_script.checkpoint_result_path` set to that same prior result. If concrete
     replay still lacks state, pass the same capture, exact ELF, and same prior result to
     `generate_angr_ollvm_script.checkpoint_result_path`; inspect the resulting `checkpointProbes` as

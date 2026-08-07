@@ -516,11 +516,14 @@ def _run_seed(binary_path, seed):
             return
         if bool(CONFIG["stopOnCall"]) and instruction.mnemonic in ("bl", "blr"):
             target_address, target_offset = _call_target(_uc, instruction, layout)
+            return_address = address + size
             state["callBoundaries"].append({
                 "pcOffset": offset,
                 "mnemonic": _instruction_text(instruction),
                 "targetAddress": target_address,
                 "targetOffset": target_offset,
+                "returnAddress": _hex(return_address),
+                "returnOffset": _module_offset(layout, return_address),
             })
             request_stop("call-boundary")
 

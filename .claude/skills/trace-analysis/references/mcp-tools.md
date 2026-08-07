@@ -103,9 +103,11 @@ Line numbers in taint `@LINE` specs are **1-based**; `start_seq`/`end_seq`/`seq`
 - **generate_frida_unicorn_checkpoint_hook** `{unicorn_result_path,seed_capture_offsets,max_events?=5000}`
   strictly validates one manually produced `trace-ui/unicorn-ollvm-v1` result, selects one to 32
   original seed offsets, and derives at most 32 closer targets from supported stalled runs.
-  `missing-memory` prefers each actual missing `pcOffset`; `missing-register`, `loop-detected`,
-  `instruction-limit`, and `timeout` use `terminalOffset`. The generated Frida 16.x Hook captures
-  X0-X28, FP/LR/SP/PC/NZCV and only existing safe X0-X28/SP-relative suggestion windows. Absolute
+  `missing-memory` prefers each actual missing `pcOffset`; `call-boundary` uses the recorded AArch64
+  `PC+4` return offset; `missing-register`, `loop-detected`, `instruction-limit`, and `timeout` use
+  `terminalOffset`. The generated Frida 16.x Hook captures X0-X28, FP/LR/SP/PC/NZCV and re-reads only
+  verified current-register X0-X28/SP-relative seed/suggestion windows. A post-call target emits only
+  when the real call returns through the continuation. Absolute
   addresses, X29/X30, unsupported stops, and unverifiable memory stay warning/manual. Trace UI never
   executes Frida; the prior ELF hash is provenance and later exact-offset authorization, not runtime
   image attestation.

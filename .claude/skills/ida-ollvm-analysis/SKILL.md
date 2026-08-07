@@ -66,7 +66,8 @@ Use `mcp__trace-ui__analyze_ollvm`, `mcp__trace-ui__compare_ollvm_traces`, `mcp_
    signatures, configuration drift, and truncation. Continue recapture only while bounded coverage advances;
    when the same seed stalls, call `generate_frida_unicorn_checkpoint_hook` with the validated latest
    result and one to 32 original seed offsets. Let the user run the generated Frida 16.x script at the
-   reported missing-memory PC or supported terminal PC, import the new `hook-enter`, then call
+   reported missing-memory PC, supported terminal PC, or the recorded `PC+4` return site for a
+   `call-boundary`, import the new `hook-enter`, then call
    `generate_unicorn_ollvm_script` with that capture plus `checkpoint_result_path` pointing to the same
    prior result. If the closer concrete checkpoint still lacks required state, call
    `generate_angr_ollvm_script` with the same capture, exact ELF, and same `checkpoint_result_path`;
@@ -136,9 +137,11 @@ Use `mcp__trace-ui__analyze_ollvm`, `mcp__trace-ui__compare_ollvm_traces`, `mcp_
   runtime-verified X0-X28/SP `baseRegister + displacement` relation may be carried automatically; large
   regions are split into bounded windows, while unverifiable/truncated regions remain explicit warnings.
 - A closer Unicorn checkpoint is authorized only by a strictly parsed prior result from the same module
-  and exact ELF SHA-256. Missing-memory prefers its actual `pcOffset`; missing-register, loop-detected,
-  instruction-limit, and timeout use `terminalOffset`. The generated Hook captures X0-X28, FP/LR/SP/PC,
-  and NZCV at that closer offset and may read only existing safe X0-X28/SP-relative suggestions.
+  and exact ELF SHA-256. Missing-memory prefers its actual `pcOffset`; `call-boundary` uses the recorded
+  AArch64 `PC+4` return offset; missing-register, loop-detected, instruction-limit, and timeout use
+  `terminalOffset`. The generated Hook captures X0-X28, FP/LR/SP/PC, and NZCV at that closer offset and
+  may re-read only existing verified X0-X28/SP-relative seed windows and suggestions using current
+  checkpoint registers. It fires only if the real call returns through that continuation.
   Absolute addresses and X29/X30 remain manual. Reusing the new capture in Unicorn requires the same
   prior result as `checkpoint_result_path`; the hash guard is file identity, not runtime attestation.
 - Reusing the closer capture in angr requires the same authorization: report module, prior expected and

@@ -90,7 +90,12 @@ fn normalized_offset(value: &str) -> Result<String, String> {
 fn checkpoint_stop_supported(stop_reason: &str) -> bool {
     matches!(
         stop_reason,
-        "missing-memory" | "missing-register" | "loop-detected" | "instruction-limit" | "timeout"
+        "missing-memory"
+            | "missing-register"
+            | "call-boundary"
+            | "loop-detected"
+            | "instruction-limit"
+            | "timeout"
     )
 }
 
@@ -99,7 +104,62 @@ fn checkpoint_offsets_for_run(run: &UnicornReplayRun) -> Result<BTreeSet<String>
     if !checkpoint_stop_supported(&run.stop_reason) {
         return Ok(offsets);
     }
-    if run.stop_reason == "missing-memory" {
+    if run.stop_reason == "call-boundary" {
+        let Some(boundary) = run.call_boundaries.last() else {
+            return Ok(offsets);
+        };
+        let call_offset = normalized_offset(&boundary.pc_offset)?;
+        let terminal_offset = run
+            .terminal_offset
+            .as_deref()
+            .ok_or_else(|| "Unicorn call-boundary requires a terminal offset".to_string())?;
+        if normalized_offset(terminal_offset)? != call_offset {
+            return Err(
+                "Unicorn call-boundary terminal offset does not match the recorded call PC"
+                    .to_string(),
+            );
+        }
+        let (return_offset, return_address) = match (
+            boundary.return_offset.as_deref(),
+            boundary.return_address.as_deref(),
+        ) {
+            (None, None) => return Ok(offsets),
+            (Some(offset), Some(address)) => (offset, address),
+            _ => {
+                return Err(
+                    "Unicorn call-boundary return offset and address must be present together"
+                        .to_string(),
+                )
+            }
+        };
+        let return_offset = normalized_offset(return_offset)?;
+        let call_value = parse_hex_addr(&call_offset)
+            .map_err(|error| format!("invalid call-boundary PC: {error}"))?;
+        let expected_return = call_value
+            .checked_add(4)
+            .ok_or_else(|| "Unicorn call-boundary return offset overflow".to_string())?;
+        if parse_hex_addr(&return_offset)
+            .map_err(|error| format!("invalid call-boundary return offset: {error}"))?
+            != expected_return
+        {
+            return Err("Unicorn call-boundary return offset must equal call PC + 4".to_string());
+        }
+        let mapped_base = parse_hex_addr(&run.mapped_base)
+            .map_err(|error| format!("invalid Unicorn mapped base: {error}"))?;
+        let expected_address = mapped_base
+            .checked_add(expected_return)
+            .ok_or_else(|| "Unicorn call-boundary return address overflow".to_string())?;
+        if parse_hex_addr(return_address)
+            .map_err(|error| format!("invalid call-boundary return address: {error}"))?
+            != expected_address
+        {
+            return Err(
+                "Unicorn call-boundary return address does not match mapped base + return offset"
+                    .to_string(),
+            );
+        }
+        offsets.insert(return_offset);
+    } else if run.stop_reason == "missing-memory" {
         for missing in &run.missing_memory {
             if let Some(offset) = &missing.pc_offset {
                 offsets.insert(normalized_offset(offset)?);
@@ -321,6 +381,101 @@ pub fn generate_frida_unicorn_checkpoint_hook(
                 .to_string(),
         );
     }
+    if targets
+        .values()
+        .any(|target| target.stop_reasons.contains("call-boundary"))
+    {
+        warnings.push(
+            "A post-call checkpoint hooks the AArch64 PC+4 return site and fires only when the real call returns through that continuation; exceptions, non-returning calls, and alternate control flow produce no capture."
+                .to_string(),
+        );
+    }
+
+    let mut plan_by_event = BTreeMap::new();
+    for plan in &bundle.seed_recapture_plans {
+        if plan_by_event
+            .insert(plan.source_event_index, plan)
+            .is_some()
+        {
+            return Err(format!(
+                "Unicorn result contains duplicate seed recapture plans for event {}",
+                plan.source_event_index
+            ));
+        }
+    }
+    let mut carried_window_count = 0u32;
+    if bundle.seed_recapture_plans.is_empty() {
+        warnings.push(
+            "This Unicorn result has no seedRecapturePlans, so prior seed memory cannot be re-read at the closer checkpoint; the Hook still captures registers and supported current missing-memory windows."
+                .to_string(),
+        );
+    } else {
+        for target in targets.values_mut() {
+            let source_events = target
+                .source_event_indices
+                .iter()
+                .copied()
+                .collect::<Vec<_>>();
+            for source_event_index in source_events {
+                let seed_offset = selected_events
+                    .get(&source_event_index)
+                    .expect("checkpoint target source event was selected");
+                let Some(plan) = plan_by_event.get(&source_event_index) else {
+                    warnings.push(format!(
+                        "Unicorn result has no seed recapture plan for selected event {source_event_index}; its prior seed memory cannot be re-read at the closer checkpoint."
+                    ));
+                    continue;
+                };
+                if normalized_offset(&plan.capture_offset)? != *seed_offset {
+                    return Err(format!(
+                        "Unicorn seed recapture plan captureOffset does not match event {source_event_index} provenance"
+                    ));
+                }
+                if plan.unsupported_memory_region_count > 0 {
+                    warnings.push(format!(
+                        "Seed event {source_event_index} has {} memory region(s) without a verified X0-X28/SP-relative relation; those regions cannot be re-read at the closer checkpoint.",
+                        plan.unsupported_memory_region_count
+                    ));
+                }
+                if plan.windows_truncated {
+                    warnings.push(format!(
+                        "Seed event {source_event_index} reached the bounded 256-window recapture-plan limit; omitted prior-memory windows remain explicit."
+                    ));
+                }
+                for window in &plan.windows {
+                    if window.source_kind != "byteArray" {
+                        return Err(format!(
+                            "Unicorn seed recapture plan event {source_event_index} contains a non-byteArray window"
+                        ));
+                    }
+                    let (base_register, _) = capture_register(&window.base_register)?;
+                    let displacement = parse_displacement(Some(&window.displacement))?;
+                    let byte_length = u32::try_from(window.byte_length).map_err(|_| {
+                        "Unicorn seed recapture window byte length does not fit u32".to_string()
+                    })?;
+                    if !(1..=4_096).contains(&byte_length) {
+                        return Err(
+                            "Frida Unicorn checkpoint carried-forward byte length must be between 1 and 4096"
+                                .to_string(),
+                        );
+                    }
+                    validate_window_bounds(displacement, byte_length)?;
+                    let capture = target
+                        .captures
+                        .entry((base_register, displacement, byte_length))
+                        .or_default();
+                    capture.source_event_indices.insert(source_event_index);
+                    capture.source_seed_offsets.insert(seed_offset.clone());
+                    carried_window_count = carried_window_count.saturating_add(1);
+                }
+            }
+        }
+    }
+    if carried_window_count > 0 {
+        warnings.push(format!(
+            "{carried_window_count} verified seed byteArray window reference(s) will be re-read from the current checkpoint register values; the Hook never copies prior absolute addresses or stale bytes."
+        ));
+    }
 
     for suggestion in &bundle.recapture_suggestions {
         let checkpoint_offset = normalized_offset(&suggestion.pc_offset)?;
@@ -403,6 +558,11 @@ pub fn generate_frida_unicorn_checkpoint_hook(
         if target.stop_reasons.contains("missing-memory") && captures.is_empty() {
             warnings.push(format!(
                 "Checkpoint {offset} has no safe X0-X28/SP-relative missing-memory window; the Hook captures registers only and further memory may need manual configuration."
+            ));
+        }
+        if target.stop_reasons.contains("call-boundary") && captures.is_empty() {
+            warnings.push(format!(
+                "Post-call checkpoint {offset} has no safe carried-forward memory window; the Hook captures registers only and the resumed replay may request another bounded recapture."
             ));
         }
         capture_window_count = capture_window_count.saturating_add(captures.len() as u32);
@@ -606,7 +766,8 @@ mod tests {
     use crate::query::angr::AngrOllvmFridaSeedProvenance;
     use crate::query::frida_capture::{generate_angr_state_seed, parse_frida_capture_bundle};
     use crate::query::unicorn::{
-        UnicornMissingMemory, UnicornOllvmConfig, UnicornRecaptureSuggestion, UnicornReplayRun,
+        UnicornCallBoundary, UnicornMissingMemory, UnicornOllvmConfig, UnicornRecaptureSuggestion,
+        UnicornReplayRun, UnicornSeedRecapturePlan, UnicornSeedRecaptureWindow,
     };
 
     fn sample_bundle() -> UnicornOllvmResultBundle {
@@ -783,5 +944,68 @@ mod tests {
             &FridaUnicornCheckpointHookOptions::default(),
         )
         .is_err());
+    }
+
+    #[test]
+    fn call_boundary_checkpoint_hooks_post_call_return_and_rereads_seed_memory() {
+        let mut bundle = sample_bundle();
+        bundle.runs[0].stop_reason = "call-boundary".to_string();
+        bundle.runs[0].terminal_address = "0x40000180".to_string();
+        bundle.runs[0].terminal_offset = Some("0x180".to_string());
+        bundle.runs[0].missing_memory.clear();
+        bundle.runs[0].call_boundaries = vec![UnicornCallBoundary {
+            pc_offset: "0x180".to_string(),
+            mnemonic: "blr x9".to_string(),
+            target_address: Some("0x70001000".to_string()),
+            target_offset: None,
+            return_address: Some("0x40000184".to_string()),
+            return_offset: Some("0x184".to_string()),
+        }];
+        bundle.recapture_suggestions.clear();
+        bundle.seed_recapture_plans = vec![UnicornSeedRecapturePlan {
+            source_event_index: 7,
+            capture_offset: "0x100".to_string(),
+            windows: vec![UnicornSeedRecaptureWindow {
+                label: "seed-x19-input".to_string(),
+                base_register: "X19".to_string(),
+                displacement: "0x20".to_string(),
+                byte_length: 16,
+                source_kind: "byteArray".to_string(),
+                phase: "enter".to_string(),
+            }],
+            carry_forward_bytes: 16,
+            unsupported_memory_region_count: 0,
+            windows_truncated: false,
+        }];
+
+        assert_eq!(
+            unicorn_checkpoint_offsets(&bundle)
+                .unwrap()
+                .into_iter()
+                .collect::<Vec<_>>(),
+            vec!["0x184"]
+        );
+        let generated = generate_frida_unicorn_checkpoint_hook(
+            &bundle,
+            &["0x100".to_string()],
+            &FridaUnicornCheckpointHookOptions::default(),
+        )
+        .unwrap();
+        assert_eq!(generated.targets.len(), 1);
+        assert_eq!(generated.targets[0].offset, "0x184");
+        assert_eq!(generated.targets[0].stop_reasons, vec!["call-boundary"]);
+        assert_eq!(generated.targets[0].captures.len(), 1);
+        assert_eq!(generated.targets[0].captures[0].base_register, "X19");
+        assert_eq!(generated.targets[0].captures[0].byte_length, 16);
+        assert!(generated
+            .warnings
+            .iter()
+            .any(|warning| warning.contains("post-call checkpoint")));
+        assert!(generated.warnings.iter().any(
+            |warning| warning.contains("never copies prior absolute addresses or stale bytes")
+        ));
+
+        bundle.runs[0].call_boundaries[0].return_offset = Some("0x188".to_string());
+        assert!(unicorn_checkpoint_offsets(&bundle).is_err());
     }
 }

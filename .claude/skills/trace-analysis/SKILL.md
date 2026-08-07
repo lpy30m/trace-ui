@@ -168,8 +168,10 @@ regions as explicit manual work. After two to sixteen ordered result rounds from
 recapture only for new coverage, a new dispatcher, or a forward-moving missing-state stop. Prefer a closer
 checkpoint or bounded angr for repeated stalls, divergence, or regression. For a closer checkpoint, call
 `generate_frida_unicorn_checkpoint_hook{unicorn_result_path,seed_capture_offsets,max_events?}` using the
-strictly validated latest result. The Hook lands at the missing-memory PC or a supported terminal PC and
-captures full GPR/NZCV plus only safe existing X0-X28/SP-relative windows. After the user runs it, pass
+strictly validated latest result. The Hook lands at the missing-memory PC, a supported terminal PC, or
+the recorded `PC+4` return site for a `call-boundary`, and captures full GPR/NZCV plus only verified
+current-register X0-X28/SP-relative seed windows and suggestions. A post-call Hook emits a capture only
+when the real call returns through that continuation. After the user runs it, pass
 the new exact `hook-enter` to `generate_unicorn_ollvm_script` together with `checkpoint_result_path`
 pointing to that same prior result. Module and exact ELF SHA-256 must match; this is not runtime attestation.
 If that closer concrete replay still lacks state, pass the same capture, exact ELF, and same prior result
