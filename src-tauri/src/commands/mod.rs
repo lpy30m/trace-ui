@@ -2035,6 +2035,61 @@ pub async fn plan_analysis_case_capture(
 }
 
 #[tauri::command]
+pub async fn generate_coverage_reconciliation_script(
+    request: trace_core::CoverageReconciliationScriptRequest,
+    output_path: Option<String>,
+) -> Result<trace_core::CoverageReconciliationScript, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        let generated = trace_core::generate_coverage_reconciliation_script(&request)?;
+        if let Some(output_path) = output_path
+            .as_deref()
+            .map(str::trim)
+            .filter(|path| !path.is_empty())
+        {
+            let mut path = std::path::PathBuf::from(output_path);
+            if path.extension().and_then(|value| value.to_str()) != Some("py") {
+                path.set_extension("py");
+            }
+            let parent = path
+                .parent()
+                .filter(|value| !value.as_os_str().is_empty())
+                .ok_or_else(|| {
+                    "coverage script output path must include a parent directory".to_string()
+                })?;
+            if !parent.is_dir() {
+                return Err(format!(
+                    "coverage script output directory does not exist: {}",
+                    parent.display()
+                ));
+            }
+            std::fs::write(&path, generated.script.as_bytes()).map_err(|error| {
+                format!("failed to save coverage reconciliation script: {error}")
+            })?;
+        }
+        Ok(generated)
+    })
+    .await
+    .map_err(|error| format!("Task execution failed: {error}"))?
+}
+
+#[tauri::command]
+pub async fn inspect_coverage_reconciliation(
+    artifact_path: String,
+    static_binary_path: String,
+    source_artifact_paths: Option<Vec<String>>,
+) -> Result<trace_core::CoverageReconciliationInspectionReport, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        trace_core::inspect_coverage_reconciliation(
+            &artifact_path,
+            &static_binary_path,
+            &source_artifact_paths.unwrap_or_default(),
+        )
+    })
+    .await
+    .map_err(|error| format!("Task execution failed: {error}"))?
+}
+
+#[tauri::command]
 pub async fn run_accuracy_benchmark(
     suite_path: String,
 ) -> Result<trace_core::AccuracyBenchmarkReport, String> {

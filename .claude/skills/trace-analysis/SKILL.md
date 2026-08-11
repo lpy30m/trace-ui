@@ -5,7 +5,7 @@ description: >
   Use for native/.so reverse engineering, crypto key/IV/nonce/salt/material identification,
   MD5/SHA/HMAC/PBKDF2 input matching, backward or forward taint, function I/O inspection, cross-run
   diffing, static ELF-to-trace table reconciliation, software/table-driven/obfuscated/white-box crypto
-  classification, strict crypto KAT verification, information-gain capture planning, Frida ABI candidate inference, accuracy benchmarking, Frida 16 hook generation/capture import, angr state seeding, dynamic IDA/angr/Unicorn/OLLVM analysis, missing-memory recapture, closer checkpoint capture, and cross-version dispatcher/state structural mapping. Trigger on requests
+  classification, strict crypto KAT verification, coverage-aware claim gating, information-gain capture planning, Frida ABI candidate inference, accuracy benchmarking, Frida 16 hook generation/capture import, angr state seeding, dynamic IDA/angr/Unicorn/OLLVM analysis, missing-memory recapture, closer checkpoint capture, and cross-version dispatcher/state structural mapping. Trigger on requests
   such as analyze this trace, reverse this native function, inspect this .so with its trace, find the key
   or algorithm, isolate a salt, generate a Frida hook, inspect OLLVM, map OLLVM across versions, where did this value come from, or
   分析 trace / 逆向 so / 污点 / 加密分析 / Frida hook / OLLVM.
@@ -58,10 +58,16 @@ Trace UI app (embedded MCP on `127.0.0.1:19821`) or register `trace-cli`, then r
 10. **Ask for the next best evidence** — call `plan_analysis_case_capture` after Replay Doctor. Follow
     the top non-redundant target only when it addresses the active question; its score is a deterministic
     priority, not a probability. The user still performs every runtime capture or controlled run.
-11. **Regression-check confidence logic** — before accepting gate/status/ranking changes, call
+11. **Gate absence and completeness claims with explicit coverage** — for claims such as “AES does not
+    exist in this scope,” “this branch is globally invariant,” “all dispatchers were found,” or “the CFG
+    is complete,” call `generate_coverage_reconciliation_script` with the exact AArch64 ELF and strict
+    OLLVM report. Let the user run angr manually, then call `inspect_coverage_reconciliation` with the
+    generated JSON, same ELF, and every source artifact path. Import it as `coverage-report` with the
+    exact ELF and source artifacts as parents. A passed gate only caps claim level; it is never semantic proof.
+12. **Regression-check confidence logic** — before accepting gate/status/ranking changes, call
     `run_accuracy_benchmark` on reviewed positive and negative case fixtures. A passing suite prevents
     declared drift; it does not establish that fixture labels are ground truth.
-12. **Close** — `close_trace` when done to free memory (optional; cancels background tasks).
+13. **Close** — `close_trace` when done to free memory (optional; cancels background tasks).
 
 ## Playbooks (question → tool sequence)
 
@@ -110,6 +116,18 @@ token/item budget. Do not discard its counter-evidence, unknowns, invalid artifa
 Call `plan_analysis_case_capture` to obtain the highest-information exact offset/register/memory or
 controlled-run request, and use its redundancy key to avoid asking for the same unchanged capture again.
 Run `run_accuracy_benchmark` only against reviewed suites when changing confidence/gate logic.
+
+**"Can I conclude that AES is absent, a branch is always opaque, every dispatcher is known, or the CFG is complete?"**
+→ not from a dynamic trace alone. Generate a strict coverage artifact with
+`generate_coverage_reconciliation_script{static_binary_path,ollvm_report_path,claim_scope,scope_kind?}`.
+The user runs the returned Python/angr script manually against that exact ELF. Then call
+`inspect_coverage_reconciliation{artifact_path,static_binary_path,source_artifact_paths:[...]}` and
+import the JSON into the same `.traceui-case` with the exact ELF and every source OLLVM/trace artifact
+as parents. The inspector recomputes counts and basis points from canonical sets, verifies offsets
+against file-backed executable `PT_LOAD` bytes, and rejects wrong ELF/source SHA, truncation, uncovered,
+or dynamic-only sites. Even `complete-site-coverage` covers only the listed static inventory and tested
+runs: negative-existence is capped at Observed; global-invariance/exhaustive/complete-CFG structural
+claims remain Related unless independently proven. Coverage never verifies crypto semantics.
 
 **"Which function does the encryption / hashing, and what are its inputs/outputs?"**
 → `analyze_crypto_functions`. It aggregates magic-constant hits **and** dedicated ARM64 crypto
@@ -300,6 +318,9 @@ recomputes to a known digest.
 - **Only executed instructions exist** in a trace — dynamic, not static. Unexecuted branches aren't there.
   If a value's origin is "missing", the computation may predate the trace's start; widen the range or
   pick a later line.
+- Never trust a serialized coverage percentage or count. Only `inspect_coverage_reconciliation` may
+  reopen the coverage gate after recomputing explicit static/dynamic sets and exact ELF/source provenance.
+  Dynamic unobserved paths remain unknown even when every tool-discovered listed site was observed.
 - **Large traces (10M+ lines): use the `start_*` background tools**, then poll `get_analysis_task` and
   fetch the result via `get_analysis{analysis_id}`. Don't block on a long synchronous call.
 - **Verify before concluding.** End an investigation by quoting exact `get_trace_lines` / `get_memory`
@@ -321,7 +342,7 @@ recomputes to a known digest.
 | Frida | `list_frida_hook_recipes`, `generate_frida_hook`, `generate_frida_runtime_attestation`, `inspect_runtime_attestation`, `generate_frida_ollvm_dispatcher_hook`, `generate_frida_unicorn_recapture_hook`, `generate_frida_unicorn_checkpoint_hook`, `inspect_frida_capture`, `search_frida_capture_events`, `get_frida_capture_event`, `infer_frida_abi`, `analyze_frida_crypto_materials`, `analyze_frida_ollvm_dispatcher_capture`, `generate_angr_state_seed` (user executes hooks manually) |
 | IDA / angr / Unicorn / OLLVM | `analyze_ollvm`, `compare_ollvm_traces`, `map_ollvm_versions`, `generate_ida_ollvm_script`, `inspect_ida_annotations`, `generate_angr_ollvm_script`, `inspect_angr_ollvm_results`, `generate_unicorn_ollvm_script`, `inspect_unicorn_ollvm_results`, `compare_unicorn_ollvm_rounds`, `generate_frida_unicorn_checkpoint_hook` |
 | Orchestration | `auto_investigate`, `start_auto_investigation`, `start_crypto_investigation` |
-| Case / evidence gates | `open_analysis_case`, `ingest_analysis_case_artifact`, `diagnose_analysis_case`, `plan_analysis_case_capture`, `generate_analysis_case_evidence_pack`, `audit_analysis_case_claims`, `upsert_analysis_case_experiment`, `run_accuracy_benchmark`, `diagnose_crypto_detection` |
+| Case / evidence gates | `open_analysis_case`, `ingest_analysis_case_artifact`, `diagnose_analysis_case`, `plan_analysis_case_capture`, `generate_coverage_reconciliation_script`, `inspect_coverage_reconciliation`, `generate_analysis_case_evidence_pack`, `audit_analysis_case_claims`, `upsert_analysis_case_experiment`, `run_accuracy_benchmark`, `diagnose_crypto_detection` |
 | Evidence store | `list_analyses`, `get_analysis`, `compare_analyses`, `export_analysis_report`, `delete_analysis` |
 | Recipes | `list_analysis_recipes`, `run_analysis_recipe`, `save_analysis_recipe`, `delete_analysis_recipe` |
 | Background tasks | `get_analysis_task`, `list_analysis_tasks`, `cancel_analysis_task` |

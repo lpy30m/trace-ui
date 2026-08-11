@@ -42,12 +42,12 @@ pub use analysis_case::{
     TraceAnalysisCase, TraceAnalysisCaseDocument, TraceCaseArtifact, TraceCaseArtifactHealth,
     TraceCaseArtifactImportResult, TraceCaseArtifactKind, TraceCaseArtifactSummary, TraceCaseClaim,
     TraceCaseClaimAuditEntry, TraceCaseClaimLedgerAudit, TraceCaseClaimStatus,
-    TraceCaseControlledExperimentPair, TraceCaseCryptoKatReport, TraceCaseEvidenceRef,
-    TraceCaseExperiment, TraceCaseExperimentAxis, TraceCaseExperimentCell,
-    TraceCaseExperimentMatrixReport, TraceCaseExperimentRecommendation,
-    TraceCaseRuntimeAttestationReport, CLAIM_LEDGER_AUDIT_SCHEMA, EXPERIMENT_MATRIX_SCHEMA,
-    INFORMATION_GAIN_CAPTURE_PLAN_SCHEMA, REPLAY_DOCTOR_SCHEMA, REPLAY_STATE_READINESS_SCHEMA,
-    TRACE_ANALYSIS_CASE_SCHEMA,
+    TraceCaseControlledExperimentPair, TraceCaseCoverageReport, TraceCaseCoverageRequirement,
+    TraceCaseCryptoKatReport, TraceCaseEvidenceRef, TraceCaseExperiment, TraceCaseExperimentAxis,
+    TraceCaseExperimentCell, TraceCaseExperimentMatrixReport, TraceCaseExperimentRecommendation,
+    TraceCaseRuntimeAttestationReport, CLAIM_LEDGER_AUDIT_SCHEMA, COVERAGE_CLAIM_GATE_SCHEMA,
+    EXPERIMENT_MATRIX_SCHEMA, INFORMATION_GAIN_CAPTURE_PLAN_SCHEMA, REPLAY_DOCTOR_SCHEMA,
+    REPLAY_STATE_READINESS_SCHEMA, TRACE_ANALYSIS_CASE_SCHEMA,
 };
 pub use analysis_task::{AnalysisTaskInfo, AnalysisTaskStatus};
 pub use api_types::*;
@@ -74,6 +74,17 @@ pub use query::angr::{
     AngrDispatcherProbe, AngrFlowExploration, AngrFlowPath, AngrOllvmFlowConfig,
     AngrOllvmFridaSeedProvenance, AngrOllvmResultBundle, AngrOllvmScript, AngrRegisterValue,
     AngrSuccessor,
+};
+pub use query::coverage::{
+    generate_coverage_reconciliation_script, inspect_coverage_reconciliation,
+    inspect_coverage_reconciliation_bundle, parse_coverage_reconciliation_bundle,
+    recompute_coverage_reconciliation_summary, save_coverage_reconciliation_bundle,
+    CoverageBasisPoints, CoverageCounts, CoverageDynamicRun, CoverageEdge, CoverageFunctionRange,
+    CoverageOffsetSamples, CoverageReconciliationBundle, CoverageReconciliationInspectionReport,
+    CoverageReconciliationScript, CoverageReconciliationScriptRequest,
+    CoverageReconciliationSummary, CoverageScope, CoverageScriptScopeKind, CoverageStaticInventory,
+    COVERAGE_RECONCILIATION_INSPECTION_SCHEMA, COVERAGE_RECONCILIATION_SCHEMA,
+    MAX_COVERAGE_ARTIFACT_BYTES,
 };
 pub use query::crypto_functions::{
     CryptoFamily, CryptoFunctionCandidate, CryptoFunctionIo, CryptoFunctionReport,

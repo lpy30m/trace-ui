@@ -1,6 +1,11 @@
 import React, { useCallback, useEffect, useMemo, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import type {
+  CoverageCounts,
+  CoverageReconciliationInspectionReport,
+  CoverageReconciliationScript,
+  CoverageReconciliationScriptRequest,
+  CoverageScriptScopeKind,
   CryptoDetectionDoctorReport,
   FridaRuntimeAttestationRequest,
   FridaRuntimeAttestationScript,
@@ -25,7 +30,7 @@ const cardStyle: React.CSSProperties = {
 function statusColor(status: string): string {
   const value = status.toLowerCase();
   if (value.includes("not-captured") || value.includes("not-observed") || value.includes("no-match") || value.includes("partial") || value.includes("incomplete")) return "#d29922";
-  if (value.includes("verified") || value === "valid" || value.includes("progress") || value.includes("ready") || value.includes("captured") || value.includes("matched") || value.includes("passed")) return "#3fb950";
+  if (value.includes("verified") || value === "valid" || value.includes("progress") || value.includes("ready") || value.includes("captured") || value.includes("matched") || value.includes("passed") || value.includes("complete")) return "#3fb950";
   if (value.includes("invalid") || value.includes("mismatch") || value.includes("failed") || value.includes("refuted") || value.includes("regress")) return "#e5484d";
   if (value.includes("related") || value.includes("blocked") || value.includes("stall") || value.includes("warning")) return "#d29922";
   return "var(--text-secondary)";
@@ -43,6 +48,15 @@ function shortHash(value?: string): string {
   return value && value.length > 18 ? `${value.slice(0, 12)}…${value.slice(-6)}` : value ?? "";
 }
 
+function coveragePercent(basisPoints?: number): string {
+  return basisPoints === undefined ? "" : `${(basisPoints / 100).toFixed(2)}%`;
+}
+
+function compactCoverageCounts(counts?: CoverageCounts): string {
+  if (!counts) return "";
+  return `insn ${counts.instructions} · blocks ${counts.blocks} · branches ${counts.branches} · functions ${counts.functions} · edges ${counts.edges}`;
+}
+
 function artifactSummary(artifact: TraceCaseArtifact): string {
   const parts: string[] = [];
   if (artifact.summary.moduleName) parts.push(artifact.summary.moduleName);
@@ -50,6 +64,10 @@ function artifactSummary(artifact: TraceCaseArtifact): string {
   if (artifact.summary.cryptoKatAlgorithm) parts.push(artifact.summary.cryptoKatAlgorithm);
   if (artifact.summary.cryptoKatStatus) parts.push(artifact.summary.cryptoKatStatus);
   if (artifact.summary.cryptoKatBytesChecked !== undefined) parts.push(`${artifact.summary.cryptoKatBytesChecked} KAT bytes`);
+  if (artifact.summary.coverageStatus) parts.push(artifact.summary.coverageStatus);
+  if (artifact.summary.coverageObservedStaticCounts && artifact.summary.coverageStaticCounts) {
+    parts.push(`${artifact.summary.coverageObservedStaticCounts.blocks}/${artifact.summary.coverageStaticCounts.blocks} static blocks`);
+  }
   if (artifact.summary.matchedExecutableBytes !== undefined && artifact.summary.totalExecutableBytes !== undefined) {
     parts.push(`${artifact.summary.matchedExecutableBytes}/${artifact.summary.totalExecutableBytes} executable bytes`);
   }
@@ -74,6 +92,18 @@ export default function AnalysisCasePanel({ sessionId }: Props) {
   const [attestationCapturePath, setAttestationCapturePath] = useState("");
   const [attestationInspection, setAttestationInspection] = useState<RuntimeAttestationInspectionReport | null>(null);
   const [attestationSavedPath, setAttestationSavedPath] = useState("");
+  const [coverageBinaryArtifactId, setCoverageBinaryArtifactId] = useState("");
+  const [coverageOllvmArtifactId, setCoverageOllvmArtifactId] = useState("");
+  const [coverageBinaryPath, setCoverageBinaryPath] = useState("");
+  const [coverageOllvmPath, setCoverageOllvmPath] = useState("");
+  const [coverageClaimScope, setCoverageClaimScope] = useState("");
+  const [coverageScopeKind, setCoverageScopeKind] = useState<CoverageScriptScopeKind>("function-closure");
+  const [coverageRangeStart, setCoverageRangeStart] = useState("");
+  const [coverageRangeEnd, setCoverageRangeEnd] = useState("");
+  const [coverageScript, setCoverageScript] = useState<CoverageReconciliationScript | null>(null);
+  const [coverageSavedPath, setCoverageSavedPath] = useState("");
+  const [coverageArtifactPath, setCoverageArtifactPath] = useState("");
+  const [coverageInspection, setCoverageInspection] = useState<CoverageReconciliationInspectionReport | null>(null);
   const [experimentLabel, setExperimentLabel] = useState("");
   const [experimentBinarySha, setExperimentBinarySha] = useState("");
   const [experimentKeyGroup, setExperimentKeyGroup] = useState("");
@@ -112,6 +142,12 @@ export default function AnalysisCasePanel({ sessionId }: Props) {
     setAttestationBinaryArtifactId(current => binaries.some(artifact => artifact.artifactId === current) ? current : preferred);
     const selected = binaries.find(artifact => artifact.artifactId === preferred);
     setAttestationModuleName(current => current || selected?.summary.moduleName || "");
+    setCoverageBinaryArtifactId(current => binaries.some(artifact => artifact.artifactId === current) ? current : preferred);
+    const ollvmArtifacts = document.case.artifacts.filter(artifact => artifact.kind === "ollvm-report");
+    setCoverageOllvmArtifactId(current => ollvmArtifacts.some(artifact => artifact.artifactId === current)
+      ? current
+      : ollvmArtifacts[0]?.artifactId ?? "");
+    setCoverageClaimScope(current => current || document.case.claims[0]?.scope || "");
   }, [document]);
 
   const createCase = useCallback(async () => {
@@ -277,6 +313,132 @@ export default function AnalysisCasePanel({ sessionId }: Props) {
     finally { setBusy(false); }
   }, [document, attestationCapturePath, attestationBinaryArtifactId, attestationModuleName, remember]);
 
+  const buildCoverageRequest = useCallback((): CoverageReconciliationScriptRequest => {
+    if (!coverageBinaryPath.trim()) throw new Error("请选择用于静态覆盖清单的 exact AArch64 ELF。");
+    if (!coverageOllvmPath.trim()) throw new Error("请选择作为动态已执行集合来源的 trace-ui/ollvm-v1 JSON。");
+    if (!coverageClaimScope.trim()) throw new Error("请输入与 Claim Ledger 完全一致的 claim scope。");
+    if (coverageScopeKind === "range" && (!coverageRangeStart.trim() || !coverageRangeEnd.trim())) {
+      throw new Error("range 覆盖范围需要起止 module-relative offset。");
+    }
+    return {
+      staticBinaryPath: coverageBinaryPath.trim(),
+      ollvmReportPath: coverageOllvmPath.trim(),
+      claimScope: coverageClaimScope.trim(),
+      scopeKind: coverageScopeKind,
+      rangeStartOffset: coverageScopeKind === "range" ? coverageRangeStart.trim() : undefined,
+      rangeEndOffset: coverageScopeKind === "range" ? coverageRangeEnd.trim() : undefined,
+      maxInstructions: 500_000,
+      maxBlocks: 100_000,
+      maxEdges: 250_000,
+      maxFunctions: 25_000,
+    };
+  }, [coverageBinaryPath, coverageOllvmPath, coverageClaimScope, coverageScopeKind, coverageRangeStart, coverageRangeEnd]);
+
+  const chooseCoverageBinary = useCallback(async () => {
+    const { open } = await import("@tauri-apps/plugin-dialog");
+    const selected = await open({ title: "选择覆盖核对使用的 exact AArch64 ELF", multiple: false, directory: false });
+    if (typeof selected === "string") {
+      setCoverageBinaryPath(selected);
+      setCoverageScript(null);
+      setCoverageInspection(null);
+    }
+  }, []);
+
+  const chooseCoverageOllvm = useCallback(async () => {
+    const { open } = await import("@tauri-apps/plugin-dialog");
+    const selected = await open({
+      title: "选择动态来源 trace-ui/ollvm-v1 JSON",
+      multiple: false,
+      directory: false,
+      filters: [{ name: "JSON", extensions: ["json"] }],
+    });
+    if (typeof selected === "string") {
+      setCoverageOllvmPath(selected);
+      setCoverageScript(null);
+      setCoverageInspection(null);
+    }
+  }, []);
+
+  const generateCoverageScript = useCallback(async () => {
+    let request: CoverageReconciliationScriptRequest;
+    try { request = buildCoverageRequest(); }
+    catch (e) { setError(String(e)); return; }
+    setBusy(true); setError(null);
+    try {
+      setCoverageScript(await invoke<CoverageReconciliationScript>("generate_coverage_reconciliation_script", {
+        request,
+        outputPath: null,
+      }));
+      setCoverageSavedPath("");
+    } catch (e) { setError(String(e)); }
+    finally { setBusy(false); }
+  }, [buildCoverageRequest]);
+
+  const saveCoverageScript = useCallback(async () => {
+    let request: CoverageReconciliationScriptRequest;
+    try { request = buildCoverageRequest(); }
+    catch (e) { setError(String(e)); return; }
+    const { save } = await import("@tauri-apps/plugin-dialog");
+    const selected = await save({
+      title: "保存手动 angr 覆盖核对脚本",
+      defaultPath: coverageScript?.fileName ?? "trace-ui-coverage.py",
+      filters: [{ name: "Python", extensions: ["py"] }],
+    });
+    if (!selected) return;
+    setBusy(true); setError(null);
+    try {
+      const generated = await invoke<CoverageReconciliationScript>("generate_coverage_reconciliation_script", {
+        request,
+        outputPath: selected,
+      });
+      setCoverageScript(generated);
+      setCoverageSavedPath(selected.endsWith(".py") ? selected : `${selected}.py`);
+    } catch (e) { setError(String(e)); }
+    finally { setBusy(false); }
+  }, [buildCoverageRequest, coverageScript]);
+
+  const inspectCoverageArtifact = useCallback(async () => {
+    let request: CoverageReconciliationScriptRequest;
+    try { request = buildCoverageRequest(); }
+    catch (e) { setError(String(e)); return; }
+    const { open } = await import("@tauri-apps/plugin-dialog");
+    const selected = await open({
+      title: "选择手动运行 angr 后生成的 coverage JSON",
+      multiple: false,
+      directory: false,
+      filters: [{ name: "JSON", extensions: ["json"] }],
+    });
+    if (typeof selected !== "string") return;
+    setBusy(true); setError(null);
+    try {
+      const inspection = await invoke<CoverageReconciliationInspectionReport>("inspect_coverage_reconciliation", {
+        artifactPath: selected,
+        staticBinaryPath: request.staticBinaryPath,
+        sourceArtifactPaths: [request.ollvmReportPath],
+      });
+      setCoverageArtifactPath(selected);
+      setCoverageInspection(inspection);
+    } catch (e) { setError(String(e)); }
+    finally { setBusy(false); }
+  }, [buildCoverageRequest]);
+
+  const importCoverageArtifact = useCallback(async () => {
+    if (!document || !coverageArtifactPath || !coverageBinaryArtifactId || !coverageOllvmArtifactId) return;
+    setBusy(true); setError(null);
+    try {
+      const imported = await invoke<{ case: TraceAnalysisCaseDocument["case"] }>("add_analysis_case_artifact", {
+        casePath: document.casePath,
+        artifactPath: coverageArtifactPath,
+        kindHint: "coverage-report",
+        label: `Coverage · ${coverageInspection?.moduleName ?? "module"}`,
+        parentArtifactIds: [coverageBinaryArtifactId, coverageOllvmArtifactId],
+      });
+      remember({ casePath: document.casePath, case: imported.case });
+      setReport(null);
+    } catch (e) { setError(String(e)); }
+    finally { setBusy(false); }
+  }, [document, coverageArtifactPath, coverageBinaryArtifactId, coverageOllvmArtifactId, coverageInspection, remember]);
+
   const diagnoseAes = useCallback(async () => {
     if (!sessionId) return;
     setBusy(true); setError(null);
@@ -329,9 +491,21 @@ export default function AnalysisCasePanel({ sessionId }: Props) {
     () => document?.case.artifacts.filter(artifact => artifact.kind === "static-binary") ?? [],
     [document],
   );
+  const ollvmArtifacts = useMemo(
+    () => document?.case.artifacts.filter(artifact => artifact.kind === "ollvm-report") ?? [],
+    [document],
+  );
   const selectedAttestationBinary = useMemo(
     () => staticBinaryArtifacts.find(artifact => artifact.artifactId === attestationBinaryArtifactId),
     [staticBinaryArtifacts, attestationBinaryArtifactId],
+  );
+  const selectedCoverageBinary = useMemo(
+    () => staticBinaryArtifacts.find(artifact => artifact.artifactId === coverageBinaryArtifactId),
+    [staticBinaryArtifacts, coverageBinaryArtifactId],
+  );
+  const selectedCoverageOllvm = useMemo(
+    () => ollvmArtifacts.find(artifact => artifact.artifactId === coverageOllvmArtifactId),
+    [ollvmArtifacts, coverageOllvmArtifactId],
   );
 
   const healthById = useMemo(
@@ -477,6 +651,131 @@ export default function AnalysisCasePanel({ sessionId }: Props) {
           </section>
 
           <section style={cardStyle}>
+            <div style={{ display: "flex", alignItems: "center", gap: 7 }}>
+              <div style={{ color: "var(--text-primary)", fontSize: 12, fontWeight: 600 }}>Coverage-aware Claim Gate（手动 angr）</div>
+              {coverageInspection && <span style={{ color: statusColor(coverageInspection.status), fontSize: 10 }}>
+                {coverageInspection.status} · gate {String(coverageInspection.coverageGateMet)}
+              </span>}
+            </div>
+            <div style={{ marginTop: 4, color: "var(--text-secondary)", fontSize: 10, lineHeight: 1.5 }}>
+              用 exact ELF 建立显式静态指令/块/分支/函数/边集合，再与 OLLVM 动态已执行集合核对。脚本由你手动运行；Trace UI 不安装或执行 angr。即使覆盖门禁通过，也只限制结论的最高等级，不能单独证明“没有 AES”、全局 opaque 或完整 CFG。
+            </div>
+            <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(210px, 1fr))", gap: 6, marginTop: 8 }}>
+              <select
+                aria-label="Coverage exact ELF parent"
+                value={coverageBinaryArtifactId}
+                onChange={event => { setCoverageBinaryArtifactId(event.target.value); setCoverageInspection(null); }}
+                style={{ ...buttonStyle, height: 28 }}
+              >
+                <option value="">选择 exact ELF parent</option>
+                {staticBinaryArtifacts.map(artifact => <option key={artifact.artifactId} value={artifact.artifactId}>
+                  {artifact.label} · {shortHash(artifact.summary.binarySha256 ?? artifact.sha256)}
+                </option>)}
+              </select>
+              <select
+                aria-label="Coverage OLLVM source parent"
+                value={coverageOllvmArtifactId}
+                onChange={event => { setCoverageOllvmArtifactId(event.target.value); setCoverageInspection(null); }}
+                style={{ ...buttonStyle, height: 28 }}
+              >
+                <option value="">选择 OLLVM source parent</option>
+                {ollvmArtifacts.map(artifact => <option key={artifact.artifactId} value={artifact.artifactId}>
+                  {artifact.label} · {shortHash(artifact.sha256)}
+                </option>)}
+              </select>
+              <input
+                aria-label="Coverage exact ELF path"
+                value={coverageBinaryPath}
+                onChange={event => { setCoverageBinaryPath(event.target.value); setCoverageScript(null); setCoverageInspection(null); }}
+                placeholder="exact ELF 绝对路径"
+                style={{ ...buttonStyle, height: 28 }}
+              />
+              <button type="button" style={buttonStyle} disabled={busy} onClick={chooseCoverageBinary}>选择 Coverage ELF</button>
+              <input
+                aria-label="Coverage OLLVM report path"
+                value={coverageOllvmPath}
+                onChange={event => { setCoverageOllvmPath(event.target.value); setCoverageScript(null); setCoverageInspection(null); }}
+                placeholder="trace-ui/ollvm-v1 JSON 绝对路径"
+                style={{ ...buttonStyle, height: 28 }}
+              />
+              <button type="button" style={buttonStyle} disabled={busy} onClick={chooseCoverageOllvm}>选择 OLLVM 报告</button>
+              <input
+                aria-label="Coverage claim scope"
+                list="coverage-claim-scopes"
+                value={coverageClaimScope}
+                onChange={event => { setCoverageClaimScope(event.target.value); setCoverageScript(null); setCoverageInspection(null); }}
+                placeholder="必须与 claim.scope 完全一致"
+                style={{ ...buttonStyle, height: 28 }}
+              />
+              <datalist id="coverage-claim-scopes">
+                {document.case.claims.map(claim => <option key={claim.claimId} value={claim.scope}>{claim.statement}</option>)}
+              </datalist>
+              <select
+                aria-label="Coverage scope kind"
+                value={coverageScopeKind}
+                onChange={event => { setCoverageScopeKind(event.target.value as CoverageScriptScopeKind); setCoverageScript(null); setCoverageInspection(null); }}
+                style={{ ...buttonStyle, height: 28 }}
+              >
+                <option value="function-closure">function closure（推荐）</option>
+                <option value="range">module-relative range</option>
+                <option value="module">whole module（昂贵）</option>
+              </select>
+              {coverageScopeKind === "range" && <>
+                <input aria-label="Coverage range start" value={coverageRangeStart} onChange={event => { setCoverageRangeStart(event.target.value); setCoverageScript(null); }} placeholder="0x1000" style={{ ...buttonStyle, height: 28 }} />
+                <input aria-label="Coverage range end" value={coverageRangeEnd} onChange={event => { setCoverageRangeEnd(event.target.value); setCoverageScript(null); }} placeholder="0x1ffc" style={{ ...buttonStyle, height: 28 }} />
+              </>}
+            </div>
+            {(!staticBinaryArtifacts.length || !ollvmArtifacts.length) && <div style={{ marginTop: 6, color: "#d29922", fontSize: 10 }}>
+              请先把 exact ELF 和源 OLLVM report 都导入案件；coverage artifact 必须同时绑定二者，不能只信百分比字段。
+            </div>}
+            {(selectedCoverageBinary || selectedCoverageOllvm) && <div style={{ marginTop: 5, color: "var(--text-tertiary)", fontSize: 10 }}>
+              parents: {selectedCoverageBinary?.label ?? "missing ELF"} · {selectedCoverageOllvm?.label ?? "missing OLLVM source"}
+            </div>}
+            <div style={{ display: "flex", flexWrap: "wrap", gap: 6, marginTop: 8 }}>
+              <button type="button" style={{ ...buttonStyle, background: "var(--btn-primary)", color: "#fff" }} disabled={busy || !coverageBinaryPath.trim() || !coverageOllvmPath.trim() || !coverageClaimScope.trim()} onClick={generateCoverageScript}>生成 angr Coverage 脚本</button>
+              <button type="button" style={buttonStyle} disabled={busy || !coverageScript} onClick={saveCoverageScript}>保存 Coverage 脚本</button>
+              <button type="button" style={buttonStyle} disabled={busy || !coverageBinaryPath.trim() || !coverageOllvmPath.trim()} onClick={inspectCoverageArtifact}>检查 Coverage JSON</button>
+              <button type="button" style={buttonStyle} disabled={busy || !coverageInspection || !coverageArtifactPath || !coverageBinaryArtifactId || !coverageOllvmArtifactId} onClick={importCoverageArtifact}>导入 Coverage 案件证据</button>
+            </div>
+            {coverageScript && <div style={{ marginTop: 8, padding: 7, background: "var(--bg-primary)", borderLeft: "3px solid #58a6ff" }}>
+              <div style={{ color: "var(--text-primary)", fontSize: 10, fontWeight: 600 }}>{coverageScript.fileName}</div>
+              <div style={{ marginTop: 3, color: "var(--text-secondary)", fontSize: 10 }}>
+                {coverageScript.moduleName} · exact ELF {shortHash(coverageScript.expectedBinaryIdentity.binarySha256)} · source {shortHash(coverageScript.sourceOllvmSha256)}
+              </div>
+              <div title={coverageScript.claimScope} style={{ marginTop: 3, color: "var(--text-tertiary)", fontSize: 9, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>scope: {coverageScript.claimScope}</div>
+              {coverageSavedPath && <div title={coverageSavedPath} style={{ marginTop: 3, color: "#58a6ff", fontSize: 10, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>已保存：{coverageSavedPath}</div>}
+            </div>}
+            {coverageInspection && <div style={{ marginTop: 8, padding: 8, background: "var(--bg-primary)", border: "1px solid var(--border-color)", borderLeft: `3px solid ${coverageInspection.coverageGateMet ? "#3fb950" : "#d29922"}`, borderRadius: 4 }}>
+              <div style={{ display: "flex", alignItems: "center", gap: 7 }}>
+                <span style={{ color: "var(--text-primary)", fontSize: 10, fontWeight: 600 }}>{coverageInspection.moduleName}</span>
+                <span style={{ color: statusColor(coverageInspection.status), fontSize: 10 }}>{coverageInspection.status}</span>
+                <span style={{ marginLeft: "auto", color: coverageInspection.coverageGateMet ? "#3fb950" : "#d29922", fontSize: 10 }}>gate {String(coverageInspection.coverageGateMet)}</span>
+              </div>
+              <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(160px, 1fr))", gap: 5, marginTop: 6 }}>
+                {(["instructions", "blocks", "branches", "functions", "edges"] as const).map(kind => <div key={kind} style={{ padding: 5, borderRadius: 3, background: "var(--bg-secondary)", color: "var(--text-secondary)", fontSize: 9 }}>
+                  <strong style={{ color: "var(--text-primary)" }}>{kind}</strong> {coverageInspection.summary.observedStaticCounts[kind]}/{coverageInspection.summary.staticCounts[kind]} · {coveragePercent(coverageInspection.summary.coverageBasisPoints[kind])}
+                </div>)}
+              </div>
+              <div style={{ marginTop: 5, color: coverageInspection.summary.coverageComplete ? "#3fb950" : "#d29922", fontSize: 10 }}>
+                static complete {String(coverageInspection.summary.staticInventoryComplete)} · dynamic complete {String(coverageInspection.summary.dynamicCaptureComplete)} · listed-site complete {String(coverageInspection.summary.coverageComplete)}
+              </div>
+              <div style={{ marginTop: 3, color: "#d29922", fontSize: 9 }}>uncovered: {compactCoverageCounts(coverageInspection.summary.uncoveredCounts)}</div>
+              <div style={{ marginTop: 3, color: coverageInspection.summary.dynamicOnlyCounts.instructions || coverageInspection.summary.dynamicOnlyCounts.blocks ? "#e5484d" : "var(--text-tertiary)", fontSize: 9 }}>dynamic-only: {compactCoverageCounts(coverageInspection.summary.dynamicOnlyCounts)}</div>
+              {!!coverageInspection.uncoveredSamples.blocks.length && <div style={{ marginTop: 3, color: "#58a6ff", fontSize: 9 }}>uncovered blocks: {coverageInspection.uncoveredSamples.blocks.slice(0, 12).join(", ")}</div>}
+              {!!coverageInspection.uncoveredSamples.branches.length && <div style={{ marginTop: 3, color: "#58a6ff", fontSize: 9 }}>uncovered branches: {coverageInspection.uncoveredSamples.branches.slice(0, 12).join(", ")}</div>}
+              {coverageInspection.missingSourceSha256s.map(value => <div key={value} style={{ marginTop: 3, color: "#e5484d", fontSize: 9 }}>missing source SHA-256: {value}</div>)}
+            </div>}
+            {!!report?.coverageReconciliations.length && <div style={{ marginTop: 8 }}>
+              <div style={{ color: "var(--text-primary)", fontSize: 10, fontWeight: 600 }}>案件中的 Coverage Claim Gates</div>
+              {report.coverageReconciliations.map(item => <div key={item.artifactId} style={{ marginTop: 5, padding: 7, background: "var(--bg-primary)", borderLeft: `3px solid ${item.report.coverageGateMet ? "#3fb950" : "#d29922"}` }}>
+                <span style={{ color: statusColor(item.report.status), fontSize: 10 }}>{item.report.status}</span>
+                <span style={{ marginLeft: 6, color: "var(--text-secondary)", fontSize: 10 }}>blocks {item.report.summary.observedStaticCounts.blocks}/{item.report.summary.staticCounts.blocks} · branches {item.report.summary.observedStaticCounts.branches}/{item.report.summary.staticCounts.branches}</span>
+                <div title={item.report.claimScope} style={{ marginTop: 3, color: "var(--text-tertiary)", fontSize: 9, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{item.report.claimScope}</div>
+              </div>)}
+            </div>}
+          </section>
+
+          <section style={cardStyle}>
             <div style={{ marginBottom: 7, color: "var(--text-primary)", fontSize: 12, fontWeight: 600 }}>案件时间线与完整性</div>
             {!document.case.artifacts.length && <div style={{ color: "var(--text-secondary)", fontSize: 11 }}>尚未导入 artifact。</div>}
             <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
@@ -574,6 +873,7 @@ export default function AnalysisCasePanel({ sessionId }: Props) {
               {report.generatedClaims.map(claim => <div key={claim.claimId} style={{ marginBottom: 6, padding: "6px 8px", background: "var(--bg-primary)", borderLeft: `3px solid ${claimColor(claim.status)}` }}>
                 <div style={{ color: claimColor(claim.status), fontSize: 10, textTransform: "uppercase" }}>{claim.status}</div>
                 <div style={{ color: "var(--text-primary)", fontSize: 11, marginTop: 2 }}>{claim.statement}</div>
+                {claim.coverageRequirement && claim.coverageRequirement !== "not-required" && <div style={{ color: "#58a6ff", fontSize: 9, marginTop: 3 }}>coverage requirement: {claim.coverageRequirement} · scope: {claim.scope}</div>}
                 {!!claim.missingEvidence.length && <div style={{ color: "#d29922", fontSize: 10, marginTop: 3 }}>缺失：{claim.missingEvidence.join("；")}</div>}
               </div>)}
             </section>
@@ -603,8 +903,12 @@ export default function AnalysisCasePanel({ sessionId }: Props) {
                 </span>
               </div>
               {report.claimLedgerAudit.contradictions.map((item, index) => <div key={index} style={{ marginTop: 5, color: "#e5484d", fontSize: 10 }}>{item}</div>)}
-              {report.claimLedgerAudit.claims.filter(claim => claim.gateStatus === "blocked").map(claim => <div key={`${claim.source}-${claim.claimId}`} style={{ marginTop: 6, padding: 7, background: "var(--bg-primary)", borderLeft: "3px solid #d29922" }}>
+              {report.claimLedgerAudit.claims.map(claim => <div key={`${claim.source}-${claim.claimId}`} style={{ marginTop: 6, padding: 7, background: "var(--bg-primary)", borderLeft: `3px solid ${claim.gateStatus === "blocked" ? "#d29922" : "#3fb950"}` }}>
                 <div style={{ color: "var(--text-primary)", fontSize: 10 }}>{claim.claimId} · {claim.currentStatus} → {claim.recommendedStatus}</div>
+                <div style={{ marginTop: 3, color: claim.coverageGatePassed ? "#3fb950" : "#58a6ff", fontSize: 9 }}>
+                  coverage {claim.coverageRequirement} ({claim.coverageRequirementSource}) · {claim.coverageGateStatus} · max {claim.coverageMaxStatus}
+                </div>
+                {claim.coverageUncoveredCounts && <div style={{ marginTop: 3, color: "#d29922", fontSize: 9 }}>uncovered: {compactCoverageCounts(claim.coverageUncoveredCounts)}</div>}
                 {claim.blockers.map((blocker, index) => <div key={index} style={{ marginTop: 3, color: "var(--text-secondary)", fontSize: 10 }}>{blocker}</div>)}
               </div>)}
             </section>

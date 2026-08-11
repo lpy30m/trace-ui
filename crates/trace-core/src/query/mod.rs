@@ -2,6 +2,7 @@ pub mod aes_schedule;
 pub mod analysis_summary;
 pub mod angr;
 pub mod call_tree;
+pub mod coverage;
 pub mod crypto;
 pub mod crypto_functions;
 pub mod crypto_kat;

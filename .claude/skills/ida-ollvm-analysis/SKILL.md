@@ -20,7 +20,9 @@ gating, use `mcp__trace-ui__open_analysis_case`, `mcp__trace-ui__ingest_analysis
 `mcp__trace-ui__diagnose_analysis_case`, `mcp__trace-ui__audit_analysis_case_claims`, and
 `mcp__trace-ui__upsert_analysis_case_experiment`. Use `mcp__trace-ui__plan_analysis_case_capture` to
 rank the next non-redundant runtime evidence request and `mcp__trace-ui__run_accuracy_benchmark` to
-regression-check reviewed OLLVM/non-promotion fixtures.
+regression-check reviewed OLLVM/non-promotion fixtures. For any absence, global-invariance, exhaustive
+dispatcher, or complete-CFG claim, also use `mcp__trace-ui__generate_coverage_reconciliation_script`
+and `mcp__trace-ui__inspect_coverage_reconciliation`.
 
 ## Workflow
 
@@ -102,9 +104,18 @@ regression-check reviewed OLLVM/non-promotion fixtures.
     user run it manually, then inspect the capture with `inspect_runtime_attestation`. Full executable
     byte coverage can verify only the scoped runtime-image identity. It does not upgrade dispatcher,
     opaque predicate, branch reachability, angr, or Unicorn findings beyond Candidate/Related.
-14. For any conclusion that combines two or more artifact types or replay rounds, create/open a strict
+14. If the conclusion says a path/branch/dispatcher does not exist, a branch is globally invariant, all
+    dispatchers were enumerated, or the CFG is complete, generate a coverage reconciliation script from
+    the exact ELF and strict source OLLVM report. The user runs angr manually. Inspect the JSON with the
+    same ELF and every source artifact path, then import it as `coverage-report` with exact ELF/source
+    parents. Wrong ELF/source SHA, truncated inventories, uncovered static sites, or dynamic-only sites
+    close the gate. Even `complete-site-coverage` covers only angr-discoverable listed structure and the
+    supplied controlled runs; it never proves global opacity, infeasibility, real-entry reachability, or
+    deobfuscation, and structural OLLVM claims remain at most Candidate/Related.
+15. For any conclusion that combines two or more artifact types or replay rounds, create/open a strict
     `.traceui-case`, ingest the trace, exact ELF, Frida captures, Unicorn/angr results, IDA annotations,
-    and OLLVM reports with explicit parent provenance, then run Replay Doctor and the Claim Ledger audit.
+    OLLVM reports, and any coverage report with explicit parent provenance, then run Replay Doctor and
+    the Claim Ledger audit.
     Record build/key/input/environment groups for controlled runs. Repair invalid/hash-mismatched
     artifacts and resolve counter-evidence before raising confidence; OLLVM, angr, or Unicorn structure
     alone remains Candidate/Related even when every file passes integrity checks. Use
@@ -130,6 +141,9 @@ regression-check reviewed OLLVM/non-promotion fixtures.
 - Dynamic traces contain only executed instructions. Do not infer missing blocks, alternate paths, or complete static CFG coverage.
 - CFGFast successors absent from the trace may be unexecuted, infeasible, or CFG recovery artifacts.
 - Dynamic-only successors may reflect indirect control flow, trace scope boundaries, or static CFG recovery gaps.
+- A coverage artifact is valid only after strict set recomputation, exact ELF executable-range checks,
+  and source SHA binding. Serialized percentages are untrusted. Complete listed-site coverage still
+  leaves angr CFG omissions, infeasible edges, untested inputs/state, and unexecuted runtime code unknown.
 - The generated angr bridge emits both blank-state probes and trace-register-seeded probes when branch
   snapshots exist. Neither proves real-entry reachability; trace-seeded probes may still lack memory,
   SIMD, flags, or other architectural state.
@@ -219,5 +233,6 @@ launches Unicorn or angr during generation or comparison.
 
 Report the selected scope, module, sequence range, block/edge counts, top candidates with exact module
 offsets, and the saved `analysis_id`. When a `.traceui-case` is used, also report its path, relevant
-artifact IDs, integrity/counter-evidence status, and Claim Ledger maximum status. Clearly separate
+artifact IDs, integrity/counter-evidence status, coverage requirement/gate/max status, and Claim Ledger
+maximum status. Clearly separate
 observed dynamic facts from OLLVM hypotheses and note coverage limitations.

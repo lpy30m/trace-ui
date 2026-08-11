@@ -2090,10 +2090,102 @@ export type TraceCaseArtifactKind =
   | "angr-result"
   | "ida-annotations"
   | "ollvm-report"
+  | "coverage-report"
   | "analysis-report"
   | "crypto-kat"
   | "crypto-report"
   | "other";
+
+export interface CoverageCounts {
+  instructions: number;
+  blocks: number;
+  branches: number;
+  functions: number;
+  edges: number;
+}
+
+export interface CoverageBasisPoints {
+  instructions: number;
+  blocks: number;
+  branches: number;
+  functions: number;
+  edges: number;
+}
+
+export interface CoverageScope {
+  kind: string;
+  startOffset: string;
+  endOffset: string;
+  functionOffsets: string[];
+}
+
+export interface CoverageEdge {
+  sourceOffset: string;
+  targetOffset: string;
+}
+
+export interface CoverageOffsetSamples {
+  instructions: string[];
+  blocks: string[];
+  branches: string[];
+  functions: string[];
+  edges: CoverageEdge[];
+}
+
+export interface CoverageReconciliationSummary {
+  staticCounts: CoverageCounts;
+  observedStaticCounts: CoverageCounts;
+  uncoveredCounts: CoverageCounts;
+  dynamicOnlyCounts: CoverageCounts;
+  coverageBasisPoints: CoverageBasisPoints;
+  staticInventoryComplete: boolean;
+  dynamicCaptureComplete: boolean;
+  coverageComplete: boolean;
+}
+
+export type CoverageScriptScopeKind = "module" | "function-closure" | "range";
+
+export interface CoverageReconciliationScriptRequest {
+  staticBinaryPath: string;
+  ollvmReportPath: string;
+  claimScope: string;
+  scopeKind: CoverageScriptScopeKind;
+  rangeStartOffset?: string;
+  rangeEndOffset?: string;
+  maxInstructions: number;
+  maxBlocks: number;
+  maxEdges: number;
+  maxFunctions: number;
+}
+
+export interface CoverageReconciliationScript {
+  fileName: string;
+  script: string;
+  schema: string;
+  moduleName: string;
+  claimScope: string;
+  expectedBinaryIdentity: ElfBinaryIdentity;
+  sourceOllvmSha256: string;
+  warnings: string[];
+}
+
+export interface CoverageReconciliationInspectionReport {
+  schema: string;
+  status: string;
+  moduleName: string;
+  claimScope: string;
+  exactBinaryIdentity: ElfBinaryIdentity;
+  identityMatched: boolean;
+  sourceProvenanceMatched: boolean;
+  missingSourceSha256s: string[];
+  coverageGateMet: boolean;
+  scope: CoverageScope;
+  summary: CoverageReconciliationSummary;
+  uncoveredSamples: CoverageOffsetSamples;
+  dynamicOnlySamples: CoverageOffsetSamples;
+  warnings: string[];
+  limitations: string[];
+}
 
 export interface TraceCaseArtifactSummary {
   schema?: string;
@@ -2109,6 +2201,13 @@ export interface TraceCaseArtifactSummary {
   cryptoKatVerificationGateMet?: boolean;
   cryptoKatClaimScope?: string;
   cryptoKatBytesChecked?: number;
+  coverageStatus?: string;
+  coverageGateMet?: boolean;
+  coverageClaimScope?: string;
+  coverageStaticCounts?: CoverageCounts;
+  coverageObservedStaticCounts?: CoverageCounts;
+  coverageUncoveredCounts?: CoverageCounts;
+  coverageBasisPoints?: CoverageBasisPoints;
   completeExecutableCoverage?: boolean;
   totalExecutableBytes?: number;
   selectedExecutableBytes?: number;
@@ -2136,6 +2235,15 @@ export interface TraceCaseArtifact {
 
 export type TraceCaseClaimStatus = "observed" | "verified" | "related" | "refuted" | "unknown";
 
+export type TraceCaseCoverageRequirement =
+  | "auto"
+  | "not-required"
+  | "scope-complete"
+  | "negative-existence"
+  | "global-invariance"
+  | "exhaustive-enumeration"
+  | "complete-control-flow";
+
 export interface TraceCaseEvidenceRef {
   artifactId: string;
   locator: string;
@@ -2147,6 +2255,7 @@ export interface TraceCaseClaim {
   statement: string;
   scope: string;
   status: TraceCaseClaimStatus;
+  coverageRequirement?: TraceCaseCoverageRequirement;
   supportingEvidence: TraceCaseEvidenceRef[];
   counterEvidence: TraceCaseEvidenceRef[];
   missingEvidence: string[];
@@ -2261,6 +2370,13 @@ export interface TraceCaseClaimAuditEntry {
   validCounterEvidenceCount: number;
   invalidEvidenceCount: number;
   evidenceArtifactKinds: TraceCaseArtifactKind[];
+  coverageRequirement: string;
+  coverageRequirementSource: string;
+  coverageGateStatus: string;
+  coverageGatePassed: boolean;
+  coverageMaxStatus: TraceCaseClaimStatus;
+  coverageArtifactIds: string[];
+  coverageUncoveredCounts?: CoverageCounts;
   blockers: string[];
   notes: string[];
 }
@@ -2358,6 +2474,13 @@ export interface TraceCaseCryptoKatReport {
   report: CryptoSemanticKatReport;
 }
 
+export interface TraceCaseCoverageReport {
+  artifactId: string;
+  exactBinaryArtifactId: string;
+  sourceArtifactIds: string[];
+  report: CoverageReconciliationInspectionReport;
+}
+
 export interface ReplayDoctorReport {
   schema: string;
   caseId: string;
@@ -2374,6 +2497,7 @@ export interface ReplayDoctorReport {
   capturePlan: InformationGainCapturePlan;
   runtimeAttestations: TraceCaseRuntimeAttestationReport[];
   cryptoKats: TraceCaseCryptoKatReport[];
+  coverageReconciliations: TraceCaseCoverageReport[];
   unicornRoundComparison?: UnicornOllvmRoundComparisonReport;
   warnings: string[];
   limitations: string[];

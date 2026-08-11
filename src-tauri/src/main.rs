@@ -129,6 +129,8 @@ fn main() {
             commands::add_analysis_case_artifact,
             commands::diagnose_analysis_case,
             commands::plan_analysis_case_capture,
+            commands::generate_coverage_reconciliation_script,
+            commands::inspect_coverage_reconciliation,
             commands::run_accuracy_benchmark,
             commands::upsert_analysis_case_claim,
             commands::upsert_analysis_case_experiment,

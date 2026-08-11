@@ -23,6 +23,14 @@ pub struct AccuracyBenchmarkClaimExpectation {
     pub expected_gate_status: String,
     pub expected_recommended_status: TraceCaseClaimStatus,
     pub expected_verification_gate_passed: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub expected_coverage_requirement: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub expected_coverage_gate_status: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub expected_coverage_gate_passed: Option<bool>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub expected_coverage_max_status: Option<TraceCaseClaimStatus>,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -71,6 +79,7 @@ pub struct AccuracyBenchmarkCaseResult {
     pub verified_false_positive_count: u64,
     pub verified_false_negative_count: u64,
     pub fixture_error_count: u64,
+    pub coverage_gate_drift_count: u64,
     pub failures: Vec<AccuracyBenchmarkFailure>,
 }
 
@@ -89,6 +98,7 @@ pub struct AccuracyBenchmarkReport {
     pub verified_false_positive_count: u64,
     pub verified_false_negative_count: u64,
     pub fixture_error_count: u64,
+    pub coverage_gate_drift_count: u64,
     pub cases: Vec<AccuracyBenchmarkCaseResult>,
     pub limitations: Vec<String>,
 }
@@ -148,6 +158,41 @@ fn validate_suite(suite: &AccuracyBenchmarkSuite) -> Result<(), String> {
                     expectation.claim_id, expectation.expected_gate_status
                 ));
             }
+            if expectation
+                .expected_coverage_requirement
+                .as_deref()
+                .is_some_and(|value| {
+                    !matches!(
+                        value,
+                        "not-required"
+                            | "scope-complete"
+                            | "negative-existence"
+                            | "global-invariance"
+                            | "exhaustive-enumeration"
+                            | "complete-control-flow"
+                    )
+                })
+            {
+                return Err(format!(
+                    "benchmark claim {} has unsupported expectedCoverageRequirement {:?}",
+                    expectation.claim_id, expectation.expected_coverage_requirement
+                ));
+            }
+            if expectation
+                .expected_coverage_gate_status
+                .as_deref()
+                .is_some_and(|value| {
+                    !matches!(
+                        value,
+                        "not-required" | "missing" | "scope-mismatch" | "partial" | "passed"
+                    )
+                })
+            {
+                return Err(format!(
+                    "benchmark claim {} has unsupported expectedCoverageGateStatus {:?}",
+                    expectation.claim_id, expectation.expected_coverage_gate_status
+                ));
+            }
         }
     }
     Ok(())
@@ -202,6 +247,7 @@ pub fn run_accuracy_benchmark_suite(
             verified_false_positive_count: 0,
             verified_false_negative_count: 0,
             fixture_error_count: 0,
+            coverage_gate_drift_count: 0,
             failures: Vec::new(),
         };
         let report = match diagnose_trace_analysis_case(&path.to_string_lossy()) {
@@ -306,6 +352,62 @@ pub fn run_accuracy_benchmark_suite(
                 expectation.expected_verification_gate_passed.to_string(),
                 actual.verification_gate_passed.to_string(),
             );
+            if let Some(expected) = &expectation.expected_coverage_requirement {
+                let passed = actual.coverage_requirement == *expected;
+                if !passed {
+                    result.coverage_gate_drift_count += 1;
+                }
+                push_assertion(
+                    &mut result,
+                    passed,
+                    "coverage-requirement-drift",
+                    expectation.claim_id.clone(),
+                    expected.clone(),
+                    actual.coverage_requirement.clone(),
+                );
+            }
+            if let Some(expected) = &expectation.expected_coverage_gate_status {
+                let passed = actual.coverage_gate_status == *expected;
+                if !passed {
+                    result.coverage_gate_drift_count += 1;
+                }
+                push_assertion(
+                    &mut result,
+                    passed,
+                    "coverage-gate-status-drift",
+                    expectation.claim_id.clone(),
+                    expected.clone(),
+                    actual.coverage_gate_status.clone(),
+                );
+            }
+            if let Some(expected) = expectation.expected_coverage_gate_passed {
+                let passed = actual.coverage_gate_passed == expected;
+                if !passed {
+                    result.coverage_gate_drift_count += 1;
+                }
+                push_assertion(
+                    &mut result,
+                    passed,
+                    "coverage-gate-result-drift",
+                    expectation.claim_id.clone(),
+                    expected.to_string(),
+                    actual.coverage_gate_passed.to_string(),
+                );
+            }
+            if let Some(expected) = expectation.expected_coverage_max_status {
+                let passed = actual.coverage_max_status == expected;
+                if !passed {
+                    result.coverage_gate_drift_count += 1;
+                }
+                push_assertion(
+                    &mut result,
+                    passed,
+                    "coverage-max-status-drift",
+                    expectation.claim_id.clone(),
+                    format!("{expected:?}"),
+                    format!("{:?}", actual.coverage_max_status),
+                );
+            }
         }
 
         if case.require_no_unexpected_verified {
@@ -365,6 +467,10 @@ pub fn run_accuracy_benchmark_suite(
         .iter()
         .map(|case| case.fixture_error_count)
         .sum();
+    let coverage_gate_drift_count = case_results
+        .iter()
+        .map(|case| case.coverage_gate_drift_count)
+        .sum();
     let passed_case_count = case_results.iter().filter(|case| case.passed).count() as u64;
     let failed_case_count = case_results.len() as u64 - passed_case_count;
     Ok(AccuracyBenchmarkReport {
@@ -373,7 +479,8 @@ pub fn run_accuracy_benchmark_suite(
         gate_met: failed_case_count == 0
             && verified_false_positive_count == 0
             && verified_false_negative_count == 0
-            && fixture_error_count == 0,
+            && fixture_error_count == 0
+            && coverage_gate_drift_count == 0,
         case_count: case_results.len() as u64,
         passed_case_count,
         failed_case_count,
@@ -383,11 +490,12 @@ pub fn run_accuracy_benchmark_suite(
         verified_false_positive_count,
         verified_false_negative_count,
         fixture_error_count,
+        coverage_gate_drift_count,
         cases: case_results,
         limitations: vec![
-            "The benchmark detects declared status/gate/ranking drift and unexpected Verified claims; it does not establish that fixture labels describe ground truth unless the fixtures themselves are independently reviewed."
+            "The benchmark detects declared status/gate/ranking drift, coverage-requirement/gate drift, and unexpected Verified claims; it does not establish that fixture labels describe ground truth unless the fixtures themselves are independently reviewed."
                 .to_string(),
-            "Positive and negative fixtures should include wrong ELF, forged marker, invalid/tampered KAT, sampled attestation, counter-evidence, and OLLVM/simulation non-promotion cases."
+            "Positive and negative fixtures should include wrong ELF, forged marker/coverage summary, partial coverage, invalid/tampered KAT, sampled attestation, counter-evidence, and OLLVM/simulation non-promotion cases."
                 .to_string(),
         ],
     })

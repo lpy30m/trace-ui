@@ -504,6 +504,19 @@ describe("案件工作区准确率门禁", () => {
         validCounterEvidenceCount: 0,
         invalidEvidenceCount: 0,
         evidenceArtifactKinds: ["trace"],
+        coverageRequirement: "negative-existence",
+        coverageRequirementSource: "auto-statement",
+        coverageGateStatus: "missing-coverage-report",
+        coverageGatePassed: false,
+        coverageMaxStatus: "observed",
+        coverageArtifactIds: [],
+        coverageUncoveredCounts: {
+          instructions: 1,
+          blocks: 1,
+          branches: 0,
+          functions: 0,
+          edges: 0,
+        },
         blockers: ["Verified requires semantic evidence."],
         notes: [],
       }],
@@ -554,6 +567,7 @@ describe("案件工作区准确率门禁", () => {
     },
     runtimeAttestations: [],
     cryptoKats: [],
+    coverageReconciliations: [],
     warnings: [],
     limitations: [],
   };
@@ -764,6 +778,163 @@ describe("案件工作区准确率门禁", () => {
     }));
     expect(mocks.invoke.mock.calls.map(call => call[0])).not.toEqual(expect.arrayContaining([
       "attach_frida", "spawn_frida", "load_frida", "run_frida",
+    ]));
+  });
+
+  it("生成、保存、检查并绑定 exact ELF 与 OLLVM source 导入 coverage gate", async () => {
+    const user = userEvent.setup();
+    const exactArtifactId = "elf-coverage-1";
+    const ollvmArtifactId = "ollvm-source-1";
+    const coverageCase: TraceAnalysisCaseDocument = {
+      ...caseDocument,
+      case: {
+        ...caseDocument.case,
+        exactBinaryArtifactId: exactArtifactId,
+        artifacts: [{
+          artifactId: exactArtifactId,
+          kind: "static-binary",
+          label: "Exact libtarget.so",
+          path: "libtarget.so",
+          sha256: "a".repeat(64),
+          fileSize: 8192,
+          importedAtMs: 1,
+          parentArtifactIds: [],
+          summary: {
+            schema: "elf-identity",
+            moduleName: "libtarget.so",
+            architecture: "AArch64",
+            binarySha256: "a".repeat(64),
+            expectedBinarySha256: "a".repeat(64),
+            exactIdentityMatched: true,
+            captureOffsets: [],
+            eventCount: 0,
+            runCount: 0,
+            warningCount: 0,
+            stopReasonCounts: {},
+            notes: [],
+          },
+        }, {
+          artifactId: ollvmArtifactId,
+          kind: "ollvm-report",
+          label: "Observed OLLVM scope",
+          path: "ollvm.json",
+          sha256: "b".repeat(64),
+          fileSize: 4096,
+          importedAtMs: 2,
+          parentArtifactIds: [],
+          summary: {
+            schema: "trace-ui/ollvm-v1",
+            moduleName: "libtarget.so",
+            architecture: "AArch64",
+            captureOffsets: ["0x100"],
+            eventCount: 4,
+            runCount: 1,
+            warningCount: 0,
+            stopReasonCounts: {},
+            notes: [],
+          },
+        }],
+      },
+    };
+    const generated = {
+      fileName: "encrypt-trace-ui-coverage.py",
+      script: "print('manual angr')",
+      schema: "trace-ui/coverage-reconciliation-v1",
+      moduleName: "libtarget.so",
+      claimScope: "libtarget.so:encrypt",
+      expectedBinaryIdentity: {
+        binaryPath: "C:\\samples\\libtarget.so",
+        binarySha256: "a".repeat(64),
+        fileSize: 8192,
+        format: "ELF64",
+        architecture: "AArch64",
+        elfMachine: 183,
+        buildId: null,
+      },
+      sourceOllvmSha256: "b".repeat(64),
+      warnings: ["Run manually."],
+    };
+    const counts = { instructions: 4, blocks: 2, branches: 1, functions: 1, edges: 1 };
+    const zeroCounts = { instructions: 0, blocks: 0, branches: 0, functions: 0, edges: 0 };
+    const inspection = {
+      schema: "trace-ui/coverage-reconciliation-inspection-v1",
+      status: "complete-site-coverage",
+      moduleName: "libtarget.so",
+      claimScope: "libtarget.so:encrypt",
+      exactBinaryIdentity: generated.expectedBinaryIdentity,
+      identityMatched: true,
+      sourceProvenanceMatched: true,
+      missingSourceSha256s: [],
+      coverageGateMet: true,
+      scope: { kind: "function-closure", startOffset: "0x100", endOffset: "0x10c", functionOffsets: ["0x100"] },
+      summary: {
+        staticCounts: counts,
+        observedStaticCounts: counts,
+        uncoveredCounts: zeroCounts,
+        dynamicOnlyCounts: zeroCounts,
+        coverageBasisPoints: { instructions: 10000, blocks: 10000, branches: 10000, functions: 10000, edges: 10000 },
+        staticInventoryComplete: true,
+        dynamicCaptureComplete: true,
+        coverageComplete: true,
+      },
+      uncoveredSamples: { instructions: [], blocks: [], branches: [], functions: [], edges: [] },
+      dynamicOnlySamples: { instructions: [], blocks: [], branches: [], functions: [], edges: [] },
+      warnings: [],
+      limitations: ["Coverage is not semantic proof."],
+    };
+
+    localStorage.setItem("trace-ui-analysis-case:session-case", coverageCase.casePath);
+    mocks.invoke.mockImplementation(async (command: string) => {
+      if (command === "load_analysis_case") return coverageCase;
+      if (command === "generate_coverage_reconciliation_script") return generated;
+      if (command === "inspect_coverage_reconciliation") return inspection;
+      if (command === "add_analysis_case_artifact") return { case: coverageCase.case };
+      throw new Error(`unexpected command ${command}`);
+    });
+    const view = render(<AnalysisCasePanel sessionId="session-case" />);
+    const panel = within(view.container);
+    expect(await panel.findByText("Coverage-aware Claim Gate（手动 angr）")).toBeInTheDocument();
+
+    mocks.open
+      .mockResolvedValueOnce("C:\\samples\\libtarget.so")
+      .mockResolvedValueOnce("C:\\cases\\ollvm.json")
+      .mockResolvedValueOnce("C:\\cases\\coverage.json");
+    await user.click(panel.getByRole("button", { name: "选择 Coverage ELF" }));
+    await user.click(panel.getByRole("button", { name: "选择 OLLVM 报告" }));
+    await user.type(panel.getByLabelText("Coverage claim scope"), "libtarget.so:encrypt");
+    await user.click(panel.getByRole("button", { name: "生成 angr Coverage 脚本" }));
+    expect(await panel.findByText("encrypt-trace-ui-coverage.py")).toBeInTheDocument();
+    expect(mocks.invoke).toHaveBeenCalledWith("generate_coverage_reconciliation_script", expect.objectContaining({
+      request: expect.objectContaining({
+        staticBinaryPath: "C:\\samples\\libtarget.so",
+        ollvmReportPath: "C:\\cases\\ollvm.json",
+        claimScope: "libtarget.so:encrypt",
+        scopeKind: "function-closure",
+      }),
+      outputPath: null,
+    }));
+
+    mocks.save.mockResolvedValueOnce("C:\\cases\\coverage-script.py");
+    await user.click(panel.getByRole("button", { name: "保存 Coverage 脚本" }));
+    expect(mocks.invoke).toHaveBeenCalledWith("generate_coverage_reconciliation_script", expect.objectContaining({
+      outputPath: "C:\\cases\\coverage-script.py",
+    }));
+
+    await user.click(panel.getByRole("button", { name: "检查 Coverage JSON" }));
+    expect((await panel.findAllByText("complete-site-coverage")).length).toBeGreaterThan(0);
+    expect(mocks.invoke).toHaveBeenCalledWith("inspect_coverage_reconciliation", {
+      artifactPath: "C:\\cases\\coverage.json",
+      staticBinaryPath: "C:\\samples\\libtarget.so",
+      sourceArtifactPaths: ["C:\\cases\\ollvm.json"],
+    });
+    await user.click(panel.getByRole("button", { name: "导入 Coverage 案件证据" }));
+    expect(mocks.invoke).toHaveBeenCalledWith("add_analysis_case_artifact", expect.objectContaining({
+      artifactPath: "C:\\cases\\coverage.json",
+      kindHint: "coverage-report",
+      parentArtifactIds: [exactArtifactId, ollvmArtifactId],
+    }));
+    expect(mocks.invoke.mock.calls.map(call => call[0])).not.toEqual(expect.arrayContaining([
+      "run_angr", "install_angr", "execute_target",
     ]));
   });
 });

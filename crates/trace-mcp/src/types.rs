@@ -539,7 +539,7 @@ pub struct IngestAnalysisCaseArtifactRequest {
     #[schemars(description = "Absolute path to the artifact to hash, strictly parse, and add")]
     pub artifact_path: String,
     #[schemars(
-        description = "Optional kind hint: trace, static-binary, runtime-attestation, frida-capture, unicorn-result, angr-result, ida-annotations, ollvm-report, analysis-report, crypto-kat, crypto-report, or other"
+        description = "Optional kind hint: trace, static-binary, runtime-attestation, frida-capture, unicorn-result, angr-result, ida-annotations, ollvm-report, coverage-report, analysis-report, crypto-kat, crypto-report, or other"
     )]
     pub kind_hint: Option<String>,
     #[schemars(description = "Optional human-readable artifact label")]
@@ -567,6 +567,87 @@ pub struct PlanAnalysisCaseCaptureRequest {
     #[schemars(description = "Maximum ranked targets to return (default: 12, range: 1-32)")]
     #[serde(default = "default_capture_plan_targets")]
     pub max_targets: u32,
+}
+
+#[derive(Clone, Copy, Debug, Default, Deserialize, JsonSchema)]
+#[serde(rename_all = "kebab-case")]
+pub enum CoverageScriptScopeKindRequest {
+    Module,
+    #[default]
+    FunctionClosure,
+    Range,
+}
+
+fn default_coverage_max_instructions() -> u32 {
+    500_000
+}
+
+fn default_coverage_max_blocks() -> u32 {
+    100_000
+}
+
+fn default_coverage_max_edges() -> u32 {
+    250_000
+}
+
+fn default_coverage_max_functions() -> u32 {
+    25_000
+}
+
+#[derive(Debug, Deserialize, JsonSchema)]
+pub struct GenerateCoverageReconciliationScriptRequest {
+    #[schemars(description = "Absolute path to the exact AArch64 ELF/shared object")]
+    pub static_binary_path: String,
+    #[schemars(description = "Absolute path to a strict trace-ui/ollvm-v1 report")]
+    pub ollvm_report_path: String,
+    #[schemars(
+        description = "Exact claim scope this coverage artifact will constrain; it must later match the claim scope byte-for-byte"
+    )]
+    pub claim_scope: String,
+    #[schemars(
+        description = "Static inventory scope: function-closure (default), module, or an explicit range"
+    )]
+    #[serde(default)]
+    pub scope_kind: CoverageScriptScopeKindRequest,
+    #[schemars(
+        description = "Canonical module-relative range start required only for scopeKind=range"
+    )]
+    pub range_start_offset: Option<String>,
+    #[schemars(
+        description = "Canonical module-relative range end required only for scopeKind=range"
+    )]
+    pub range_end_offset: Option<String>,
+    #[schemars(description = "Maximum exported static instruction offsets (default 500000)")]
+    #[serde(default = "default_coverage_max_instructions")]
+    pub max_instructions: u32,
+    #[schemars(description = "Maximum exported static block offsets (default 100000)")]
+    #[serde(default = "default_coverage_max_blocks")]
+    pub max_blocks: u32,
+    #[schemars(description = "Maximum exported static CFG edges (default 250000)")]
+    #[serde(default = "default_coverage_max_edges")]
+    pub max_edges: u32,
+    #[schemars(description = "Maximum exported static functions (default 25000)")]
+    #[serde(default = "default_coverage_max_functions")]
+    pub max_functions: u32,
+    #[schemars(
+        description = "Optional absolute .py output path. When omitted, the generated script is returned inline."
+    )]
+    pub output_path: Option<String>,
+}
+
+#[derive(Debug, Deserialize, JsonSchema)]
+pub struct InspectCoverageReconciliationRequest {
+    #[schemars(
+        description = "Absolute path to a strict trace-ui/coverage-reconciliation-v1 JSON file"
+    )]
+    pub artifact_path: String,
+    #[schemars(description = "Absolute path to the exact AArch64 ELF/shared object")]
+    pub static_binary_path: String,
+    #[schemars(
+        description = "Exact source OLLVM/trace artifact paths whose SHA-256 values must cover every dynamicRuns.sourceArtifactSha256"
+    )]
+    #[serde(default)]
+    pub source_artifact_paths: Vec<String>,
 }
 
 #[derive(Debug, Deserialize, JsonSchema)]

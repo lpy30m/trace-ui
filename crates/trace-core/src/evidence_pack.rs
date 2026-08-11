@@ -9,6 +9,7 @@ use crate::analysis_case::{
     TraceCaseClaimAuditEntry, TraceCaseClaimStatus, TraceCaseEvidenceRef,
 };
 use crate::error::{Result, TraceError};
+use crate::query::coverage::CoverageCounts;
 use crate::utils::parse_hex_addr;
 
 pub const AI_EVIDENCE_PACK_SCHEMA: &str = "trace-ui/ai-evidence-pack-v1";
@@ -75,6 +76,13 @@ pub struct EvidencePackClaim {
     pub recommended_max_status: TraceCaseClaimStatus,
     pub gate_status: String,
     pub verification_gate_passed: bool,
+    pub coverage_requirement: String,
+    pub coverage_gate_status: String,
+    pub coverage_gate_passed: bool,
+    pub coverage_max_status: TraceCaseClaimStatus,
+    pub coverage_artifact_ids: Vec<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub coverage_uncovered_counts: Option<CoverageCounts>,
     pub supporting_evidence_count: u64,
     pub counter_evidence_count: u64,
     pub missing_evidence_count: u64,
@@ -545,6 +553,21 @@ pub fn build_analysis_case_evidence_pack(
                 .map(|audit| audit.gate_status.clone())
                 .unwrap_or_else(|| "not-audited".to_string()),
             verification_gate_passed: audit.is_some_and(|audit| audit.verification_gate_passed),
+            coverage_requirement: audit
+                .map(|audit| audit.coverage_requirement.clone())
+                .unwrap_or_else(|| "not-audited".to_string()),
+            coverage_gate_status: audit
+                .map(|audit| audit.coverage_gate_status.clone())
+                .unwrap_or_else(|| "not-audited".to_string()),
+            coverage_gate_passed: audit.is_some_and(|audit| audit.coverage_gate_passed),
+            coverage_max_status: audit
+                .map(|audit| audit.coverage_max_status)
+                .unwrap_or(TraceCaseClaimStatus::Unknown),
+            coverage_artifact_ids: audit
+                .map(|audit| audit.coverage_artifact_ids.clone())
+                .unwrap_or_default(),
+            coverage_uncovered_counts: audit
+                .and_then(|audit| audit.coverage_uncovered_counts.clone()),
             supporting_evidence_count: claim.supporting_evidence.len() as u64,
             counter_evidence_count: claim.counter_evidence.len() as u64,
             missing_evidence_count: claim.missing_evidence.len() as u64,
@@ -634,6 +657,52 @@ pub fn build_analysis_case_evidence_pack(
             }
         }
         if let Some(audit) = audit {
+            if !matches!(
+                audit.coverage_gate_status.as_str(),
+                "not-required" | "passed"
+            ) {
+                let description = if let Some(counts) = &audit.coverage_uncovered_counts {
+                    format!(
+                        "Coverage gate {} for {}: uncovered instructions={}, blocks={}, branches={}, functions={}, edges={}; unexecuted paths remain unknown.",
+                        audit.coverage_gate_status,
+                        audit.coverage_requirement,
+                        counts.instructions,
+                        counts.blocks,
+                        counts.branches,
+                        counts.functions,
+                        counts.edges,
+                    )
+                } else {
+                    format!(
+                        "Coverage gate {} for {}; no exact-scope complete reconciliation is available and unexecuted paths remain unknown.",
+                        audit.coverage_gate_status, audit.coverage_requirement
+                    )
+                };
+                let description = truncate_text(&description, MAX_ITEM_TEXT_CHARS);
+                let key = (
+                    Some(claim.claim_id.clone()),
+                    "coverage-gap".to_string(),
+                    description.clone(),
+                );
+                if unknown_dedup.insert(key) {
+                    unknown_candidates.push(EvidencePackUnknown {
+                        unknown_id: unknown_id(Some(&claim.claim_id), "coverage-gap", &description),
+                        claim_id: Some(claim.claim_id.clone()),
+                        category: "coverage-gap".to_string(),
+                        description,
+                        artifact_ids: audit.coverage_artifact_ids.clone(),
+                        suggested_tool: Some(
+                            if audit.coverage_gate_status == "missing" {
+                                "generate_coverage_reconciliation_script"
+                            } else {
+                                "plan_analysis_case_capture"
+                            }
+                            .to_string(),
+                        ),
+                        priority: 97,
+                    });
+                }
+            }
             for blocker in &audit.blockers {
                 let description = truncate_text(blocker, MAX_ITEM_TEXT_CHARS);
                 let key = (
@@ -908,7 +977,7 @@ fn render_evidence_pack_markdown_unbounded(pack: &AnalysisCaseEvidencePack) -> S
     }
     for claim in &pack.claims {
         output.push_str(&format!(
-            "### `{}` ({})\n\n- Scope: `{}`\n- Current: `{:?}`; recommended maximum: `{:?}`; gate: `{}`; verified gate passed: `{}`\n- Statement: {}\n",
+            "### `{}` ({})\n\n- Scope: `{}`\n- Current: `{:?}`; recommended maximum: `{:?}`; gate: `{}`; verified gate passed: `{}`\n- Coverage: requirement `{}`, gate `{}`, passed `{}`, maximum `{:?}`\n- Statement: {}\n",
             markdown_inline(&claim.claim_id),
             markdown_inline(&claim.source),
             markdown_inline(&claim.scope),
@@ -916,6 +985,10 @@ fn render_evidence_pack_markdown_unbounded(pack: &AnalysisCaseEvidencePack) -> S
             claim.recommended_max_status,
             markdown_inline(&claim.gate_status),
             claim.verification_gate_passed,
+            markdown_inline(&claim.coverage_requirement),
+            markdown_inline(&claim.coverage_gate_status),
+            claim.coverage_gate_passed,
+            claim.coverage_max_status,
             markdown_inline(&claim.statement)
         ));
         for blocker in &claim.blockers {
@@ -1064,6 +1137,7 @@ mod tests {
             statement: "The observed value has a disputed origin.".to_string(),
             scope: "trace:sample".to_string(),
             status: TraceCaseClaimStatus::Verified,
+            coverage_requirement: Default::default(),
             supporting_evidence: vec![TraceCaseEvidenceRef {
                 artifact_id: artifact_id.clone(),
                 locator: "mem:0x1000:16@seq:42".to_string(),
@@ -1122,6 +1196,7 @@ mod tests {
                     statement: format!("Claim {index} {}", "x".repeat(200)),
                     scope: "trace:sample".to_string(),
                     status: TraceCaseClaimStatus::Observed,
+                    coverage_requirement: Default::default(),
                     supporting_evidence: vec![TraceCaseEvidenceRef {
                         artifact_id: artifact_id.clone(),
                         locator: format!("seq:{index}"),

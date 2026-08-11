@@ -11,6 +11,11 @@ use sha2::{Digest, Sha256};
 use crate::analysis::AnalysisRecord;
 use crate::error::{Result, TraceError};
 use crate::query::angr::{parse_angr_ollvm_result_bundle, AngrOllvmResultBundle};
+use crate::query::coverage::{
+    inspect_coverage_reconciliation_bundle, parse_coverage_reconciliation_bundle,
+    CoverageBasisPoints, CoverageCounts, CoverageReconciliationBundle,
+    CoverageReconciliationInspectionReport, COVERAGE_RECONCILIATION_SCHEMA,
+};
 use crate::query::crypto_kat::{
     parse_crypto_semantic_kat_report, CryptoKatStatus, CryptoSemanticKatReport,
     CRYPTO_SEMANTIC_KAT_VERIFICATION_SCHEMA,
@@ -37,6 +42,7 @@ pub const CLAIM_LEDGER_AUDIT_SCHEMA: &str = "trace-ui/claim-ledger-audit-v1";
 pub const REPLAY_STATE_READINESS_SCHEMA: &str = "trace-ui/replay-state-readiness-v1";
 pub const EXPERIMENT_MATRIX_SCHEMA: &str = "trace-ui/experiment-matrix-v1";
 pub const INFORMATION_GAIN_CAPTURE_PLAN_SCHEMA: &str = "trace-ui/information-gain-capture-plan-v1";
+pub const COVERAGE_CLAIM_GATE_SCHEMA: &str = "trace-ui/coverage-claim-gate-v1";
 const MAX_CASE_FILE_BYTES: u64 = 16 * 1024 * 1024;
 const MAX_ARTIFACT_IMPORT_BYTES: u64 = 64 * 1024 * 1024;
 const MAX_ARTIFACTS: usize = 512;
@@ -62,6 +68,7 @@ pub enum TraceCaseArtifactKind {
     AngrResult,
     IdaAnnotations,
     OllvmReport,
+    CoverageReport,
     AnalysisReport,
     CryptoKat,
     CryptoReport,
@@ -79,6 +86,7 @@ impl TraceCaseArtifactKind {
             Self::AngrResult => "angr-result",
             Self::IdaAnnotations => "ida-annotations",
             Self::OllvmReport => "ollvm-report",
+            Self::CoverageReport => "coverage-report",
             Self::AnalysisReport => "analysis-report",
             Self::CryptoKat => "crypto-kat",
             Self::CryptoReport => "crypto-report",
@@ -96,6 +104,7 @@ impl TraceCaseArtifactKind {
             "angr-result" | "angr" => Ok(Self::AngrResult),
             "ida-annotations" | "ida" => Ok(Self::IdaAnnotations),
             "ollvm-report" | "ollvm" => Ok(Self::OllvmReport),
+            "coverage-report" | "coverage" | "coverage-reconciliation" => Ok(Self::CoverageReport),
             "analysis-report" | "analysis" => Ok(Self::AnalysisReport),
             "crypto-kat" | "kat" | "crypto-semantic-kat" => Ok(Self::CryptoKat),
             "crypto-report" | "crypto" => Ok(Self::CryptoReport),
@@ -134,6 +143,20 @@ pub struct TraceCaseArtifactSummary {
     pub crypto_kat_claim_scope: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub crypto_kat_bytes_checked: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub coverage_status: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub coverage_gate_met: Option<bool>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub coverage_claim_scope: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub coverage_static_counts: Option<CoverageCounts>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub coverage_observed_static_counts: Option<CoverageCounts>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub coverage_uncovered_counts: Option<CoverageCounts>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub coverage_basis_points: Option<CoverageBasisPoints>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub complete_executable_coverage: Option<bool>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -183,6 +206,33 @@ pub enum TraceCaseClaimStatus {
     Unknown,
 }
 
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum TraceCaseCoverageRequirement {
+    #[default]
+    Auto,
+    NotRequired,
+    ScopeComplete,
+    NegativeExistence,
+    GlobalInvariance,
+    ExhaustiveEnumeration,
+    CompleteControlFlow,
+}
+
+impl TraceCaseCoverageRequirement {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Auto => "auto",
+            Self::NotRequired => "not-required",
+            Self::ScopeComplete => "scope-complete",
+            Self::NegativeExistence => "negative-existence",
+            Self::GlobalInvariance => "global-invariance",
+            Self::ExhaustiveEnumeration => "exhaustive-enumeration",
+            Self::CompleteControlFlow => "complete-control-flow",
+        }
+    }
+}
+
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct TraceCaseEvidenceRef {
@@ -198,6 +248,8 @@ pub struct TraceCaseClaim {
     pub statement: String,
     pub scope: String,
     pub status: TraceCaseClaimStatus,
+    #[serde(default)]
+    pub coverage_requirement: TraceCaseCoverageRequirement,
     #[serde(default)]
     pub supporting_evidence: Vec<TraceCaseEvidenceRef>,
     #[serde(default)]
@@ -361,6 +413,14 @@ pub struct TraceCaseClaimAuditEntry {
     pub valid_counter_evidence_count: u64,
     pub invalid_evidence_count: u64,
     pub evidence_artifact_kinds: Vec<TraceCaseArtifactKind>,
+    pub coverage_requirement: String,
+    pub coverage_requirement_source: String,
+    pub coverage_gate_status: String,
+    pub coverage_gate_passed: bool,
+    pub coverage_max_status: TraceCaseClaimStatus,
+    pub coverage_artifact_ids: Vec<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub coverage_uncovered_counts: Option<CoverageCounts>,
     pub blockers: Vec<String>,
     pub notes: Vec<String>,
 }
@@ -487,6 +547,7 @@ pub struct ReplayDoctorReport {
     pub capture_plan: InformationGainCapturePlan,
     pub runtime_attestations: Vec<TraceCaseRuntimeAttestationReport>,
     pub crypto_kats: Vec<TraceCaseCryptoKatReport>,
+    pub coverage_reconciliations: Vec<TraceCaseCoverageReport>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub unicorn_round_comparison: Option<UnicornOllvmRoundComparisonReport>,
     pub warnings: Vec<String>,
@@ -508,6 +569,15 @@ pub struct TraceCaseCryptoKatReport {
     pub report: CryptoSemanticKatReport,
 }
 
+#[derive(Clone, Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct TraceCaseCoverageReport {
+    pub artifact_id: String,
+    pub exact_binary_artifact_id: String,
+    pub source_artifact_ids: Vec<String>,
+    pub report: CoverageReconciliationInspectionReport,
+}
+
 enum ParsedCaseArtifact {
     Trace,
     StaticBinary(ElfBinaryIdentity),
@@ -517,6 +587,7 @@ enum ParsedCaseArtifact {
     Angr(AngrOllvmResultBundle),
     Ida(IdaAnnotationBundle),
     Ollvm(OllvmReport),
+    Coverage(CoverageReconciliationBundle),
     Analysis(AnalysisRecord),
     CryptoKat(CryptoSemanticKatReport),
     Crypto(Value),
@@ -710,6 +781,29 @@ fn apply_runtime_attestation_report_summary(
     summary.notes.push(format!(
         "Strict exact-ELF verification status: {} (gateMet={}).",
         report.status, report.verification_gate_met
+    ));
+}
+
+fn apply_coverage_report_summary(
+    summary: &mut TraceCaseArtifactSummary,
+    report: &CoverageReconciliationInspectionReport,
+) {
+    summary.coverage_status = Some(report.status.clone());
+    summary.coverage_gate_met = Some(report.coverage_gate_met);
+    summary.coverage_claim_scope = Some(report.claim_scope.clone());
+    summary.exact_identity_matched = Some(report.identity_matched);
+    summary.coverage_static_counts = Some(report.summary.static_counts.clone());
+    summary.coverage_observed_static_counts = Some(report.summary.observed_static_counts.clone());
+    summary.coverage_uncovered_counts = Some(report.summary.uncovered_counts.clone());
+    summary.coverage_basis_points = Some(report.summary.coverage_basis_points.clone());
+    let mut offsets = report.uncovered_samples.blocks.clone();
+    offsets.extend(report.uncovered_samples.branches.clone());
+    offsets.extend(report.uncovered_samples.instructions.clone());
+    summary.capture_offsets = normalize_offsets(offsets);
+    summary.capture_offsets.truncate(256);
+    summary.notes.push(format!(
+        "Strict coverage reconciliation status: {} (coverageGateMet={}).",
+        report.status, report.coverage_gate_met
     ));
 }
 
@@ -926,6 +1020,62 @@ fn inspect_with_kind(path: &Path, kind: TraceCaseArtifactKind) -> Result<Artifac
                 parsed: ParsedCaseArtifact::Ollvm(report),
             })
         }
+        TraceCaseArtifactKind::CoverageReport => {
+            let bytes = read_bounded(path, MAX_ARTIFACT_IMPORT_BYTES, "coverage reconciliation")?;
+            let bundle = parse_coverage_reconciliation_bundle(&bytes)
+                .map_err(TraceError::InvalidArgument)?;
+            let capture_offsets = bundle
+                .summary
+                .uncovered_counts
+                .blocks
+                .gt(&0)
+                .then(|| bundle.static_inventory.block_offsets.iter().cloned())
+                .into_iter()
+                .flatten()
+                .chain(
+                    bundle
+                        .static_inventory
+                        .branch_offsets
+                        .iter()
+                        .cloned(),
+                )
+                .take(256);
+            Ok(ArtifactInspection {
+                kind,
+                summary: TraceCaseArtifactSummary {
+                    schema: Some(bundle.schema.clone()),
+                    module_name: Some(bundle.module_name.clone()),
+                    architecture: Some(bundle.architecture.clone()),
+                    binary_sha256: Some(bundle.binary_sha256.clone()),
+                    expected_binary_sha256: Some(bundle.binary_sha256.clone()),
+                    exact_identity_matched: Some(false),
+                    coverage_status: Some("unverified-exact-elf".to_string()),
+                    coverage_gate_met: Some(false),
+                    coverage_claim_scope: Some(bundle.claim_scope.clone()),
+                    coverage_static_counts: Some(bundle.summary.static_counts.clone()),
+                    coverage_observed_static_counts: Some(
+                        bundle.summary.observed_static_counts.clone(),
+                    ),
+                    coverage_uncovered_counts: Some(bundle.summary.uncovered_counts.clone()),
+                    coverage_basis_points: Some(bundle.summary.coverage_basis_points.clone()),
+                    capture_offsets: normalize_offsets(capture_offsets),
+                    event_count: bundle
+                        .summary
+                        .observed_static_counts
+                        .instructions,
+                    run_count: bundle.dynamic_runs.len() as u64,
+                    warning_count: bundle.limitations.len() as u64,
+                    notes: vec![
+                        "Coverage counts are recomputed from explicit static/dynamic offset sets; the gate remains closed until exact-ELF and parent-source provenance are verified."
+                            .to_string(),
+                        "Coverage only caps a claim's maximum level and never proves semantics by itself."
+                            .to_string(),
+                    ],
+                    ..Default::default()
+                },
+                parsed: ParsedCaseArtifact::Coverage(bundle),
+            })
+        }
         TraceCaseArtifactKind::AnalysisReport => {
             let bytes = read_bounded(path, MAX_ARTIFACT_IMPORT_BYTES, "analysis report")?;
             let record: AnalysisRecord = serde_json::from_slice(&bytes).map_err(|error| {
@@ -1078,6 +1228,11 @@ fn detect_artifact_kind(path: &Path) -> Result<TraceCaseArtifactKind> {
     if parse_frida_capture_bundle(&bytes).is_ok() {
         return Ok(TraceCaseArtifactKind::FridaCapture);
     }
+    if let Ok(bundle) = parse_coverage_reconciliation_bundle(&bytes) {
+        if bundle.schema == COVERAGE_RECONCILIATION_SCHEMA {
+            return Ok(TraceCaseArtifactKind::CoverageReport);
+        }
+    }
     if let Ok(report) = serde_json::from_slice::<OllvmReport>(&bytes) {
         if report.schema_version == "trace-ui/ollvm-v1" {
             return Ok(TraceCaseArtifactKind::OllvmReport);
@@ -1177,6 +1332,31 @@ fn validate_case(case: &TraceAnalysisCase) -> Result<()> {
             if static_binary_parent_count != 1 {
                 return Err(TraceError::InvalidArgument(format!(
                     "runtime attestation artifact {} must bind exactly one static-binary parent",
+                    artifact.artifact_id
+                )));
+            }
+        }
+        if artifact.kind == TraceCaseArtifactKind::CoverageReport {
+            let static_binary_parent_count = artifact
+                .parent_artifact_ids
+                .iter()
+                .filter(|parent| {
+                    artifact_kind_by_id.get(parent.as_str())
+                        == Some(&TraceCaseArtifactKind::StaticBinary)
+                })
+                .count();
+            let dynamic_source_parent_count = artifact
+                .parent_artifact_ids
+                .iter()
+                .filter(|parent| {
+                    artifact_kind_by_id
+                        .get(parent.as_str())
+                        .is_some_and(|kind| *kind != TraceCaseArtifactKind::StaticBinary)
+                })
+                .count();
+            if static_binary_parent_count != 1 || dynamic_source_parent_count == 0 {
+                return Err(TraceError::InvalidArgument(format!(
+                    "coverage report artifact {} must bind exactly one static-binary parent and at least one dynamic/source artifact parent",
                     artifact.artifact_id
                 )));
             }
@@ -1545,6 +1725,140 @@ pub fn add_trace_case_artifact(
         .map_err(TraceError::InvalidArgument)?;
         apply_runtime_attestation_report_summary(&mut artifact.summary, &report);
     }
+    if artifact.kind == TraceCaseArtifactKind::CoverageReport {
+        let ParsedCaseArtifact::Coverage(bundle) = &parsed else {
+            return Err(TraceError::Internal(
+                "coverage parser returned an unexpected artifact type".to_string(),
+            ));
+        };
+        let mut static_binary_parent_ids = artifact
+            .parent_artifact_ids
+            .iter()
+            .filter(|parent_id| {
+                document.case.artifacts.iter().any(|candidate| {
+                    candidate.artifact_id == **parent_id
+                        && candidate.kind == TraceCaseArtifactKind::StaticBinary
+                })
+            })
+            .cloned()
+            .collect::<Vec<_>>();
+        if static_binary_parent_ids.is_empty() {
+            let selected = document
+                .case
+                .exact_binary_artifact_id
+                .as_ref()
+                .and_then(|artifact_id| {
+                    document.case.artifacts.iter().find(|candidate| {
+                        candidate.artifact_id == *artifact_id
+                            && candidate.kind == TraceCaseArtifactKind::StaticBinary
+                            && candidate
+                                .summary
+                                .binary_sha256
+                                .as_deref()
+                                .is_some_and(|sha256| {
+                                    sha256.eq_ignore_ascii_case(&bundle.binary_sha256)
+                                })
+                    })
+                })
+                .or_else(|| {
+                    document.case.artifacts.iter().find(|candidate| {
+                        candidate.kind == TraceCaseArtifactKind::StaticBinary
+                            && candidate
+                                .summary
+                                .binary_sha256
+                                .as_deref()
+                                .is_some_and(|sha256| {
+                                    sha256.eq_ignore_ascii_case(&bundle.binary_sha256)
+                                })
+                    })
+                })
+                .or_else(|| {
+                    document.case.exact_binary_artifact_id.as_ref().and_then(|artifact_id| {
+                        document.case.artifacts.iter().find(|candidate| {
+                            candidate.artifact_id == *artifact_id
+                                && candidate.kind == TraceCaseArtifactKind::StaticBinary
+                        })
+                    })
+                })
+                .ok_or_else(|| {
+                    TraceError::InvalidArgument(
+                        "import the exact AArch64 ELF before importing a coverage report, or pass its static-binary artifact ID as the parent"
+                            .to_string(),
+                    )
+                })?;
+            artifact
+                .parent_artifact_ids
+                .push(selected.artifact_id.clone());
+            static_binary_parent_ids.push(selected.artifact_id.clone());
+        }
+        static_binary_parent_ids.sort();
+        static_binary_parent_ids.dedup();
+        if static_binary_parent_ids.len() != 1 {
+            return Err(TraceError::InvalidArgument(
+                "a coverage report must bind exactly one static-binary parent".to_string(),
+            ));
+        }
+        let required_source_hashes = bundle
+            .dynamic_runs
+            .iter()
+            .map(|run| run.source_artifact_sha256.to_ascii_lowercase())
+            .collect::<BTreeSet<_>>();
+        for source_hash in &required_source_hashes {
+            let already_parent = artifact.parent_artifact_ids.iter().any(|parent_id| {
+                document.case.artifacts.iter().any(|candidate| {
+                    candidate.artifact_id == *parent_id
+                        && candidate.kind != TraceCaseArtifactKind::StaticBinary
+                        && candidate.sha256.eq_ignore_ascii_case(source_hash)
+                })
+            });
+            if already_parent {
+                continue;
+            }
+            let source = document.case.artifacts.iter().find(|candidate| {
+                candidate.kind != TraceCaseArtifactKind::StaticBinary
+                    && candidate.sha256.eq_ignore_ascii_case(source_hash)
+            });
+            let Some(source) = source else {
+                return Err(TraceError::InvalidArgument(format!(
+                    "coverage report requires source artifact SHA-256 {source_hash}; import that exact OLLVM/trace artifact first or pass its artifact ID as a parent"
+                )));
+            };
+            artifact
+                .parent_artifact_ids
+                .push(source.artifact_id.clone());
+        }
+        artifact.parent_artifact_ids.sort();
+        artifact.parent_artifact_ids.dedup();
+        let exact_binary = document
+            .case
+            .artifacts
+            .iter()
+            .find(|candidate| candidate.artifact_id == static_binary_parent_ids[0])
+            .ok_or_else(|| {
+                TraceError::InvalidArgument(
+                    "coverage static-binary parent was not found".to_string(),
+                )
+            })?;
+        let source_sha256s = artifact
+            .parent_artifact_ids
+            .iter()
+            .filter_map(|parent_id| {
+                document.case.artifacts.iter().find(|candidate| {
+                    candidate.artifact_id == *parent_id
+                        && candidate.kind != TraceCaseArtifactKind::StaticBinary
+                })
+            })
+            .map(|candidate| candidate.sha256.clone())
+            .collect::<Vec<_>>();
+        let exact_binary_path = resolve_trace_case_artifact_path(case_path, &exact_binary.path)?;
+        let report = inspect_coverage_reconciliation_bundle(
+            bundle,
+            &exact_binary_path.to_string_lossy(),
+            &source_sha256s,
+        )
+        .map_err(TraceError::InvalidArgument)?;
+        apply_coverage_report_summary(&mut artifact.summary, &report);
+    }
     if let Some(existing) = document
         .case
         .artifacts
@@ -1552,8 +1866,11 @@ pub fn add_trace_case_artifact(
         .find(|existing| {
             existing.kind == artifact.kind
                 && existing.sha256 == artifact.sha256
-                && (artifact.kind != TraceCaseArtifactKind::RuntimeAttestation
-                    || existing.parent_artifact_ids == artifact.parent_artifact_ids)
+                && (!matches!(
+                    artifact.kind,
+                    TraceCaseArtifactKind::RuntimeAttestation
+                        | TraceCaseArtifactKind::CoverageReport
+                ) || existing.parent_artifact_ids == artifact.parent_artifact_ids)
         })
         .cloned()
     {
@@ -1716,6 +2033,7 @@ fn generated_claim(
         statement,
         scope,
         status,
+        coverage_requirement: TraceCaseCoverageRequirement::Auto,
         supporting_evidence,
         counter_evidence,
         missing_evidence,
@@ -1806,6 +2124,169 @@ fn normalized_claim_key(claim: &TraceCaseClaim) -> String {
     format!("{scope}\0{statement}")
 }
 
+fn contains_any(value: &str, needles: &[&str]) -> bool {
+    needles.iter().any(|needle| value.contains(needle))
+}
+
+fn coverage_requirement_priority(requirement: TraceCaseCoverageRequirement) -> u8 {
+    match requirement {
+        TraceCaseCoverageRequirement::Auto | TraceCaseCoverageRequirement::NotRequired => 0,
+        TraceCaseCoverageRequirement::ScopeComplete => 1,
+        TraceCaseCoverageRequirement::NegativeExistence => 2,
+        TraceCaseCoverageRequirement::ExhaustiveEnumeration => 3,
+        TraceCaseCoverageRequirement::GlobalInvariance => 4,
+        TraceCaseCoverageRequirement::CompleteControlFlow => 5,
+    }
+}
+
+fn auto_coverage_requirement(claim: &TraceCaseClaim) -> TraceCaseCoverageRequirement {
+    if claim
+        .scope
+        .trim()
+        .to_ascii_lowercase()
+        .starts_with("runtime-image:")
+    {
+        return TraceCaseCoverageRequirement::NotRequired;
+    }
+    let text = format!("{} {}", claim.scope, claim.statement).to_ascii_lowercase();
+    let negative = contains_any(
+        &text,
+        &[
+            " no ",
+            "none",
+            "absent",
+            "not present",
+            "does not contain",
+            "doesn't contain",
+            "without ",
+            "not found",
+            "没有",
+            "不存在",
+            "未发现",
+            "不包含",
+            "未包含",
+            "无 aes",
+            "无aes",
+        ],
+    ) || text.starts_with("no ");
+    let completeness_text = text.replace("incomplete", "").replace("不完整", "");
+    let complete = contains_any(
+        &completeness_text,
+        &[
+            "complete",
+            "fully",
+            "entire",
+            "exhaustive",
+            "all ",
+            "every ",
+            "完整",
+            "全部",
+            "所有",
+            "完全",
+            "穷尽",
+            "全量",
+        ],
+    );
+    let invariant = contains_any(
+        &text,
+        &[
+            "always",
+            "never",
+            "constant",
+            "invariant",
+            "globally opaque",
+            "global opaque",
+            "恒定",
+            "永远",
+            "总是",
+            "不变",
+            "全局 opaque",
+            "全局不透明",
+        ],
+    );
+    let control_flow = contains_any(
+        &text,
+        &[
+            "cfg",
+            "control flow",
+            "branch",
+            "dispatcher",
+            "opaque",
+            "basic block",
+            "控制流",
+            "分支",
+            "调度器",
+            "不透明谓词",
+            "基本块",
+            "ollvm",
+        ],
+    );
+    let enumeration = contains_any(
+        &text,
+        &[
+            "discovered",
+            "identified",
+            "recovered",
+            "enumerated",
+            "found all",
+            "全部发现",
+            "全部识别",
+            "全部恢复",
+            "都已发现",
+            "均已发现",
+        ],
+    );
+
+    if invariant && control_flow {
+        TraceCaseCoverageRequirement::GlobalInvariance
+    } else if complete && control_flow && contains_any(&text, &["cfg", "control flow", "控制流"])
+    {
+        TraceCaseCoverageRequirement::CompleteControlFlow
+    } else if complete && (enumeration || control_flow) {
+        TraceCaseCoverageRequirement::ExhaustiveEnumeration
+    } else if negative {
+        TraceCaseCoverageRequirement::NegativeExistence
+    } else if complete {
+        TraceCaseCoverageRequirement::ScopeComplete
+    } else {
+        TraceCaseCoverageRequirement::NotRequired
+    }
+}
+
+fn effective_coverage_requirement(
+    claim: &TraceCaseClaim,
+) -> (TraceCaseCoverageRequirement, &'static str) {
+    let automatic = auto_coverage_requirement(claim);
+    match claim.coverage_requirement {
+        TraceCaseCoverageRequirement::Auto => (automatic, "auto-classified"),
+        TraceCaseCoverageRequirement::NotRequired
+            if automatic != TraceCaseCoverageRequirement::NotRequired =>
+        {
+            (automatic, "auto-classified-overrode-not-required")
+        }
+        explicit
+            if coverage_requirement_priority(explicit)
+                >= coverage_requirement_priority(automatic) =>
+        {
+            (explicit, "explicit")
+        }
+        _ => (automatic, "auto-classified-stricter"),
+    }
+}
+
+fn coverage_max_status(requirement: TraceCaseCoverageRequirement) -> TraceCaseClaimStatus {
+    match requirement {
+        TraceCaseCoverageRequirement::Auto | TraceCaseCoverageRequirement::NotRequired => {
+            TraceCaseClaimStatus::Verified
+        }
+        TraceCaseCoverageRequirement::ScopeComplete
+        | TraceCaseCoverageRequirement::NegativeExistence => TraceCaseClaimStatus::Observed,
+        TraceCaseCoverageRequirement::GlobalInvariance
+        | TraceCaseCoverageRequirement::ExhaustiveEnumeration
+        | TraceCaseCoverageRequirement::CompleteControlFlow => TraceCaseClaimStatus::Related,
+    }
+}
+
 fn build_claim_ledger_audit(
     persisted_claims: &[TraceCaseClaim],
     generated_claims: &[TraceCaseClaim],
@@ -1813,6 +2294,7 @@ fn build_claim_ledger_audit(
     health: &[TraceCaseArtifactHealth],
     runtime_attestations: &[TraceCaseRuntimeAttestationReport],
     crypto_kats: &[TraceCaseCryptoKatReport],
+    coverage_reconciliations: &[TraceCaseCoverageReport],
 ) -> TraceCaseClaimLedgerAudit {
     let artifact_by_id = artifacts
         .iter()
@@ -1841,6 +2323,7 @@ fn build_claim_ledger_audit(
         let mut evidence_kinds = Vec::new();
         let mut runtime_attestation_gate_met = false;
         let mut crypto_kat_gate_met = false;
+        let mut referenced_coverage_artifact_ids = Vec::<String>::new();
         for (evidence, counter) in claim
             .supporting_evidence
             .iter()
@@ -1871,6 +2354,11 @@ fn build_claim_ledger_audit(
                 valid_counter += 1;
             } else {
                 valid_supporting += 1;
+                if artifact
+                    .is_some_and(|artifact| artifact.kind == TraceCaseArtifactKind::CoverageReport)
+                {
+                    referenced_coverage_artifact_ids.push(evidence.artifact_id.clone());
+                }
                 runtime_attestation_gate_met |= artifact.is_some_and(|artifact| {
                     artifact.kind == TraceCaseArtifactKind::RuntimeAttestation
                         && runtime_attestations.iter().any(|attestation| {
@@ -1891,9 +2379,61 @@ fn build_claim_ledger_audit(
             }
         }
         evidence_kinds.sort_by_key(|kind| kind.as_str());
+        referenced_coverage_artifact_ids.sort();
+        referenced_coverage_artifact_ids.dedup();
 
         let mut blockers = Vec::new();
         let mut notes = Vec::new();
+        let (coverage_requirement, coverage_requirement_source) =
+            effective_coverage_requirement(claim);
+        let coverage_max_status = coverage_max_status(coverage_requirement);
+        let matching_coverage = coverage_reconciliations
+            .iter()
+            .filter(|coverage| {
+                referenced_coverage_artifact_ids.contains(&coverage.artifact_id)
+                    && coverage.report.claim_scope == claim.scope
+            })
+            .collect::<Vec<_>>();
+        let best_coverage = matching_coverage.iter().copied().max_by(|left, right| {
+            left.report
+                .coverage_gate_met
+                .cmp(&right.report.coverage_gate_met)
+                .then_with(|| {
+                    left.report
+                        .summary
+                        .coverage_basis_points
+                        .instructions
+                        .cmp(&right.report.summary.coverage_basis_points.instructions)
+                })
+                .then_with(|| {
+                    left.report
+                        .summary
+                        .coverage_basis_points
+                        .blocks
+                        .cmp(&right.report.summary.coverage_basis_points.blocks)
+                })
+        });
+        let coverage_gate_passed = coverage_requirement
+            == TraceCaseCoverageRequirement::NotRequired
+            || best_coverage.is_some_and(|coverage| coverage.report.coverage_gate_met);
+        let coverage_gate_status =
+            if coverage_requirement == TraceCaseCoverageRequirement::NotRequired {
+                "not-required"
+            } else if referenced_coverage_artifact_ids.is_empty() {
+                "missing"
+            } else if matching_coverage.is_empty() {
+                "scope-mismatch"
+            } else if coverage_gate_passed {
+                "passed"
+            } else {
+                "partial"
+            };
+        let coverage_artifact_ids = matching_coverage
+            .iter()
+            .map(|coverage| coverage.artifact_id.clone())
+            .collect::<Vec<_>>();
+        let coverage_uncovered_counts =
+            best_coverage.map(|coverage| coverage.report.summary.uncovered_counts.clone());
         let runtime_image_scope = claim
             .scope
             .trim()
@@ -1922,6 +2462,49 @@ fn build_claim_ledger_audit(
             blockers.push(format!(
                 "{valid_counter} valid counter-evidence reference(s) must be resolved before retaining this status."
             ));
+        }
+        if coverage_requirement != TraceCaseCoverageRequirement::NotRequired {
+            match coverage_gate_status {
+                "missing" => blockers.push(format!(
+                    "This {} claim requires a valid exact-scope {} artifact in supporting evidence; dynamic absence or structural summaries alone leave unexecuted paths unknown.",
+                    coverage_requirement.as_str(), COVERAGE_RECONCILIATION_SCHEMA
+                )),
+                "scope-mismatch" => blockers.push(format!(
+                    "Referenced coverage artifact(s) do not have claimScope exactly equal to '{}'; coverage cannot be reused across a different claim scope.",
+                    claim.scope
+                )),
+                "partial" => {
+                    if let Some(counts) = &coverage_uncovered_counts {
+                        blockers.push(format!(
+                            "Coverage is incomplete for this {} claim: uncovered instructions={}, blocks={}, branches={}, functions={}, edges={}. These sites remain unknown.",
+                            coverage_requirement.as_str(),
+                            counts.instructions,
+                            counts.blocks,
+                            counts.branches,
+                            counts.functions,
+                            counts.edges
+                        ));
+                    } else {
+                        blockers.push(format!(
+                            "Coverage is incomplete for this {} claim; unexecuted paths remain unknown.",
+                            coverage_requirement.as_str()
+                        ));
+                    }
+                }
+                "passed" => notes.push(
+                    "Exact-ELF/source-bound listed-site coverage passed, but it is only a maximum-level constraint and not semantic proof."
+                        .to_string(),
+                ),
+                _ => {}
+            }
+            if claim.status == TraceCaseClaimStatus::Verified
+                && coverage_max_status != TraceCaseClaimStatus::Verified
+            {
+                blockers.push(format!(
+                    "Coverage cannot by itself verify this {} claim. Its implemented maximum is {:?}; algorithm absence, global branch invariance, exhaustive discovery, and complete CFG claims need an independent deterministic semantic protocol.",
+                    coverage_requirement.as_str(), coverage_max_status
+                ));
+            }
         }
         if claim.status == TraceCaseClaimStatus::Verified {
             if runtime_image_scope && !runtime_attestation_gate_met {
@@ -1953,17 +2536,24 @@ fn build_claim_ledger_audit(
             ));
         }
 
+        let structured_verified_gate_met = (runtime_image_scope && runtime_attestation_gate_met)
+            || (crypto_scope && crypto_kat_gate_met);
         let recommended_status = if valid_counter > 0 {
             TraceCaseClaimStatus::Refuted
         } else if valid_supporting == 0 {
             TraceCaseClaimStatus::Unknown
         } else if claim.status == TraceCaseClaimStatus::Verified
-            && ((runtime_image_scope && runtime_attestation_gate_met)
-                || (crypto_scope && crypto_kat_gate_met))
+            && structured_verified_gate_met
+            && coverage_gate_passed
+            && coverage_max_status == TraceCaseClaimStatus::Verified
             && invalid_evidence == 0
             && claim.missing_evidence.is_empty()
         {
             TraceCaseClaimStatus::Verified
+        } else if claim.status == TraceCaseClaimStatus::Verified
+            && coverage_max_status == TraceCaseClaimStatus::Related
+        {
+            TraceCaseClaimStatus::Related
         } else if claim.status == TraceCaseClaimStatus::Related {
             TraceCaseClaimStatus::Related
         } else {
@@ -1990,6 +2580,13 @@ fn build_claim_ledger_audit(
             valid_counter_evidence_count: valid_counter,
             invalid_evidence_count: invalid_evidence,
             evidence_artifact_kinds: evidence_kinds,
+            coverage_requirement: coverage_requirement.as_str().to_string(),
+            coverage_requirement_source: coverage_requirement_source.to_string(),
+            coverage_gate_status: coverage_gate_status.to_string(),
+            coverage_gate_passed,
+            coverage_max_status,
+            coverage_artifact_ids,
+            coverage_uncovered_counts,
             blockers,
             notes,
         });
@@ -2047,10 +2644,14 @@ fn build_claim_ledger_audit(
         claims,
         contradictions,
         limitations: vec![
-            "The ledger audit checks provenance, artifact integrity, counter-evidence, and structured runtime-image/crypto gates; it does not independently prove claim statements outside those bounded scopes."
+            "The ledger audit checks provenance, artifact integrity, counter-evidence, structured runtime-image/crypto gates, and exact-ELF/source-bound coverage reconciliation; it does not independently prove claim statements outside those bounded scopes."
                 .to_string(),
             "runtime-image:* claims require verified-full runtime attestation, while crypto:* claims require an exact-scope verified-full crypto KAT; neither gate can verify OLLVM structure, reachability, or simulator completeness."
                 .to_string(),
+            format!(
+                "{} can only cap the maximum claim level. Negative-existence and scope-complete claims remain at most Observed; global-invariance, exhaustive OLLVM discovery, and complete-control-flow claims remain at most Related without an independent deterministic semantic protocol.",
+                COVERAGE_CLAIM_GATE_SCHEMA
+            ),
             "OLLVM, Unicorn, and angr structural evidence cannot pass the Verified gate by itself."
                 .to_string(),
         ],
@@ -2930,6 +3531,8 @@ fn capture_target_kind(action: &str) -> &'static str {
         "runtime-image"
     } else if action.contains("crypto-kat") {
         "crypto-semantic"
+    } else if action.contains("coverage") {
+        "coverage-reconciliation"
     } else if action.contains("elf") {
         "exact-binary"
     } else if action.contains("checkpoint") || action.contains("call-boundary") {
@@ -2954,6 +3557,11 @@ fn capture_information_gain_score(action: &str, priority: u8) -> u8 {
     match action {
         "fix-artifact-integrity" | "resolve-runtime-image-mismatch" | "select-exact-elf" => 100,
         "resolve-claim-counter-evidence" => 98,
+        "resolve-coverage-exact-elf-mismatch" => 100,
+        "replace-invalid-coverage-reconciliation" => 99,
+        "bind-coverage-source-provenance" => 97,
+        "regenerate-static-coverage-inventory" => 93,
+        "capture-uncovered-coverage-sites" => 91,
         "generate-unicorn-from-checkpoint" | "generate-closer-checkpoint-hook" => 96,
         "replace-invalid-crypto-kat" => 95,
         "capture-full-runtime-attestation" | "recapture-runtime-attestation" => 94,
@@ -2998,6 +3606,13 @@ fn competing_hypotheses_for_action(action: &str) -> Vec<String> {
         vec![
             "The recorded algorithm and parameters reproduce the observed output exactly.".to_string(),
             "At least one algorithm, parameter, direction, input boundary, output, or tag assumption is wrong."
+                .to_string(),
+        ]
+    } else if action.contains("coverage") {
+        vec![
+            "The exact-ELF static inventory and bound dynamic runs account for every listed site in the claim scope."
+                .to_string(),
+            "Static discovery is incomplete, a source artifact is mismatched, or one or more paths/sites remain unobserved."
                 .to_string(),
         ]
     } else if action.contains("recapture") || action.contains("runtime-state") {
@@ -3049,6 +3664,26 @@ fn success_criteria_for_action(action: &str) -> String {
         }
         "replace-invalid-crypto-kat" => {
             "The replacement report strictly parses, deterministically recomputes, and returns verified-full or an exact refutation without edited status fields."
+                .to_string()
+        }
+        "resolve-coverage-exact-elf-mismatch" => {
+            "The coverage artifact binary SHA-256/build ID matches exactly one imported AArch64 ELF parent; the prior mismatch remains counter-evidence."
+                .to_string()
+        }
+        "bind-coverage-source-provenance" => {
+            "Every dynamicRuns.sourceArtifactSha256 exactly matches a valid non-binary parent artifact; textual descriptions cannot substitute for the file hash."
+                .to_string()
+        }
+        "regenerate-static-coverage-inventory" => {
+            "The replacement artifact strictly parses without truncation/dynamic-only conflicts and recomputes its counts from canonical exact-ELF offsets."
+                .to_string()
+        }
+        "capture-uncovered-coverage-sites" => {
+            "A new controlled run observes previously uncovered exact module offsets or records explicit counter-evidence; the rebuilt coverage report preserves remaining unknown sites."
+                .to_string()
+        }
+        "replace-invalid-coverage-reconciliation" => {
+            "The replacement artifact passes strict schema, canonical-set, summary recomputation, exact-ELF range, and source-provenance checks."
                 .to_string()
         }
         "select-exact-elf" => {
@@ -3395,6 +4030,7 @@ pub fn diagnose_trace_analysis_case(case_path: &str) -> Result<ReplayDoctorRepor
     let mut valid_runtime_attestations =
         Vec::<(TraceCaseArtifact, RuntimeAttestationCaptureBundle)>::new();
     let mut valid_crypto_kats = Vec::<(TraceCaseArtifact, CryptoSemanticKatReport)>::new();
+    let mut valid_coverage = Vec::<(TraceCaseArtifact, CoverageReconciliationBundle)>::new();
     let mut valid_angr = Vec::<(TraceCaseArtifact, AngrOllvmResultBundle)>::new();
     let mut valid_binaries = Vec::<(TraceCaseArtifact, ElfBinaryIdentity)>::new();
     let mut generated_claims = Vec::new();
@@ -3456,6 +4092,9 @@ pub fn diagnose_trace_analysis_case(case_path: &str) -> Result<ReplayDoctorRepor
                     ParsedCaseArtifact::Ollvm(report) => {
                         let _ = report.block_count;
                     }
+                    ParsedCaseArtifact::Coverage(bundle) => {
+                        valid_coverage.push((artifact.clone(), bundle));
+                    }
                     ParsedCaseArtifact::Analysis(record) => {
                         let _ = record.analysis_id;
                     }
@@ -3497,12 +4136,14 @@ pub fn diagnose_trace_analysis_case(case_path: &str) -> Result<ReplayDoctorRepor
     valid_frida.sort_by_key(|(artifact, _)| artifact.imported_at_ms);
     valid_runtime_attestations.sort_by_key(|(artifact, _)| artifact.imported_at_ms);
     valid_crypto_kats.sort_by_key(|(artifact, _)| artifact.imported_at_ms);
+    valid_coverage.sort_by_key(|(artifact, _)| artifact.imported_at_ms);
     valid_angr.sort_by_key(|(artifact, _)| artifact.imported_at_ms);
     valid_binaries.sort_by_key(|(artifact, _)| artifact.imported_at_ms);
 
     let mut next_actions = Vec::new();
     let mut runtime_attestations = Vec::<TraceCaseRuntimeAttestationReport>::new();
     let mut crypto_kats = Vec::<TraceCaseCryptoKatReport>::new();
+    let mut coverage_reconciliations = Vec::<TraceCaseCoverageReport>::new();
     let broken_ids = health
         .iter()
         .filter(|item| item.status != "valid")
@@ -3804,6 +4445,210 @@ pub fn diagnose_trace_analysis_case(case_path: &str) -> Result<ReplayDoctorRepor
             artifact_id: artifact.artifact_id.clone(),
             report: report.clone(),
         });
+    }
+
+    for (coverage_artifact, bundle) in &valid_coverage {
+        let exact_binary_parent_id = coverage_artifact
+            .parent_artifact_ids
+            .iter()
+            .find(|parent_id| {
+                document.case.artifacts.iter().any(|candidate| {
+                    candidate.artifact_id == **parent_id
+                        && candidate.kind == TraceCaseArtifactKind::StaticBinary
+                })
+            })
+            .cloned();
+        let Some(exact_binary_parent_id) = exact_binary_parent_id else {
+            warnings.push(format!(
+                "{} has no bound exact static-binary parent.",
+                coverage_artifact.label
+            ));
+            continue;
+        };
+        let Some((binary_artifact, _)) = valid_binaries
+            .iter()
+            .find(|(artifact, _)| artifact.artifact_id == exact_binary_parent_id)
+        else {
+            warnings.push(format!(
+                "{} cannot be reconciled until its exact ELF parent passes integrity and parser checks.",
+                coverage_artifact.label
+            ));
+            continue;
+        };
+        let source_artifacts = coverage_artifact
+            .parent_artifact_ids
+            .iter()
+            .filter_map(|parent_id| {
+                document.case.artifacts.iter().find(|candidate| {
+                    candidate.artifact_id == *parent_id
+                        && candidate.kind != TraceCaseArtifactKind::StaticBinary
+                        && health.iter().any(|item| {
+                            item.artifact_id == candidate.artifact_id && item.status == "valid"
+                        })
+                })
+            })
+            .collect::<Vec<_>>();
+        let source_sha256s = source_artifacts
+            .iter()
+            .map(|artifact| artifact.sha256.clone())
+            .collect::<Vec<_>>();
+        let binary_path = resolve_trace_case_artifact_path(case_path, &binary_artifact.path)?;
+        match inspect_coverage_reconciliation_bundle(
+            bundle,
+            &binary_path.to_string_lossy(),
+            &source_sha256s,
+        ) {
+            Ok(report) => {
+                let uncovered = &report.summary.uncovered_counts;
+                let dynamic_only = &report.summary.dynamic_only_counts;
+                let coverage_description = format!(
+                    "observed/static instructions={}/{}, blocks={}/{}, branches={}/{}, functions={}/{}, edges={}/{}",
+                    report.summary.observed_static_counts.instructions,
+                    report.summary.static_counts.instructions,
+                    report.summary.observed_static_counts.blocks,
+                    report.summary.static_counts.blocks,
+                    report.summary.observed_static_counts.branches,
+                    report.summary.static_counts.branches,
+                    report.summary.observed_static_counts.functions,
+                    report.summary.static_counts.functions,
+                    report.summary.observed_static_counts.edges,
+                    report.summary.static_counts.edges,
+                );
+                if report.coverage_gate_met {
+                    generated_claims.push(generated_claim(
+                        format!(
+                            "All explicitly inventoried static sites for the bounded scope were observed across the bound dynamic run set ({coverage_description})."
+                        ),
+                        report.claim_scope.clone(),
+                        TraceCaseClaimStatus::Observed,
+                        vec![
+                            evidence_ref(
+                                coverage_artifact,
+                                "coverage-reconciliation/complete-site-coverage",
+                                "Trace UI recomputed the explicit static/dynamic sets, exact-ELF identity, and source-parent provenance.",
+                            ),
+                            evidence_ref(
+                                binary_artifact,
+                                "sha256",
+                                report.exact_binary_identity.binary_sha256.clone(),
+                            ),
+                        ],
+                        Vec::new(),
+                        Vec::new(),
+                        report.limitations.clone(),
+                    ));
+                } else {
+                    generated_claims.push(generated_claim(
+                        format!(
+                            "Coverage reconciliation for the bounded scope is incomplete ({coverage_description}); unobserved or inconsistent sites remain unknown."
+                        ),
+                        report.claim_scope.clone(),
+                        TraceCaseClaimStatus::Observed,
+                        vec![evidence_ref(
+                            coverage_artifact,
+                            format!("coverage-reconciliation/{}", report.status),
+                            format!(
+                                "uncovered instructions={}, blocks={}, branches={}, functions={}, edges={}; dynamic-only instructions={}, blocks={}, branches={}, functions={}, edges={}",
+                                uncovered.instructions,
+                                uncovered.blocks,
+                                uncovered.branches,
+                                uncovered.functions,
+                                uncovered.edges,
+                                dynamic_only.instructions,
+                                dynamic_only.blocks,
+                                dynamic_only.branches,
+                                dynamic_only.functions,
+                                dynamic_only.edges,
+                            ),
+                        )],
+                        Vec::new(),
+                        Vec::new(),
+                        report.limitations.clone(),
+                    ));
+                    let mut uncovered_offsets = report.uncovered_samples.blocks.clone();
+                    uncovered_offsets.extend(report.uncovered_samples.branches.clone());
+                    uncovered_offsets.extend(report.uncovered_samples.instructions.clone());
+                    uncovered_offsets = normalize_offsets(uncovered_offsets);
+                    uncovered_offsets.truncate(64);
+                    if !report.identity_matched {
+                        next_actions.push(next_action(
+                            100,
+                            "resolve-coverage-exact-elf-mismatch",
+                            Some("inspect_coverage_reconciliation"),
+                            vec![
+                                coverage_artifact.artifact_id.clone(),
+                                binary_artifact.artifact_id.clone(),
+                            ],
+                            Vec::new(),
+                            "The coverage artifact is bound to a different exact ELF identity.",
+                            "Select the exact AArch64 ELF used by the static inventory, regenerate the coverage exporter for that build, and preserve this mismatch as counter-evidence.",
+                            false,
+                        ));
+                    } else if !report.source_provenance_matched {
+                        next_actions.push(next_action(
+                            97,
+                            "bind-coverage-source-provenance",
+                            Some("ingest_analysis_case_artifact"),
+                            vec![coverage_artifact.artifact_id.clone()],
+                            Vec::new(),
+                            "One or more dynamic run SHA-256 values are not present among the coverage artifact's valid parent artifacts.",
+                            "Import the exact OLLVM/trace source files and re-import the coverage report with those artifact IDs plus exactly one static-binary parent; do not substitute a textual locator.",
+                            false,
+                        ));
+                    } else if !report.summary.static_inventory_complete {
+                        next_actions.push(next_action(
+                            93,
+                            "regenerate-static-coverage-inventory",
+                            Some("generate_coverage_reconciliation_script"),
+                            vec![
+                                coverage_artifact.artifact_id.clone(),
+                                binary_artifact.artifact_id.clone(),
+                            ],
+                            uncovered_offsets,
+                            "The static inventory is incomplete/truncated or contains dynamic-only sites, so it cannot bound a completeness claim.",
+                            "Generate a new exact-ELF coverage reconciliation script for a narrower module/function/range scope, run angr manually, and import the resulting JSON with exact parents.",
+                            true,
+                        ));
+                    } else {
+                        next_actions.push(next_action(
+                            91,
+                            "capture-uncovered-coverage-sites",
+                            Some("generate_frida_hook"),
+                            vec![coverage_artifact.artifact_id.clone()],
+                            uncovered_offsets,
+                            "The static inventory is usable, but one or more listed sites were not observed across the bound dynamic runs.",
+                            "Prioritize uncovered block/branch offsets in a controlled run, generate bounded exact-offset hooks where appropriate, run them manually, then regenerate the coverage reconciliation with the new dynamic source artifact.",
+                            true,
+                        ));
+                    }
+                }
+                coverage_reconciliations.push(TraceCaseCoverageReport {
+                    artifact_id: coverage_artifact.artifact_id.clone(),
+                    exact_binary_artifact_id: binary_artifact.artifact_id.clone(),
+                    source_artifact_ids: source_artifacts
+                        .iter()
+                        .map(|artifact| artifact.artifact_id.clone())
+                        .collect(),
+                    report,
+                });
+            }
+            Err(error) => {
+                warnings.push(format!(
+                    "Coverage reconciliation failed for {}: {error}",
+                    coverage_artifact.label
+                ));
+                next_actions.push(next_action(
+                    99,
+                    "replace-invalid-coverage-reconciliation",
+                    Some("inspect_coverage_reconciliation"),
+                    vec![coverage_artifact.artifact_id.clone()],
+                    Vec::new(),
+                    error.to_string(),
+                    "Regenerate the coverage artifact from the exact ELF and source OLLVM report. Do not edit counts or percentages manually; Trace UI recomputes them from canonical offset sets.",
+                    false,
+                ));
+            }
+        }
     }
 
     let latest_unicorn = valid_unicorn.last();
@@ -4147,6 +4992,7 @@ pub fn diagnose_trace_analysis_case(case_path: &str) -> Result<ReplayDoctorRepor
         &health,
         &runtime_attestations,
         &crypto_kats,
+        &coverage_reconciliations,
     );
     let persisted_claim_blockers = claim_ledger_audit
         .claims
@@ -4222,6 +5068,7 @@ pub fn diagnose_trace_analysis_case(case_path: &str) -> Result<ReplayDoctorRepor
         capture_plan,
         runtime_attestations,
         crypto_kats,
+        coverage_reconciliations,
         unicorn_round_comparison: round_comparison,
         warnings,
         limitations: vec![
@@ -4363,6 +5210,104 @@ mod tests {
         )
         .unwrap();
         (dir, case_path, elf_path, identity)
+    }
+
+    fn coverage_bundle(
+        identity: &ElfBinaryIdentity,
+        source_sha256: &str,
+        claim_scope: &str,
+        complete: bool,
+    ) -> CoverageReconciliationBundle {
+        use crate::query::coverage::{
+            recompute_coverage_reconciliation_summary, CoverageDynamicRun, CoverageEdge,
+            CoverageFunctionRange, CoverageReconciliationSummary, CoverageScope,
+            CoverageStaticInventory,
+        };
+
+        let mut bundle = CoverageReconciliationBundle {
+            schema: COVERAGE_RECONCILIATION_SCHEMA.to_string(),
+            module_name: "libtarget.so".to_string(),
+            architecture: "AArch64".to_string(),
+            binary_sha256: identity.binary_sha256.clone(),
+            build_id: identity.build_id.clone(),
+            claim_scope: claim_scope.to_string(),
+            scope: CoverageScope {
+                kind: "function-closure".to_string(),
+                start_offset: "0x1000".to_string(),
+                end_offset: "0x100c".to_string(),
+                function_offsets: vec!["0x1000".to_string()],
+            },
+            static_inventory: CoverageStaticInventory {
+                source_kind: "angr-cfgfast".to_string(),
+                source_version: Some("test".to_string()),
+                complete_for_scope: true,
+                instructions_truncated: false,
+                blocks_truncated: false,
+                branches_truncated: false,
+                functions_truncated: false,
+                edges_truncated: false,
+                instruction_offsets: vec![
+                    "0x1000".to_string(),
+                    "0x1004".to_string(),
+                    "0x1008".to_string(),
+                    "0x100c".to_string(),
+                ],
+                block_offsets: vec!["0x1000".to_string(), "0x1008".to_string()],
+                branch_offsets: vec!["0x1004".to_string()],
+                functions: vec![CoverageFunctionRange {
+                    start_offset: "0x1000".to_string(),
+                    end_offset: "0x100c".to_string(),
+                    name: Some("target".to_string()),
+                }],
+                edges: vec![CoverageEdge {
+                    source_offset: "0x1000".to_string(),
+                    target_offset: "0x1008".to_string(),
+                }],
+            },
+            dynamic_runs: vec![CoverageDynamicRun {
+                run_id: "run-a".to_string(),
+                source_artifact_sha256: source_sha256.to_string(),
+                capture_complete_for_scope: true,
+                instruction_offsets: if complete {
+                    vec![
+                        "0x1000".to_string(),
+                        "0x1004".to_string(),
+                        "0x1008".to_string(),
+                        "0x100c".to_string(),
+                    ]
+                } else {
+                    vec!["0x1000".to_string(), "0x1004".to_string()]
+                },
+                block_offsets: if complete {
+                    vec!["0x1000".to_string(), "0x1008".to_string()]
+                } else {
+                    vec!["0x1000".to_string()]
+                },
+                branch_offsets: vec!["0x1004".to_string()],
+                function_offsets: vec!["0x1000".to_string()],
+                edges: if complete {
+                    vec![CoverageEdge {
+                        source_offset: "0x1000".to_string(),
+                        target_offset: "0x1008".to_string(),
+                    }]
+                } else {
+                    Vec::new()
+                },
+            }],
+            summary: CoverageReconciliationSummary {
+                static_counts: CoverageCounts::default(),
+                observed_static_counts: CoverageCounts::default(),
+                uncovered_counts: CoverageCounts::default(),
+                dynamic_only_counts: CoverageCounts::default(),
+                coverage_basis_points: CoverageBasisPoints::default(),
+                static_inventory_complete: false,
+                dynamic_capture_complete: false,
+                coverage_complete: false,
+            },
+            limitations: Vec::new(),
+        };
+        bundle.summary = recompute_coverage_reconciliation_summary(&bundle);
+        bundle
     }
 
     fn test_unicorn_bundle(
@@ -4856,6 +5801,7 @@ mod tests {
                 plan.expected_identity.binary_sha256
             ),
             status: TraceCaseClaimStatus::Verified,
+            coverage_requirement: TraceCaseCoverageRequirement::Auto,
             supporting_evidence: vec![TraceCaseEvidenceRef {
                 artifact_id: exact_artifact_id,
                 locator: "runtime-attestation/verified-full semantic-known-answer".to_string(),
@@ -4992,6 +5938,7 @@ mod tests {
             statement: "SHA-256 output is verified for this exact vector.".to_string(),
             scope: kat_report.claim_scope.clone(),
             status: TraceCaseClaimStatus::Verified,
+            coverage_requirement: TraceCaseCoverageRequirement::Auto,
             supporting_evidence: vec![TraceCaseEvidenceRef {
                 artifact_id: trace_artifact_id,
                 locator: "semantic-known-answer".to_string(),
@@ -5070,6 +6017,7 @@ mod tests {
                 statement: "The complete OLLVM CFG was recovered.".to_string(),
                 scope: "ollvm:libtarget.so@0x100".to_string(),
                 status: TraceCaseClaimStatus::Verified,
+                coverage_requirement: TraceCaseCoverageRequirement::Auto,
                 supporting_evidence: vec![TraceCaseEvidenceRef {
                     artifact_id: document.case.artifacts[0].artifact_id.clone(),
                     locator: "semantic-known-answer verification-gate".to_string(),
@@ -5093,12 +6041,193 @@ mod tests {
             .find(|claim| claim.claim_id == "forged-ollvm-verified")
             .unwrap();
         assert_eq!(audit.gate_status, "blocked");
-        assert_eq!(audit.recommended_status, TraceCaseClaimStatus::Observed);
+        assert_eq!(audit.recommended_status, TraceCaseClaimStatus::Related);
+        assert_eq!(audit.coverage_requirement, "complete-control-flow");
+        assert_eq!(audit.coverage_gate_status, "missing");
+        assert_eq!(audit.coverage_max_status, TraceCaseClaimStatus::Related);
         assert!(!audit.verification_gate_passed);
         assert!(audit
             .blockers
             .iter()
             .any(|blocker| blocker.contains("no implemented structured Verified gate")));
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn complete_site_coverage_caps_negative_aes_claim_at_observed() {
+        let dir = temp_path("coverage-negative-aes");
+        std::fs::create_dir_all(&dir).unwrap();
+        let case_path = dir.join("sample.traceui-case");
+        let trace_path = dir.join("sample.log");
+        let elf_path = dir.join("libtarget.so");
+        let coverage_path = dir.join("coverage.json");
+        std::fs::write(&trace_path, b"trace\n").unwrap();
+        std::fs::write(&elf_path, runtime_attestable_elf()).unwrap();
+        let identity = inspect_elf_binary(elf_path.to_str().unwrap()).unwrap();
+        let document = create_trace_analysis_case(
+            case_path.to_str().unwrap(),
+            "coverage negative AES",
+            Some(trace_path.to_str().unwrap()),
+            Some(elf_path.to_str().unwrap()),
+        )
+        .unwrap();
+        let trace_artifact = document
+            .case
+            .artifacts
+            .iter()
+            .find(|artifact| artifact.kind == TraceCaseArtifactKind::Trace)
+            .unwrap();
+        let claim_scope = format!("crypto:libtarget.so@{}", identity.binary_sha256);
+        let bundle = coverage_bundle(&identity, &trace_artifact.sha256, &claim_scope, true);
+        std::fs::write(&coverage_path, serde_json::to_vec_pretty(&bundle).unwrap()).unwrap();
+        let imported = add_trace_case_artifact(
+            case_path.to_str().unwrap(),
+            coverage_path.to_str().unwrap(),
+            None,
+            Some("complete coverage"),
+            Vec::new(),
+        )
+        .unwrap();
+        assert_eq!(
+            imported.artifact.kind,
+            TraceCaseArtifactKind::CoverageReport
+        );
+        assert_eq!(imported.artifact.parent_artifact_ids.len(), 2);
+        assert_eq!(imported.artifact.summary.coverage_gate_met, Some(true));
+        upsert_trace_case_claim(
+            case_path.to_str().unwrap(),
+            TraceCaseClaim {
+                claim_id: "negative-aes".to_string(),
+                statement: "当前范围没有 AES 算法。".to_string(),
+                scope: claim_scope,
+                status: TraceCaseClaimStatus::Verified,
+                coverage_requirement: TraceCaseCoverageRequirement::Auto,
+                supporting_evidence: vec![TraceCaseEvidenceRef {
+                    artifact_id: imported.artifact.artifact_id,
+                    locator: "coverage-reconciliation/complete-site-coverage".to_string(),
+                    description: "Exact-ELF-bound listed-site coverage.".to_string(),
+                }],
+                counter_evidence: Vec::new(),
+                missing_evidence: Vec::new(),
+                limitations: Vec::new(),
+                created_by: "test".to_string(),
+                created_at_ms: 1,
+                updated_at_ms: 1,
+            },
+        )
+        .unwrap();
+        let report = diagnose_trace_analysis_case(case_path.to_str().unwrap()).unwrap();
+        assert_eq!(report.coverage_reconciliations.len(), 1);
+        assert!(report.coverage_reconciliations[0].report.coverage_gate_met);
+        let audit = report
+            .claim_ledger_audit
+            .claims
+            .iter()
+            .find(|claim| claim.claim_id == "negative-aes")
+            .unwrap();
+        assert_eq!(audit.coverage_requirement, "negative-existence");
+        assert_eq!(audit.coverage_gate_status, "passed");
+        assert!(audit.coverage_gate_passed);
+        assert_eq!(audit.coverage_max_status, TraceCaseClaimStatus::Observed);
+        assert_eq!(audit.recommended_status, TraceCaseClaimStatus::Observed);
+        assert!(!audit.verification_gate_passed);
+        assert!(audit.blockers.iter().any(|blocker| {
+            blocker.contains("Coverage cannot by itself verify this negative-existence claim")
+        }));
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn partial_coverage_keeps_uncovered_offsets_and_capture_action() {
+        let dir = temp_path("coverage-partial");
+        std::fs::create_dir_all(&dir).unwrap();
+        let case_path = dir.join("sample.traceui-case");
+        let trace_path = dir.join("sample.log");
+        let elf_path = dir.join("libtarget.so");
+        let coverage_path = dir.join("coverage.json");
+        std::fs::write(&trace_path, b"trace\n").unwrap();
+        std::fs::write(&elf_path, runtime_attestable_elf()).unwrap();
+        let identity = inspect_elf_binary(elf_path.to_str().unwrap()).unwrap();
+        let document = create_trace_analysis_case(
+            case_path.to_str().unwrap(),
+            "partial coverage",
+            Some(trace_path.to_str().unwrap()),
+            Some(elf_path.to_str().unwrap()),
+        )
+        .unwrap();
+        let trace_artifact = document
+            .case
+            .artifacts
+            .iter()
+            .find(|artifact| artifact.kind == TraceCaseArtifactKind::Trace)
+            .unwrap();
+        let claim_scope = format!("ollvm:libtarget.so@{}", identity.binary_sha256);
+        let bundle = coverage_bundle(&identity, &trace_artifact.sha256, &claim_scope, false);
+        std::fs::write(&coverage_path, serde_json::to_vec_pretty(&bundle).unwrap()).unwrap();
+        let imported = add_trace_case_artifact(
+            case_path.to_str().unwrap(),
+            coverage_path.to_str().unwrap(),
+            None,
+            Some("partial coverage"),
+            Vec::new(),
+        )
+        .unwrap();
+        upsert_trace_case_claim(
+            case_path.to_str().unwrap(),
+            TraceCaseClaim {
+                claim_id: "complete-cfg".to_string(),
+                statement: "The complete CFG was recovered.".to_string(),
+                scope: claim_scope,
+                status: TraceCaseClaimStatus::Observed,
+                coverage_requirement: TraceCaseCoverageRequirement::Auto,
+                supporting_evidence: vec![TraceCaseEvidenceRef {
+                    artifact_id: imported.artifact.artifact_id,
+                    locator: "coverage-reconciliation/partial-site-coverage".to_string(),
+                    description: "Partial listed-site coverage.".to_string(),
+                }],
+                counter_evidence: Vec::new(),
+                missing_evidence: Vec::new(),
+                limitations: Vec::new(),
+                created_by: "test".to_string(),
+                created_at_ms: 1,
+                updated_at_ms: 1,
+            },
+        )
+        .unwrap();
+        let report = diagnose_trace_analysis_case(case_path.to_str().unwrap()).unwrap();
+        let coverage = &report.coverage_reconciliations[0].report;
+        assert_eq!(coverage.status, "partial-site-coverage");
+        assert_eq!(coverage.summary.uncovered_counts.instructions, 2);
+        assert!(coverage
+            .uncovered_samples
+            .blocks
+            .contains(&"0x1008".to_string()));
+        let audit = report
+            .claim_ledger_audit
+            .claims
+            .iter()
+            .find(|claim| claim.claim_id == "complete-cfg")
+            .unwrap();
+        assert_eq!(audit.coverage_gate_status, "partial");
+        assert!(!audit.coverage_gate_passed);
+        assert_eq!(
+            audit
+                .coverage_uncovered_counts
+                .as_ref()
+                .unwrap()
+                .instructions,
+            2
+        );
+        assert!(report
+            .next_actions
+            .iter()
+            .any(|action| action.action == "capture-uncovered-coverage-sites"));
+        assert!(report.capture_plan.targets.iter().any(|target| {
+            target.action == "capture-uncovered-coverage-sites"
+                && target
+                    .module_relative_offsets
+                    .contains(&"0x1008".to_string())
+        }));
         let _ = std::fs::remove_dir_all(dir);
     }
 

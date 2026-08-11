@@ -46,6 +46,7 @@
 - [x] angr Exact ELF Guard / Multi-seed Handoff：生成的手动 Python bridge 可嵌入 exact AArch64 ELF SHA-256 并在 angr 初始化前拒绝错误文件；同一捕获最多选择 32 个精确匹配 Frida 事件，独立生成 branch/dispatcher probes 并保留 provenance。
 - [x] OLLVM Condition Flag Profile：聚合条件值与 outcome，展示 NZCV N/Z/C/V set/clear 分布及缺失观察，帮助人工复核 opaque predicate 候选。
 - [x] Runtime Image Attestation：从 exact AArch64 ELF 生成 Frida 16.x 手动 hash 计划，严格回导核对 metadata/build-id 与 file-backed executable `PT_LOAD` bytes；完整覆盖仅能验证 `runtime-image:*` scope，抽样保持 Related，冲突保存为 counter-evidence。
+- [x] Coverage-aware Claim Gate：从 exact AArch64 ELF + 严格 OLLVM 动态报告生成手动 angr 静态清单，保存并复算 instruction/block/branch/function/edge 集合、source SHA 与截断状态；否定、全局恒定、穷举和完整 CFG claim 在 coverage 不足时自动降级，100% listed-site coverage 也不产生语义 Verified。
 
 ### 2.1 下一轮 AI 准确率强化顺序
 
@@ -55,15 +56,17 @@
 4. [x] 信息增益捕获规划：`trace-ui/information-gain-capture-plan-v1` 从 claim blocker、反证、state readiness、checkpoint/stall 与实验矩阵排序 exact offset/register/memory/controlled run；返回 competing hypotheses、success criteria 和 redundancy key，分数明确不是概率。
 5. [x] ABI/结构推断：`trace-ui/frida-abi-inference-v1` 从重复手动捕获推断 X0-X7 role、pointer+length、context、enter/leave mutation、base+displacement field 与 return shape；保留 exact event index，所有分类为 Candidate/Related。
 6. [x] 精度基准与 CI 门禁：`trace-ui/accuracy-benchmark-suite-v1` / report-v1 检查 replay/capture-plan、claim gate/status、Verified FP/FN、unexpected Verified 与 fixture error；CI 和 MCP handler smoke test 阻止工具注册正常但调用失效或置信度漂移。
+7. [x] Coverage-aware Claim Gate：`trace-ui/coverage-reconciliation-v1` / inspection-v1 显式绑定 exact ELF、source artifact SHA、claimScope 和静动态集合；Replay Doctor、Evidence Pack、Capture Plan、Benchmark、MCP/Tauri/GUI 全链路接入，伪造 summary 与未覆盖路径保持 blocked/unknown。
 
 ### 2.2 下一阶段准确率候选
 
-1. [ ] Coverage-aware Claim Gate：静态 CFG/函数范围与动态执行覆盖对账，限制“算法不存在”“分支恒定”“CFG 完整恢复”等否定/完备性结论的最高等级。
-2. [ ] Minimal Evidence Slice + typed provenance graph：导出带 hash 的原始 trace/register/memory/offset 小包，并显式连接 artifact/build/process/event 关系，避免 AI 只读摘要或跨身份混用证据。
-3. [ ] Memory object/alias/lifetime reconstruction：按 allocation、stack frame、base+offset、free/reuse 重建对象边界与别名，提高 ABI、污点和模拟状态判断。
-4. [ ] Exact-call record/replay summaries：由同 offset 的 Frida enter/leave 捕获生成有界外部调用摘要，让 Unicorn 在严格授权下跨越常见 call boundary，未知副作用继续停止。
-5. [ ] Counterfactual paired replay：同一 checkpoint 仅改变一个明确变量来搜索 opaque/dispatcher 反例，结果始终标为 hypothetical/counterexample candidate。
-6. [ ] Bounded SIMD/FP/TLS state packs 与更大真实 benchmark/fuzz corpus；GUI 增加 KAT 创建、ABI 和 benchmark 详情，减少人工参数错误。
+1. [ ] Minimal Evidence Slice + typed provenance graph：导出带 hash 的原始 trace/register/memory/offset 小包，并显式连接 artifact/build/process/event 关系，避免 AI 只读摘要或跨身份混用证据。
+2. [ ] Memory object/alias/lifetime reconstruction：按 allocation、stack frame、base+offset、free/reuse 重建对象边界与别名，提高 ABI、污点和模拟状态判断。
+3. [ ] Exact-call record/replay summaries：由同 offset 的 Frida enter/leave 捕获生成有界外部调用摘要，让 Unicorn 在严格授权下跨越常见 call boundary，未知副作用继续停止。
+4. [ ] Counterfactual paired replay：同一 checkpoint 仅改变一个明确变量来搜索 opaque/dispatcher 反例，结果始终标为 hypothetical/counterexample candidate。
+5. [ ] Cross-engine differential validation：对 Capstone/IDA/angr/Unicorn 的解码、block 边界、successor 和 stop reason 做结构化差异报告；一致只增加置信，冲突必须成为 counter-evidence，不能多数表决为真。
+6. [ ] Hypothesis/contradiction search planner：把“AES”“白盒”“opaque”“dispatcher”“完整 CFG”等假设拆成可证伪子命题，优先主动搜索 alternate outcome、wrong-key、wrong-build、alias reuse 和 dynamic-only edge 反例。
+7. [ ] Bounded SIMD/FP/TLS state packs 与更大真实 benchmark/fuzz corpus；GUI 增加 KAT 创建、ABI 和 benchmark 详情，减少人工参数错误。
 
 ## 3. 当前限制
 

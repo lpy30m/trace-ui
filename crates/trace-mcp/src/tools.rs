@@ -16,7 +16,9 @@ use trace_core::{
     api_types::TraceLine, apply_resource_validation, classify_flow_endpoints,
     compare_unicorn_ollvm_rounds as build_unicorn_round_comparison,
     generate_angr_ollvm_script_with_seeds_flow_identity_and_checkpoint,
-    generate_angr_state_seed as build_angr_state_seed, generate_frida_hook as build_frida_hook,
+    generate_angr_state_seed as build_angr_state_seed,
+    generate_coverage_reconciliation_script as build_coverage_reconciliation_script,
+    generate_frida_hook as build_frida_hook,
     generate_frida_ollvm_dispatcher_hook as build_frida_ollvm_dispatcher_hook,
     generate_frida_runtime_attestation_script as build_frida_runtime_attestation,
     generate_frida_unicorn_checkpoint_hook as build_frida_unicorn_checkpoint_hook,
@@ -24,6 +26,7 @@ use trace_core::{
     generate_ida_ollvm_script,
     generate_unicorn_ollvm_script_with_checkpoint_result as build_unicorn_ollvm_script,
     get_frida_capture_event as build_frida_capture_event,
+    inspect_coverage_reconciliation as build_coverage_reconciliation_inspection,
     inspect_crypto_semantic_kat_report as build_crypto_kat_inspection, inspect_elf_binary,
     inspect_frida_abi_capture as build_frida_abi_inference,
     inspect_runtime_attestation_capture as build_runtime_attestation_inspection,
@@ -32,18 +35,19 @@ use trace_core::{
     parse_unicorn_ollvm_result_bundle, save_crypto_semantic_kat_report as save_crypto_kat,
     score_evidence, search_frida_capture_events as build_frida_capture_event_search,
     summarize_dependency_graph, AnalysisEvidence, AngrOllvmFlowConfig, BuildOptions,
-    CryptoFunctionsOptions, CryptoKatAlgorithm, CryptoKatDirection, CryptoMaterialKind,
-    CryptoMaterialMultiTraceRequest, CryptoMaterialOptions, CryptoMaterialTraceCase,
-    CryptoSemanticKatRequest, DepTreeOptions, EvidenceScoreSignal, ForwardSliceOptions,
-    FridaAbiInferenceOptions, FridaArgumentKind, FridaArgumentSpec, FridaCaptureDirection,
-    FridaCaptureSearchOptions, FridaHookRequest, FridaOllvmDispatcherAtlasOptions,
-    FridaOllvmDispatcherHookOptions, FridaRuntimeAttestationRequest, FridaStalkerMode,
-    FridaUnicornCheckpointHookOptions, FridaUnicornRecaptureHookOptions, HashAlgorithm,
-    HashMatchRequest, HashTransformOptions, OllvmAnalysisOptions, OllvmMultiTraceRequest,
-    OllvmTraceCase, OllvmVersionMapRequest, OllvmVersionTraceCase, SearchOptions, SliceOptions,
-    StringQueryOptions, TraceDiffOptions, TraceEngine, UnicornOllvmConfig, UnicornOllvmRoundInput,
-    ValueEndian, ValueSearchKind, ValueSearchRequest, WhiteBoxMultiTraceRequest, WhiteBoxOptions,
-    WhiteBoxTraceCaseRequest, CRYPTO_SEMANTIC_KAT_SCHEMA,
+    CoverageReconciliationScriptRequest, CoverageScriptScopeKind, CryptoFunctionsOptions,
+    CryptoKatAlgorithm, CryptoKatDirection, CryptoMaterialKind, CryptoMaterialMultiTraceRequest,
+    CryptoMaterialOptions, CryptoMaterialTraceCase, CryptoSemanticKatRequest, DepTreeOptions,
+    EvidenceScoreSignal, ForwardSliceOptions, FridaAbiInferenceOptions, FridaArgumentKind,
+    FridaArgumentSpec, FridaCaptureDirection, FridaCaptureSearchOptions, FridaHookRequest,
+    FridaOllvmDispatcherAtlasOptions, FridaOllvmDispatcherHookOptions,
+    FridaRuntimeAttestationRequest, FridaStalkerMode, FridaUnicornCheckpointHookOptions,
+    FridaUnicornRecaptureHookOptions, HashAlgorithm, HashMatchRequest, HashTransformOptions,
+    OllvmAnalysisOptions, OllvmMultiTraceRequest, OllvmTraceCase, OllvmVersionMapRequest,
+    OllvmVersionTraceCase, SearchOptions, SliceOptions, StringQueryOptions, TraceDiffOptions,
+    TraceEngine, UnicornOllvmConfig, UnicornOllvmRoundInput, ValueEndian, ValueSearchKind,
+    ValueSearchRequest, WhiteBoxMultiTraceRequest, WhiteBoxOptions, WhiteBoxTraceCaseRequest,
+    CRYPTO_SEMANTIC_KAT_SCHEMA,
 };
 
 fn decode_hex_bytes(value: &str) -> Result<Vec<u8>, String> {
@@ -2124,6 +2128,7 @@ impl TraceToolHandler {
                 "unicorn_exact_seed_concrete_replay".to_string(),
                 "analysis_case_workspace".to_string(),
                 "replay_doctor".to_string(),
+                "coverage_aware_claim_gate".to_string(),
                 "ai_evidence_pack".to_string(),
                 "information_gain_capture_planning".to_string(),
                 "accuracy_benchmark_gate".to_string(),
@@ -3430,7 +3435,7 @@ impl TraceToolHandler {
 
     #[tool(
         name = "ingest_analysis_case_artifact",
-        description = "Hash and strictly parse one user-produced artifact into an existing .traceui-case workspace. Recognized artifacts include traces, exact ELF files, runtime attestations, Frida captures, Unicorn results, angr results, IDA annotations, OLLVM reports, analysis reports, and crypto reports. Runtime attestations bind exactly one static-binary parent and refuted captures remain counter-evidence. Invalid schemas, changed files, duplicate parent IDs, and unsupported exact-result identities are rejected. The tool only imports files; runtime execution remains manual."
+        description = "Hash and strictly parse one user-produced artifact into an existing .traceui-case workspace. Recognized artifacts include traces, exact ELF files, runtime attestations, Frida captures, Unicorn results, angr results, IDA annotations, OLLVM reports, coverage reconciliations, analysis reports, and crypto reports. Runtime attestations and coverage reports bind exactly one static-binary parent; coverage also requires exact source-artifact SHA parents. Refuted/mismatched artifacts remain counter-evidence. Invalid schemas, changed files, duplicate parent IDs, forged coverage summaries, and unsupported exact-result identities are rejected. The tool only imports files; runtime execution remains manual."
     )]
     async fn ingest_analysis_case_artifact(
         &self,
@@ -3452,7 +3457,7 @@ impl TraceToolHandler {
 
     #[tool(
         name = "diagnose_analysis_case",
-        description = "Run Replay Doctor over a .traceui-case workspace. It re-hashes every artifact, reruns strict parsers, strictly verifies bound runtime attestations, checks module/exact ELF provenance, compares compatible Unicorn rounds by exact capture offset, recognizes authorized closer checkpoint captures, separates observed/related/refuted/unknown claims, and returns deterministic next actions such as runtime recapture, post-call checkpoint, bounded angr, integrity repair, or stop. It never executes Frida, Unicorn, angr, IDA, or the target. All OLLVM/replay findings remain Candidate/Related."
+        description = "Run Replay Doctor over a .traceui-case workspace. It re-hashes every artifact, reruns strict parsers, strictly verifies bound runtime attestations and coverage reconciliations, checks module/exact ELF/source provenance, classifies negative/completeness/global-invariance/complete-CFG claims, compares compatible Unicorn rounds by exact capture offset, and returns deterministic next actions such as uncovered-site capture, runtime recapture, post-call checkpoint, bounded angr, integrity repair, or stop. It never executes Frida, Unicorn, angr, IDA, or the target. Coverage only caps claim level; all OLLVM/replay findings remain Candidate/Related."
     )]
     async fn diagnose_analysis_case(
         &self,
@@ -3504,8 +3509,86 @@ impl TraceToolHandler {
     }
 
     #[tool(
+        name = "generate_coverage_reconciliation_script",
+        description = "Generate a standalone Python/angr script for trace-ui/coverage-reconciliation-v1. It binds one exact AArch64 ELF SHA-256 and one strict OLLVM report, enumerates explicit static instruction/block/branch/function/edge sets for a module, dynamic-function closure, or bounded range, and keeps the dynamic observed sets separate. The user runs Python manually; Trace UI never installs or executes angr or the target. The resulting JSON must be imported with the exact ELF and source OLLVM artifact as parents. Recomputed coverage can only cap claim level and never proves AES absence, global opacity, complete CFG recovery, or all-input reachability."
+    )]
+    async fn generate_coverage_reconciliation_script(
+        &self,
+        Parameters(req): Parameters<GenerateCoverageReconciliationScriptRequest>,
+    ) -> Result<String, String> {
+        blocking(move || {
+            let scope_kind = match req.scope_kind {
+                CoverageScriptScopeKindRequest::Module => CoverageScriptScopeKind::Module,
+                CoverageScriptScopeKindRequest::FunctionClosure => {
+                    CoverageScriptScopeKind::FunctionClosure
+                }
+                CoverageScriptScopeKindRequest::Range => CoverageScriptScopeKind::Range,
+            };
+            let generated =
+                build_coverage_reconciliation_script(&CoverageReconciliationScriptRequest {
+                    static_binary_path: req.static_binary_path,
+                    ollvm_report_path: req.ollvm_report_path,
+                    claim_scope: req.claim_scope,
+                    scope_kind,
+                    range_start_offset: req.range_start_offset,
+                    range_end_offset: req.range_end_offset,
+                    max_instructions: req.max_instructions,
+                    max_blocks: req.max_blocks,
+                    max_edges: req.max_edges,
+                    max_functions: req.max_functions,
+                })?;
+            if let Some(output_path) = req.output_path {
+                let path = std::path::Path::new(&output_path);
+                let parent = path.parent().ok_or_else(|| {
+                    "coverage script output_path has no parent directory".to_string()
+                })?;
+                if !parent.exists() {
+                    return Err(format!(
+                        "coverage script output directory does not exist: {}",
+                        parent.display()
+                    ));
+                }
+                std::fs::write(path, generated.script.as_bytes())
+                    .map_err(|error| format!("failed to save coverage script: {error}"))?;
+                Ok(json(&serde_json::json!({
+                    "schema": generated.schema,
+                    "fileName": generated.file_name,
+                    "savedPath": path.to_string_lossy(),
+                    "bytesWritten": generated.script.len(),
+                    "moduleName": generated.module_name,
+                    "claimScope": generated.claim_scope,
+                    "expectedBinaryIdentity": generated.expected_binary_identity,
+                    "sourceOllvmSha256": generated.source_ollvm_sha256,
+                    "warnings": generated.warnings,
+                })))
+            } else {
+                Ok(json(&generated))
+            }
+        })
+        .await
+    }
+
+    #[tool(
+        name = "inspect_coverage_reconciliation",
+        description = "Strictly parse trace-ui/coverage-reconciliation-v1, recompute every count and basis-point value from canonical static/dynamic offset sets, verify all offsets against file-backed executable PT_LOAD bytes of the exact AArch64 ELF, and require every dynamic source SHA-256 to match a supplied source artifact file. Returns uncovered and dynamic-only samples plus a coverageGateMet value. A forged percentage/count, wrong ELF, missing source file, truncation, uncovered site, or dynamic-only site keeps the gate closed. Even a passed coverage gate is only a claim-level cap, never semantic proof."
+    )]
+    async fn inspect_coverage_reconciliation(
+        &self,
+        Parameters(req): Parameters<InspectCoverageReconciliationRequest>,
+    ) -> Result<String, String> {
+        blocking(move || {
+            Ok(json(&build_coverage_reconciliation_inspection(
+                &req.artifact_path,
+                &req.static_binary_path,
+                &req.source_artifact_paths,
+            )?))
+        })
+        .await
+    }
+
+    #[tool(
         name = "run_accuracy_benchmark",
-        description = "Run a strict trace-ui/accuracy-benchmark-suite-v1 over one to 128 .traceui-case fixtures. Measures declared replay/capture-plan drift, claim gate and recommended-status drift, Verified false positives/false negatives, unexpected Verified claims, and fixture errors. gateMet is false on any mismatch. This is a regression gate over reviewed fixtures, not new evidence that fixture labels are ground truth."
+        description = "Run a strict trace-ui/accuracy-benchmark-suite-v1 over one to 128 .traceui-case fixtures. Measures declared replay/capture-plan drift, claim and coverage gate/recommended-status drift, Verified false positives/false negatives, unexpected Verified claims, and fixture errors. gateMet is false on any mismatch. This is a regression gate over reviewed fixtures, not new evidence that fixture labels are ground truth."
     )]
     async fn run_accuracy_benchmark(
         &self,
@@ -3521,7 +3604,7 @@ impl TraceToolHandler {
 
     #[tool(
         name = "generate_analysis_case_evidence_pack",
-        description = "Build a bounded trace-ui/ai-evidence-pack-v1 from one .traceui-case for AI analysis. JSON or Markdown output lists each claim's Claim-Ledger recommended maximum status and keeps valid supporting evidence, valid counter-evidence, unknowns/next evidence needs, and invalid artifacts in separate sections. Every evidence item carries artifactId, artifact kind/label, raw locator, and parsed trace seq/line, memory range, module offset, or event index when explicitly encoded. max_tokens and max_items are enforced deterministically. The pack is context packaging, never new proof; summaries and descriptions cannot verify a claim."
+        description = "Build a bounded trace-ui/ai-evidence-pack-v1 from one .traceui-case for AI analysis. JSON or Markdown output lists each claim's Claim-Ledger recommended and coverage maximum status, preserves coverage gaps/unexecuted paths as unknowns, and keeps valid supporting evidence, counter-evidence, unknowns/next needs, and invalid artifacts in separate sections. Every evidence item carries artifactId, artifact kind/label, raw locator, and parsed trace seq/line, memory range, module offset, or event index when explicitly encoded. max_tokens and max_items are enforced deterministically. The pack is context packaging, never new proof; summaries and descriptions cannot verify a claim."
     )]
     async fn generate_analysis_case_evidence_pack(
         &self,
@@ -3549,7 +3632,7 @@ impl TraceToolHandler {
 
     #[tool(
         name = "audit_analysis_case_claims",
-        description = "Run the .traceui-case claim-ledger contradiction and evidence gate. It revalidates artifact integrity, separates supporting from counter evidence, blocks Verified when only structural/SHA evidence exists, and returns a recommended maximum status without asserting that any statement is true. OLLVM, Unicorn, and angr evidence alone remains Candidate/Related. Nothing is executed or mutated."
+        description = "Run the .traceui-case claim-ledger contradiction and evidence gate. It revalidates artifact integrity, separates supporting from counter evidence, auto-classifies negative-existence/completeness/global-invariance/complete-CFG wording, applies exact-scope coverage as a maximum-level cap, blocks Verified when only structural/SHA/coverage evidence exists, and returns a recommended maximum without asserting that any statement is true. OLLVM, Unicorn, angr, IDA, and coverage evidence alone remains Candidate/Related or Observed. Nothing is executed or mutated."
     )]
     async fn audit_analysis_case_claims(
         &self,
@@ -5833,12 +5916,14 @@ impl ServerHandler for TraceToolHandler {
              22. ABI candidates: infer_frida_abi over repeated manual captures to rank pointer+length, context, mutation, field-offset, and return-role candidates without claiming recovered types\n\n\
              23. Regression gate: run_accuracy_benchmark on reviewed positive/negative .traceui-case fixtures before accepting confidence-level changes\n\n\
              24. Bounded AI handoff: generate_analysis_case_evidence_pack in JSON or Markdown; preserve counter-evidence, unknowns, and invalid artifacts instead of sending an unbounded case dump\n\n\
+             25. Coverage-aware claims: generate_coverage_reconciliation_script from the exact ELF + OLLVM report, run angr manually, inspect_coverage_reconciliation, then import the JSON with exact ELF/source parents before making negative or completeness claims\n\n\
              Tips:\n\
              - session_id is optional when only one trace is open\n\
              - Use data_only=true in forward_taint_analysis and taint_analysis to reduce noise\n\
              - Background tasks are cooperative; cancel_analysis_task stops before later phases and saving\n\
              - Taint source @LINE values are 1-based; start_seq/end_seq filters are 0-based\n\
              - A disk ELF SHA-256 alone is not runtime proof; sampled runtime attestation remains Related and only complete executable-byte coverage can pass the runtime-image gate\n\
+             - A 100% coverage summary is ignored unless canonical static/dynamic sets, exact ELF ranges, and source hashes recompute; even then coverage cannot prove AES absence, global opaque branches, or a complete CFG\n\
              - analyze_function with node_id shows entry args (X0-X7) and return value\n\
              - Use addr_range to focus search/taint on a specific address range".to_string(),
         )
@@ -5849,12 +5934,39 @@ impl ServerHandler for TraceToolHandler {
 mod tests {
     use super::*;
 
+    fn coverage_smoke_elf() -> Vec<u8> {
+        let mut elf = vec![0u8; 8192];
+        elf[..4].copy_from_slice(b"\x7fELF");
+        elf[4] = 2;
+        elf[5] = 1;
+        elf[6] = 1;
+        elf[16..18].copy_from_slice(&3u16.to_le_bytes());
+        elf[18..20].copy_from_slice(&183u16.to_le_bytes());
+        elf[20..24].copy_from_slice(&1u32.to_le_bytes());
+        elf[32..40].copy_from_slice(&64u64.to_le_bytes());
+        elf[52..54].copy_from_slice(&64u16.to_le_bytes());
+        elf[54..56].copy_from_slice(&56u16.to_le_bytes());
+        elf[56..58].copy_from_slice(&1u16.to_le_bytes());
+        elf[64..68].copy_from_slice(&1u32.to_le_bytes());
+        elf[68..72].copy_from_slice(&5u32.to_le_bytes());
+        elf[72..80].copy_from_slice(&0u64.to_le_bytes());
+        elf[80..88].copy_from_slice(&0u64.to_le_bytes());
+        let size = elf.len() as u64;
+        elf[96..104].copy_from_slice(&size.to_le_bytes());
+        elf[104..112].copy_from_slice(&size.to_le_bytes());
+        elf[112..120].copy_from_slice(&0x1000u64.to_le_bytes());
+        for (index, byte) in elf[0x1000..].iter_mut().enumerate() {
+            *byte = (index % 251) as u8;
+        }
+        elf
+    }
+
     #[test]
     fn accuracy_tools_are_registered_with_manual_evidence_boundaries() {
         let router = TraceToolHandler::tool_router();
         assert_eq!(
             router.map.len(),
-            78,
+            80,
             "MCP tool count changed; update docs and this registry check"
         );
         for name in [
@@ -5862,6 +5974,8 @@ mod tests {
             "ingest_analysis_case_artifact",
             "diagnose_analysis_case",
             "plan_analysis_case_capture",
+            "generate_coverage_reconciliation_script",
+            "inspect_coverage_reconciliation",
             "run_accuracy_benchmark",
             "audit_analysis_case_claims",
             "upsert_analysis_case_experiment",
@@ -5896,6 +6010,20 @@ mod tests {
             .unwrap_or_default();
         assert!(benchmark_description.contains("false positives/false negatives"));
         assert!(benchmark_description.contains("not new evidence"));
+        let coverage_generate_description = router.map["generate_coverage_reconciliation_script"]
+            .attr
+            .description
+            .as_deref()
+            .unwrap_or_default();
+        assert!(coverage_generate_description.contains("runs Python manually"));
+        assert!(coverage_generate_description.contains("never proves AES absence"));
+        let coverage_inspect_description = router.map["inspect_coverage_reconciliation"]
+            .attr
+            .description
+            .as_deref()
+            .unwrap_or_default();
+        assert!(coverage_inspect_description.contains("forged percentage/count"));
+        assert!(coverage_inspect_description.contains("never semantic proof"));
         let experiment_description = router.map["upsert_analysis_case_experiment"]
             .attr
             .description
@@ -5956,6 +6084,7 @@ mod tests {
             "frida_abi_inference",
             "accuracy_benchmark_gate",
             "ai_evidence_pack",
+            "coverage_aware_claim_gate",
         ] {
             assert!(health.capabilities.iter().any(|value| value == capability));
         }
@@ -6021,7 +6150,112 @@ mod tests {
         let capture_path = dir.join("capture.json");
         let abi_path = dir.join("abi.json");
         let suite_path = dir.join("accuracy-suite.json");
+        let coverage_elf_path = dir.join("libtarget.so");
+        let ollvm_report_path = dir.join("ollvm.json");
+        let coverage_script_path = dir.join("coverage.py");
+        let coverage_result_path = dir.join("coverage.json");
         std::fs::write(&trace_path, b"trace\n").unwrap();
+        std::fs::write(&coverage_elf_path, coverage_smoke_elf()).unwrap();
+        let ollvm_report = trace_core::OllvmReport {
+            schema_version: "trace-ui/ollvm-v1".to_string(),
+            scope: trace_core::OllvmScope {
+                session_id: "coverage-smoke".to_string(),
+                node_id: Some(1),
+                function_name: Some("target".to_string()),
+                module_name: "libtarget.so".to_string(),
+                module_base: "0x70000000".to_string(),
+                start_seq: 0,
+                end_seq: 3,
+                child_calls_excluded: 0,
+            },
+            executed_instruction_count: 4,
+            unique_instruction_count: 4,
+            block_count: 2,
+            edge_count: 1,
+            blocks: vec![
+                trace_core::DynamicBasicBlock {
+                    block_id: "libtarget.so+0x100".to_string(),
+                    module_name: "libtarget.so".to_string(),
+                    start_offset: "0x100".to_string(),
+                    end_offset: "0x104".to_string(),
+                    start_address: "0x70000100".to_string(),
+                    end_address: "0x70000104".to_string(),
+                    visit_count: 1,
+                    predecessor_count: 0,
+                    successor_count: 1,
+                    terminal_operation: "b".to_string(),
+                    sample_seqs: vec![0],
+                    instructions: vec![
+                        trace_core::DynamicBlockInstruction {
+                            offset: "0x100".to_string(),
+                            address: "0x70000100".to_string(),
+                            disasm: "mov x0, x0".to_string(),
+                            execution_count: 1,
+                            sample_seq: 0,
+                        },
+                        trace_core::DynamicBlockInstruction {
+                            offset: "0x104".to_string(),
+                            address: "0x70000104".to_string(),
+                            disasm: "b 0x70000108".to_string(),
+                            execution_count: 1,
+                            sample_seq: 1,
+                        },
+                    ],
+                },
+                trace_core::DynamicBasicBlock {
+                    block_id: "libtarget.so+0x108".to_string(),
+                    module_name: "libtarget.so".to_string(),
+                    start_offset: "0x108".to_string(),
+                    end_offset: "0x10c".to_string(),
+                    start_address: "0x70000108".to_string(),
+                    end_address: "0x7000010c".to_string(),
+                    visit_count: 1,
+                    predecessor_count: 1,
+                    successor_count: 0,
+                    terminal_operation: "ret".to_string(),
+                    sample_seqs: vec![2],
+                    instructions: vec![
+                        trace_core::DynamicBlockInstruction {
+                            offset: "0x108".to_string(),
+                            address: "0x70000108".to_string(),
+                            disasm: "mov x0, x0".to_string(),
+                            execution_count: 1,
+                            sample_seq: 2,
+                        },
+                        trace_core::DynamicBlockInstruction {
+                            offset: "0x10c".to_string(),
+                            address: "0x7000010c".to_string(),
+                            disasm: "ret".to_string(),
+                            execution_count: 1,
+                            sample_seq: 3,
+                        },
+                    ],
+                },
+            ],
+            edges: vec![trace_core::DynamicCfgEdge {
+                source_block_id: "libtarget.so+0x100".to_string(),
+                target_block_id: "libtarget.so+0x108".to_string(),
+                source_offset: "0x100".to_string(),
+                target_offset: "0x108".to_string(),
+                kind: "direct".to_string(),
+                execution_count: 1,
+                sample_seq: 1,
+                backward: false,
+            }],
+            branch_profiles: Vec::new(),
+            dispatcher_candidates: Vec::new(),
+            opaque_branch_candidates: Vec::new(),
+            instructions_truncated: false,
+            blocks_truncated: false,
+            edges_truncated: false,
+            limitations: Vec::new(),
+            next_steps: Vec::new(),
+        };
+        std::fs::write(
+            &ollvm_report_path,
+            serde_json::to_vec_pretty(&ollvm_report).unwrap(),
+        )
+        .unwrap();
         trace_core::create_trace_analysis_case(
             case_path.to_str().unwrap(),
             "MCP accuracy tools",
@@ -6031,6 +6265,127 @@ mod tests {
         .unwrap();
 
         let handler = TraceToolHandler::new(Arc::new(TraceEngine::new()));
+        let coverage_generate_output = handler
+            .generate_coverage_reconciliation_script(Parameters(
+                GenerateCoverageReconciliationScriptRequest {
+                    static_binary_path: coverage_elf_path.to_string_lossy().into_owned(),
+                    ollvm_report_path: ollvm_report_path.to_string_lossy().into_owned(),
+                    claim_scope: "libtarget.so:target".to_string(),
+                    scope_kind: CoverageScriptScopeKindRequest::FunctionClosure,
+                    range_start_offset: None,
+                    range_end_offset: None,
+                    max_instructions: 500_000,
+                    max_blocks: 100_000,
+                    max_edges: 250_000,
+                    max_functions: 25_000,
+                    output_path: Some(coverage_script_path.to_string_lossy().into_owned()),
+                },
+            ))
+            .await
+            .unwrap();
+        let coverage_generated: serde_json::Value =
+            serde_json::from_str(&coverage_generate_output).unwrap();
+        assert_eq!(
+            coverage_generated["schema"],
+            "trace-ui/coverage-reconciliation-v1"
+        );
+        assert!(coverage_script_path.is_file());
+        let source_ollvm_sha256 = coverage_generated["sourceOllvmSha256"]
+            .as_str()
+            .unwrap()
+            .to_string();
+        let coverage_identity =
+            trace_core::inspect_elf_binary(coverage_elf_path.to_str().unwrap()).unwrap();
+        let mut coverage_bundle = trace_core::CoverageReconciliationBundle {
+            schema: trace_core::COVERAGE_RECONCILIATION_SCHEMA.to_string(),
+            module_name: "libtarget.so".to_string(),
+            architecture: "AArch64".to_string(),
+            binary_sha256: coverage_identity.binary_sha256.clone(),
+            build_id: coverage_identity.build_id.clone(),
+            claim_scope: "libtarget.so:target".to_string(),
+            scope: trace_core::CoverageScope {
+                kind: "function-closure".to_string(),
+                start_offset: "0x100".to_string(),
+                end_offset: "0x10c".to_string(),
+                function_offsets: vec!["0x100".to_string()],
+            },
+            static_inventory: trace_core::CoverageStaticInventory {
+                source_kind: "angr-cfgfast".to_string(),
+                source_version: Some("smoke".to_string()),
+                complete_for_scope: true,
+                instructions_truncated: false,
+                blocks_truncated: false,
+                branches_truncated: false,
+                functions_truncated: false,
+                edges_truncated: false,
+                instruction_offsets: vec![
+                    "0x100".to_string(),
+                    "0x104".to_string(),
+                    "0x108".to_string(),
+                    "0x10c".to_string(),
+                ],
+                block_offsets: vec!["0x100".to_string(), "0x108".to_string()],
+                branch_offsets: vec!["0x104".to_string()],
+                functions: vec![trace_core::CoverageFunctionRange {
+                    start_offset: "0x100".to_string(),
+                    end_offset: "0x10c".to_string(),
+                    name: Some("target".to_string()),
+                }],
+                edges: vec![trace_core::CoverageEdge {
+                    source_offset: "0x100".to_string(),
+                    target_offset: "0x108".to_string(),
+                }],
+            },
+            dynamic_runs: vec![trace_core::CoverageDynamicRun {
+                run_id: "coverage-smoke".to_string(),
+                source_artifact_sha256: source_ollvm_sha256,
+                capture_complete_for_scope: true,
+                instruction_offsets: vec![
+                    "0x100".to_string(),
+                    "0x104".to_string(),
+                    "0x108".to_string(),
+                    "0x10c".to_string(),
+                ],
+                block_offsets: vec!["0x100".to_string(), "0x108".to_string()],
+                branch_offsets: vec!["0x104".to_string()],
+                function_offsets: vec!["0x100".to_string()],
+                edges: vec![trace_core::CoverageEdge {
+                    source_offset: "0x100".to_string(),
+                    target_offset: "0x108".to_string(),
+                }],
+            }],
+            summary: trace_core::CoverageReconciliationSummary {
+                static_counts: trace_core::CoverageCounts::default(),
+                observed_static_counts: trace_core::CoverageCounts::default(),
+                uncovered_counts: trace_core::CoverageCounts::default(),
+                dynamic_only_counts: trace_core::CoverageCounts::default(),
+                coverage_basis_points: trace_core::CoverageBasisPoints::default(),
+                static_inventory_complete: false,
+                dynamic_capture_complete: false,
+                coverage_complete: false,
+            },
+            limitations: Vec::new(),
+        };
+        coverage_bundle.summary =
+            trace_core::recompute_coverage_reconciliation_summary(&coverage_bundle);
+        std::fs::write(
+            &coverage_result_path,
+            serde_json::to_vec_pretty(&coverage_bundle).unwrap(),
+        )
+        .unwrap();
+        let coverage_inspect_output = handler
+            .inspect_coverage_reconciliation(Parameters(InspectCoverageReconciliationRequest {
+                artifact_path: coverage_result_path.to_string_lossy().into_owned(),
+                static_binary_path: coverage_elf_path.to_string_lossy().into_owned(),
+                source_artifact_paths: vec![ollvm_report_path.to_string_lossy().into_owned()],
+            }))
+            .await
+            .unwrap();
+        let coverage_inspected: serde_json::Value =
+            serde_json::from_str(&coverage_inspect_output).unwrap();
+        assert_eq!(coverage_inspected["status"], "complete-site-coverage");
+        assert_eq!(coverage_inspected["coverageGateMet"], true);
+
         let kat_output = handler
             .verify_crypto_semantic_kat(Parameters(VerifyCryptoSemanticKatRequest {
                 algorithm: "sha256".to_string(),

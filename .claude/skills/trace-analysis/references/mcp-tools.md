@@ -271,8 +271,8 @@ Line numbers in taint `@LINE` specs are **1-based**; `start_seq`/`end_seq`/`seq`
 ## Analysis case / accuracy gates
 
 - **open_analysis_case** `{case_path,create?=false,title?,session_id?,primary_trace_path?,exact_binary_path?}` opens or creates a strict `trace-ui/case-v1` `.traceui-case`. Creating from a session records its trace artifact; `exact_binary_path` must be an AArch64 ELF. It stores SHA-256/provenance only and executes nothing.
-- **ingest_analysis_case_artifact** `{case_path,artifact_path,kind_hint?,label?,parent_artifact_ids?}` hashes and strictly parses one Trace/ELF/runtime-attestation/Frida/Unicorn/angr/IDA/OLLVM/analysis/crypto artifact. Runtime attestation must bind exactly one static-binary parent; a refuted capture is still accepted as counter-evidence. Duplicate content is deduplicated per parent; invalid parent IDs, schemas, identities, and non-AArch64 static binaries are rejected.
-- **diagnose_analysis_case** `{case_path,persist_generated_claims?=false}` runs `trace-ui/replay-doctor-v1`. It re-hashes artifacts, strictly verifies bound runtime attestations and Crypto KATs, compares compatible Unicorn rounds by exact module/build/seed offset, detects authorized closer captures, and returns `claimLedgerAudit`, `stateReadiness`, `experimentMatrix`, `runtimeAttestations`, `cryptoKats`, `capturePlan`, deterministic next actions, and scoped generated claims. It never runs Frida, Unicorn, angr, IDA, or the target.
+- **ingest_analysis_case_artifact** `{case_path,artifact_path,kind_hint?,label?,parent_artifact_ids?}` hashes and strictly parses one Trace/ELF/runtime-attestation/Frida/Unicorn/angr/IDA/OLLVM/coverage/analysis/crypto artifact. Runtime attestation must bind exactly one static-binary parent. A coverage report must bind exactly one static-binary parent and at least one non-binary dynamic/source parent whose SHA-256 covers every `dynamicRuns.sourceArtifactSha256`. Refuted/partial artifacts are still accepted as counter-evidence or unknowns. Duplicate content is deduplicated per parent; invalid parent IDs, schemas, identities, and non-AArch64 static binaries are rejected.
+- **diagnose_analysis_case** `{case_path,persist_generated_claims?=false}` runs `trace-ui/replay-doctor-v1`. It re-hashes artifacts, strictly verifies bound runtime attestations, Crypto KATs, and coverage reconciliations, compares compatible Unicorn rounds by exact module/build/seed offset, detects authorized closer captures, and returns `claimLedgerAudit`, `stateReadiness`, `experimentMatrix`, `runtimeAttestations`, `cryptoKats`, `coverageReconciliations`, `capturePlan`, deterministic next actions, and scoped generated claims. Uncovered block/branch samples become explicit capture targets/unknowns. It never runs Frida, Unicorn, angr, IDA, or the target.
 - **plan_analysis_case_capture** `{case_path,max_targets?=12}` returns the case's bounded
   `trace-ui/information-gain-capture-plan-v1`, truncated to 1-32 ranked targets. It combines claim
   blockers/counter-evidence, exact-ELF/runtime-attestation gaps, GPR/NZCV/stack/pointer/SIMD/system
@@ -280,21 +280,48 @@ Line numbers in taint `@LINE` specs are **1-based**; `start_seq`/`end_seq`/`seq`
   carries artifact/module/offset anchors when available, registers/memory to capture, competing
   hypotheses, success criteria, and a redundancy key. Scores are deterministic priorities, not
   probabilities; all execution remains manual and OLLVM/simulation results remain Candidate/Related.
+- **generate_coverage_reconciliation_script** `{static_binary_path,ollvm_report_path,claim_scope,
+  scope_kind?="function-closure",range_start_offset?,range_end_offset?,max_instructions?=500000,
+  max_blocks?=100000,max_edges?=250000,max_functions?=25000,output_path?}` strictly reads one exact
+  AArch64 ELF and one `trace-ui/ollvm-v1` report, embeds their identities/source SHA, and returns a
+  standalone Python/angr exporter for `trace-ui/coverage-reconciliation-v1`. Scope is the dynamic
+  function closure, whole module, or a canonical inclusive module-relative range. The script enumerates
+  explicit static instruction/block/branch/function/edge sets separately from the dynamic observed sets,
+  with completeness/truncation flags and recomputed basis points. When `output_path` is provided the MCP
+  tool saves the `.py` and returns bounded metadata; otherwise it returns the script inline. The user
+  runs it manually. Trace UI never installs or executes angr or the target.
+- **inspect_coverage_reconciliation** `{artifact_path,static_binary_path,source_artifact_paths?=[]}`
+  strictly parses a `trace-ui/coverage-reconciliation-v1` JSON, rejects unknown/forged fields, canonical
+  ordering/alignment errors, and recomputes every count and basis-point value from explicit sets. It
+  verifies the exact ELF SHA-256/Build ID, requires every offset/edge/function range to fall in file-backed
+  executable `PT_LOAD` bytes, and hashes the supplied source files to cover every dynamic source SHA.
+  Wrong ELF, missing source, static/dynamic truncation, uncovered, or dynamic-only sites keep
+  `coverageGateMet:false`. `complete-site-coverage` only caps claim level; it never proves AES absence,
+  global opacity, all-input reachability, exhaustive dispatcher discovery, or complete CFG recovery.
 - **generate_analysis_case_evidence_pack** `{case_path,format?="json",max_tokens?=8000,
   max_items?=256,include_generated_claims?=true}` builds `trace-ui/ai-evidence-pack-v1`. Token bounds are
   1024-65536 and combined entry bounds are 16-2048. It orders load-bearing/refuted/blocked claims,
-  reports each Claim Ledger recommended maximum status, and keeps valid supporting evidence, valid
+  reports each Claim Ledger recommended and coverage-maximum status, and keeps valid supporting evidence, valid
   counter-evidence, unknowns/next actions, and invalid artifacts in separate arrays/sections. Evidence
   retains artifact ID/kind/label and raw locator; explicit `seq`, `line`, `mem:ADDR:SIZE`, module offset,
   and event index syntax is parsed into fields. The result includes deterministic token estimates and
   total/omitted counts. JSON is intended for tool reasoning and Markdown for review. This is context
-  packaging only: descriptions, summaries, and the pack itself cannot open a verification gate.
-- **audit_analysis_case_claims** `{case_path}` returns only the contradiction/counter-evidence gate. Non-runtime `Verified` claims still need deterministic semantic/known-answer/exact-output evidence. A `runtime-image:*` Verified claim instead requires a supporting runtime-attestation artifact whose strict exact-ELF report is `verified-full`; a locator/description string, SHA identity, or OLLVM/Unicorn/angr structure cannot forge that gate.
+  packaging only: descriptions, summaries, and the pack itself cannot open a verification gate. Coverage
+  gaps are retained as `coverage-gap` unknowns rather than summarized away.
+- **audit_analysis_case_claims** `{case_path}` returns only the contradiction/counter-evidence gate. It
+  auto-classifies negative-existence, scope-complete, global-invariance, exhaustive-enumeration, and
+  complete-control-flow wording, requires an exact matching coverage artifact when applicable, and
+  returns `coverageRequirement`, `coverageGateStatus`, `coverageMaxStatus`, bound artifact IDs, and
+  uncovered counts. Negative-existence remains at most Observed; global-invariance/exhaustive/complete-CFG
+  structural claims remain at most Related. Non-runtime `Verified` claims still need deterministic
+  semantic/known-answer/exact-output evidence. A `runtime-image:*` Verified claim instead requires a
+  supporting runtime-attestation artifact whose strict exact-ELF report is `verified-full`; a locator/
+  description string, SHA identity, coverage, or OLLVM/Unicorn/angr structure cannot forge that gate.
 - **upsert_analysis_case_experiment** `{case_path,experiment_id?,label,binary_sha256?,key_group?,input_group?,environment_group?,artifact_ids?,controlled_variables?,changed_variables?,notes?}` records a controlled run. Replay Doctor finds pairs that differ on exactly one build/key/input/environment axis, missing Cartesian cells, and confounded comparisons. Runtime execution remains manual.
 - **run_accuracy_benchmark** `{suite_path}` runs a strict `trace-ui/accuracy-benchmark-suite-v1` over
   1-128 `.traceui-case` fixtures; relative case paths resolve from the suite directory. It reports
-  replay/capture-plan ranking drift, claim gate/recommended-status drift, Verified false positives/false
-  negatives, unexpected Verified claims, and fixture errors in
+  replay/capture-plan ranking drift, claim gate/recommended-status drift, coverage requirement/gate/
+  maximum-status drift, Verified false positives/false negatives, unexpected Verified claims, and fixture errors in
   `trace-ui/accuracy-benchmark-report-v1`. Any mismatch makes `gateMet:false`. This is a regression gate
   over reviewed fixtures, not new proof that fixture labels describe ground truth.
 - **diagnose_crypto_detection** `{session_id?,target_algorithm?="AES",static_binary_path?}` explains each detection stage: trace/index, magic constants, ARM64 crypto instructions, function attribution, software/S-box/schedule structure, semantic verification, and optional exact ELF reconciliation. `not-observed` is not absence. The static stage distinguishes `matched` from `completed-no-match`; only deterministic semantic recomputation can produce `verified`.

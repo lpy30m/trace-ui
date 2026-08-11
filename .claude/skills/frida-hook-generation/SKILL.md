@@ -18,7 +18,10 @@ Use `mcp__trace-ui__list_frida_hook_recipes`, `mcp__trace-ui__generate_frida_hoo
 For investigations spanning several captures or simulator rounds, use
 `mcp__trace-ui__open_analysis_case`, `mcp__trace-ui__ingest_analysis_case_artifact`,
 `mcp__trace-ui__diagnose_analysis_case`, and `mcp__trace-ui__audit_analysis_case_claims` to preserve
-strict artifact provenance and counter-evidence.
+strict artifact provenance and counter-evidence. If a later claim asserts absence, global branch
+invariance, exhaustive dispatcher discovery, or complete CFG recovery, use
+`mcp__trace-ui__generate_coverage_reconciliation_script` and
+`mcp__trace-ui__inspect_coverage_reconciliation`; a Frida capture alone cannot support that claim.
 
 ## Workflow
 
@@ -95,6 +98,11 @@ strict artifact provenance and counter-evidence.
     Call `plan_analysis_case_capture` after Replay Doctor when the next Hook location or memory window is
     uncertain; follow the highest relevant non-redundant target, remembering that its score is a priority,
     not a probability.
+15. If a conclusion derived from these captures says that AES/code/path/dispatcher is absent, a branch
+    is globally invariant, or the recovered CFG is complete, first produce a strict OLLVM report for the
+    matching scope, then generate the manual angr coverage reconciliation from that report and the exact
+    ELF. Inspect and import the result with both exact ELF and source parents. Frida hit counts, quiet
+    hooks, or a 100% serialized coverage field never prove nonexistence; unobserved paths stay unknown.
 
 ## Request fields
 
@@ -155,6 +163,9 @@ strict artifact provenance and counter-evidence.
   X29/X30 stay manual, and the generated Hook never attaches, spawns, loads, or executes Frida. For angr,
   keep `checkpoint_result_path` bound to the same prior result and do not reinterpret the capture as a
   branch or dispatcher seed.
+- A Hook that never fires is not evidence that the target, AES, branch outcome, or dispatcher does not
+  exist. Check module/build/offset identity and capture completeness, then use the strict coverage gate
+  for any absence or completeness wording; coverage still cannot prove crypto semantics.
 
 ## Frida 16 boundary
 
