@@ -459,6 +459,7 @@ export interface FridaHookRequest {
   arguments: FridaArgumentSpec[];
   captureRegisters: boolean;
   captureReturn: boolean;
+  captureExactCall?: boolean;
   captureBacktrace: boolean;
   stalker: FridaStalkerMode;
   stalkerDurationMs: number;
@@ -548,6 +549,15 @@ export interface FridaCaptureEvent {
   moduleBase: string | null;
   moduleSize: number | null;
   target: string | null;
+  targetOffset?: string | null;
+  callerModuleName?: string | null;
+  callerModuleBase?: string | null;
+  callerModuleSize?: number | null;
+  callSite?: string | null;
+  callSiteOffset?: string | null;
+  returnAddress?: string | null;
+  returnOffset?: string | null;
+  exactCallRecord?: boolean;
   dispatcherOffset: string | null;
   captureSessionId: string | null;
   flowId: string | null;
@@ -1202,6 +1212,174 @@ export interface UnicornSeedQuality {
   warnings: string[];
 }
 
+export interface ExactCallChangedRange {
+  startOffset: number;
+  endOffsetExclusive: number;
+  beforeHex: string;
+  afterHex: string;
+}
+
+export interface ExactCallMemoryEffect {
+  index: number;
+  label: string;
+  direction: string;
+  pointer: string;
+  byteLength: number;
+  baseRegister?: string | null;
+  displacement?: string | null;
+  beforeHex: string;
+  afterHex: string;
+  changedRanges: ExactCallChangedRange[];
+}
+
+export interface ExactCallRegisterEffect {
+  register: string;
+  before: string;
+  after: string;
+}
+
+export interface ExactCallCaptureCompleteness {
+  pairComplete: boolean;
+  sameThread: boolean;
+  eventOrderValid: boolean;
+  exactRecordMode: boolean;
+  exactTargetKnown: boolean;
+  exactCallSiteKnown: boolean;
+  exactReturnSiteKnown: boolean;
+  fullGprEnter: boolean;
+  fullGprLeave: boolean;
+  nzcvEnter: boolean;
+  nzcvLeave: boolean;
+  returnValueCaptured: boolean;
+  returnMatchesX0: boolean;
+  byteArrayPairsComplete: boolean;
+  noCaptureErrors: boolean;
+  noCaptureTruncation: boolean;
+  calleeSavedPreserved: boolean;
+  captureReady: boolean;
+  hiddenMemoryEffectsKnown: boolean;
+  simdFpEffectsKnown: boolean;
+  tlsEffectsKnown: boolean;
+  systemThreadEffectsKnown: boolean;
+  replayAuthorized: boolean;
+}
+
+export interface ExactCallRecord {
+  callId: string;
+  hookId: string;
+  functionName: string;
+  enterEventIndex: number;
+  leaveEventIndex: number;
+  threadId: number;
+  enterTimestampMs: number;
+  leaveTimestampMs: number;
+  durationMs: number;
+  targetModuleName: string;
+  targetModuleBase: string;
+  targetModuleSize: number;
+  targetAddress: string;
+  targetOffset: string;
+  callerModuleName: string;
+  callerModuleBase: string;
+  callerModuleSize: number;
+  callSite: string;
+  callSiteOffset: string;
+  returnAddress: string;
+  returnOffset: string;
+  entryRegisters: Record<string, string>;
+  exitRegisters: Record<string, string>;
+  registerEffects: ExactCallRegisterEffect[];
+  memoryEffects: ExactCallMemoryEffect[];
+  capturedMemoryBytes: number;
+  memoryEffectsTruncated: boolean;
+  returnValue: string;
+  completeness: ExactCallCaptureCompleteness;
+  status: string;
+  evidenceLevel: string;
+  blockers: string[];
+  warnings: string[];
+}
+
+export interface ExactCallSummaryRequest {
+  callerModuleName: string;
+  staticBinaryPath: string;
+  maxCalls: number;
+  maxMemoryBytesPerCall: number;
+}
+
+export interface ExactCallSummaryBundle {
+  schema: string;
+  request: ExactCallSummaryRequest;
+  sourceCapturePath: string;
+  sourceCaptureSha256: string;
+  exactBinaryIdentity: ElfBinaryIdentity;
+  calls: ExactCallRecord[];
+  pairedCallCount: number;
+  captureReadyCallCount: number;
+  incompleteCallCount: number;
+  unpairedEnterEventIndices: number[];
+  unpairedLeaveEventIndices: number[];
+  callsTruncated: boolean;
+  verificationGateMet: boolean;
+  warnings: string[];
+  limitations: string[];
+}
+
+export interface ExactCallReplayAssumptions {
+  capturedMemoryEffectsComplete: boolean;
+  noSimdFpSideEffects: boolean;
+  noTlsSideEffects: boolean;
+  noSystemRegisterOrSyscallEffects: boolean;
+  noThreadSignalOrCallbackEffects: boolean;
+  deterministicForExactPreconditions: boolean;
+}
+
+export interface ExactCallRegisterValue {
+  register: string;
+  value: string;
+}
+
+export interface ExactCallReplayAuthorization {
+  authorizationId: string;
+  callId: string;
+  status: string;
+  authorized: boolean;
+  evidenceLevel: string;
+  callerModuleName: string;
+  callerModuleBase: string;
+  callerModuleSize: number;
+  callSiteOffset: string;
+  returnOffset: string;
+  targetModuleName: string;
+  targetModuleBase: string;
+  targetModuleSize: number;
+  targetAddress: string;
+  targetOffset: string;
+  preconditionRegisters: ExactCallRegisterValue[];
+  registerWrites: ExactCallRegisterValue[];
+  memoryEffects: ExactCallMemoryEffect[];
+  returnValue: string;
+  assumptions: ExactCallReplayAssumptions;
+  blockers: string[];
+  limitations: string[];
+  verificationGateMet: boolean;
+}
+
+export interface ExactCallReplayAuthorizationBundle {
+  schema: string;
+  summaryPath: string;
+  summarySha256: string;
+  sourceCaptureSha256: string;
+  exactBinaryIdentity: ElfBinaryIdentity;
+  request: { callIds: string[]; assumptions: ExactCallReplayAssumptions };
+  authorizations: ExactCallReplayAuthorization[];
+  authorizedCount: number;
+  blockedCount: number;
+  verificationGateMet: boolean;
+  warnings: string[];
+  limitations: string[];
+}
+
 export interface UnicornSeedRecaptureWindow {
   label: string;
   baseRegister: string;
@@ -1228,6 +1406,7 @@ export interface UnicornOllvmScript {
   seedQualities: UnicornSeedQuality[];
   seedRecapturePlans: UnicornSeedRecapturePlan[];
   expectedBinaryIdentity: ElfBinaryIdentity;
+  exactCallAuthorizations?: UnicornExactCallAuthorizationProvenance[];
   config: UnicornOllvmConfig;
   warnings: string[];
 }
@@ -1271,6 +1450,31 @@ export interface UnicornCallBoundary {
   returnOffset: string | null;
 }
 
+export interface UnicornExactCallAuthorizationProvenance {
+  authorizationId: string;
+  callId: string;
+  callSiteOffset: string;
+  returnOffset: string;
+  targetModuleName: string;
+  targetOffset: string;
+  preconditionRegisterCount: number;
+  registerWriteCount: number;
+  memoryEffectCount: number;
+}
+
+export interface UnicornExactCallReplay {
+  authorizationId: string;
+  callId: string;
+  callSiteOffset: string;
+  targetAddress: string | null;
+  targetOffset: string | null;
+  returnOffset: string;
+  status: string;
+  reason: string;
+  appliedRegisterCount: number;
+  appliedMemoryEffectCount: number;
+}
+
 export interface UnicornReplayRun {
   sourceEventIndex: number;
   seedKind: string;
@@ -1292,6 +1496,7 @@ export interface UnicornReplayRun {
   memoryWrites: UnicornMemoryWrite[];
   memoryWritesTruncated: boolean;
   callBoundaries: UnicornCallBoundary[];
+  exactCallReplays?: UnicornExactCallReplay[];
   missingMemory: UnicornMissingMemory[];
   warnings: string[];
   error: string | null;
@@ -2086,11 +2291,14 @@ export type TraceCaseArtifactKind =
   | "static-binary"
   | "runtime-attestation"
   | "frida-capture"
+  | "exact-call-summary"
+  | "exact-call-authorization"
   | "unicorn-result"
   | "angr-result"
   | "ida-annotations"
   | "ollvm-report"
   | "coverage-report"
+  | "evidence-slice"
   | "analysis-report"
   | "crypto-kat"
   | "crypto-report"
@@ -2187,6 +2395,161 @@ export interface CoverageReconciliationInspectionReport {
   limitations: string[];
 }
 
+export interface EvidenceSliceTraceSessionBinding {
+  artifactId: string;
+  sessionId: string;
+}
+
+export interface MinimalEvidenceSliceRequest {
+  casePath: string;
+  traceSessionBindings: EvidenceSliceTraceSessionBinding[];
+  claimIds: string[];
+  includeGeneratedClaims: boolean;
+  includeSensitiveValues: boolean;
+  contextBefore: number;
+  contextAfter: number;
+  moduleBytesBefore: number;
+  moduleBytesAfter: number;
+  maxMemoryBytesPerRecord: number;
+  maxRecords: number;
+  maxTotalPayloadBytes: number;
+}
+
+export interface EvidenceSliceConfig {
+  includeGeneratedClaims: boolean;
+  includeSensitiveValues: boolean;
+  contextBefore: number;
+  contextAfter: number;
+  moduleBytesBefore: number;
+  moduleBytesAfter: number;
+  maxMemoryBytesPerRecord: number;
+  maxRecords: number;
+  maxTotalPayloadBytes: number;
+}
+
+export interface EvidenceSliceLocator {
+  raw: string;
+  traceSeq?: number;
+  traceLine?: number;
+  memoryAddress?: string;
+  memorySize?: number;
+  memoryRange?: string;
+  moduleOffset?: string;
+  eventIndex?: number;
+}
+
+export interface EvidenceSliceSourceArtifact {
+  artifactId: string;
+  kind: TraceCaseArtifactKind;
+  label: string;
+  storedPath: string;
+  sha256: string;
+  fileSize: number;
+  parentArtifactIds: string[];
+  role: string;
+}
+
+export interface EvidenceSliceReference {
+  referenceId: string;
+  claimId: string;
+  claimSource: string;
+  claimFingerprint: string;
+  role: "supporting" | "counter";
+  artifactId: string;
+  locator: EvidenceSliceLocator;
+  description: string;
+  referenceFingerprint: string;
+  status: string;
+  recordIds: string[];
+  warnings: string[];
+}
+
+export interface EvidenceSliceRecord {
+  recordId: string;
+  sourceArtifactId: string;
+  locator: EvidenceSliceLocator;
+  contentSha256: string;
+  truncated: boolean;
+  payload: { kind: string; data: unknown };
+}
+
+export interface TypedProvenanceNode {
+  nodeId: string;
+  kind: string;
+  label: string;
+  attributes: Record<string, string>;
+}
+
+export interface TypedProvenanceEdge {
+  edgeId: string;
+  fromNodeId: string;
+  toNodeId: string;
+  relation: string;
+}
+
+export interface TypedProvenanceGraph {
+  nodes: TypedProvenanceNode[];
+  edges: TypedProvenanceEdge[];
+}
+
+export interface MinimalEvidenceSliceSummary {
+  selectedClaimCount: number;
+  selectedReferenceCount: number;
+  materializedReferenceCount: number;
+  unresolvedReferenceCount: number;
+  sourceArtifactCount: number;
+  recordCount: number;
+  truncatedRecordCount: number;
+  traceLineRecordCount: number;
+  memoryRecordCount: number;
+  fridaEventRecordCount: number;
+  moduleBytesRecordCount: number;
+  jsonFragmentRecordCount: number;
+  containsSensitiveValues: boolean;
+  payloadBytes: number;
+  materializationComplete: boolean;
+}
+
+export interface MinimalEvidenceSliceBundle {
+  schema: string;
+  sliceId: string;
+  generatedAtMs: number;
+  contentSha256: string;
+  content: {
+    caseId: string;
+    caseTitle: string;
+    config: EvidenceSliceConfig;
+    selectedClaimIds: string[];
+    sourceArtifacts: EvidenceSliceSourceArtifact[];
+    references: EvidenceSliceReference[];
+    records: EvidenceSliceRecord[];
+    provenance: TypedProvenanceGraph;
+    summary: MinimalEvidenceSliceSummary;
+    warnings: string[];
+    limitations: string[];
+  };
+}
+
+export interface MinimalEvidenceSliceInspectionReport {
+  schema: string;
+  sliceId: string;
+  status: string;
+  contentSha256Matched: boolean;
+  sourceArtifactsMatched: boolean;
+  claimBindingsMatched: boolean;
+  generatedClaimBindingsRevalidated: boolean;
+  recordContentMatched: boolean;
+  provenanceGraphValid: boolean;
+  summaryRecomputed: MinimalEvidenceSliceSummary;
+  sourceArtifactIds: string[];
+  staleClaimIds: string[];
+  unrevalidatedGeneratedClaimIds: string[];
+  mismatchedRecordIds: string[];
+  blockers: string[];
+  warnings: string[];
+  limitations: string[];
+}
+
 export interface TraceCaseArtifactSummary {
   schema?: string;
   moduleName?: string;
@@ -2208,6 +2571,18 @@ export interface TraceCaseArtifactSummary {
   coverageObservedStaticCounts?: CoverageCounts;
   coverageUncoveredCounts?: CoverageCounts;
   coverageBasisPoints?: CoverageBasisPoints;
+  evidenceSliceStatus?: string;
+  evidenceSliceMaterializationComplete?: boolean;
+  evidenceSliceClaimCount?: number;
+  evidenceSliceReferenceCount?: number;
+  evidenceSliceRecordCount?: number;
+  evidenceSliceUnresolvedReferenceCount?: number;
+  evidenceSliceTruncatedRecordCount?: number;
+  evidenceSliceContainsSensitiveValues?: boolean;
+  exactCallCaptureReadyCount?: number;
+  exactCallIncompleteCount?: number;
+  exactCallAuthorizedCount?: number;
+  exactCallBlockedCount?: number;
   completeExecutableCoverage?: boolean;
   totalExecutableBytes?: number;
   selectedExecutableBytes?: number;
@@ -2469,6 +2844,38 @@ export interface TraceCaseRuntimeAttestationReport {
   report: RuntimeAttestationInspectionReport;
 }
 
+export interface TraceCaseExactCallSummaryReport {
+  artifactId: string;
+  exactBinaryArtifactId: string;
+  sourceCaptureArtifactId: string;
+  callerModuleName: string;
+  sourceCaptureSha256: string;
+  binarySha256: string;
+  pairedCallCount: number;
+  captureReadyCallCount: number;
+  incompleteCallCount: number;
+  captureReadyCallIds: string[];
+  verificationGateMet: boolean;
+  warnings: string[];
+  limitations: string[];
+}
+
+export interface TraceCaseExactCallAuthorizationReport {
+  artifactId: string;
+  exactBinaryArtifactId: string;
+  summaryArtifactId: string;
+  sourceCaptureArtifactId: string;
+  summarySha256: string;
+  binarySha256: string;
+  authorizedCount: number;
+  blockedCount: number;
+  authorizedCallIds: string[];
+  blockedCallIds: string[];
+  verificationGateMet: boolean;
+  warnings: string[];
+  limitations: string[];
+}
+
 export interface TraceCaseCryptoKatReport {
   artifactId: string;
   report: CryptoSemanticKatReport;
@@ -2479,6 +2886,13 @@ export interface TraceCaseCoverageReport {
   exactBinaryArtifactId: string;
   sourceArtifactIds: string[];
   report: CoverageReconciliationInspectionReport;
+}
+
+export interface TraceCaseEvidenceSliceReport {
+  artifactId: string;
+  selectedClaimIds: string[];
+  sourceArtifactIds: string[];
+  report: MinimalEvidenceSliceInspectionReport;
 }
 
 export interface ReplayDoctorReport {
@@ -2496,8 +2910,11 @@ export interface ReplayDoctorReport {
   experimentMatrix: TraceCaseExperimentMatrixReport;
   capturePlan: InformationGainCapturePlan;
   runtimeAttestations: TraceCaseRuntimeAttestationReport[];
+  exactCallSummaries: TraceCaseExactCallSummaryReport[];
+  exactCallAuthorizations: TraceCaseExactCallAuthorizationReport[];
   cryptoKats: TraceCaseCryptoKatReport[];
   coverageReconciliations: TraceCaseCoverageReport[];
+  evidenceSlices: TraceCaseEvidenceSliceReport[];
   unicornRoundComparison?: UnicornOllvmRoundComparisonReport;
   warnings: string[];
   limitations: string[];
@@ -2575,4 +2992,174 @@ export interface FunctionInspection {
   memoryWrites: MemTouch[];
   scannedLines: number;
   ioTruncated: boolean;
+}
+
+export interface MemoryAliasObservation {
+  seq: number;
+  sourceKind: string;
+  source: string;
+  pointer: string;
+  offset: string;
+  relation: string;
+  lifetimeState: string;
+  evidenceLevel: string;
+}
+
+export interface MemoryAccessSample {
+  seq: number;
+  address: string;
+  size: number;
+  kind: string;
+  instructionAddress: string;
+}
+
+export interface MemoryObjectAccessSummary {
+  readCount: number;
+  writeCount: number;
+  firstAccessSeq: number | null;
+  lastAccessSeq: number | null;
+  firstReadSeq: number | null;
+  lastReadSeq: number | null;
+  firstWriteSeq: number | null;
+  lastWriteSeq: number | null;
+}
+
+export interface MemoryFieldWindow {
+  offset: string;
+  endOffset: string;
+  readCount: number;
+  writeCount: number;
+  firstSeq: number;
+  lastSeq: number;
+  sampleAddresses: string[];
+}
+
+export interface MemoryObjectRecord {
+  objectId: string;
+  kind: string;
+  generation: number;
+  baseAddress: string;
+  endAddress: string | null;
+  size: number | null;
+  startSeq: number;
+  endSeq: number | null;
+  allocationCallSeq: number | null;
+  releaseCallSeq: number | null;
+  allocator: string | null;
+  releaseFunction: string | null;
+  releaseReason: string | null;
+  callNodeId: number | null;
+  parentCallNodeId: number | null;
+  functionName: string | null;
+  entrySp: string | null;
+  exitSp: string | null;
+  lifecycleState: string;
+  evidenceLevel: string;
+  accessSummary: MemoryObjectAccessSummary;
+  accessSamples: MemoryAccessSample[];
+  accessSamplesTruncated: boolean;
+  aliases: MemoryAliasObservation[];
+  aliasesTruncated: boolean;
+  fieldWindows: MemoryFieldWindow[];
+  fieldWindowsTruncated: boolean;
+  warnings: string[];
+}
+
+export interface MemoryObjectAnomaly {
+  kind: string;
+  status: string;
+  seq: number;
+  address: string | null;
+  objectId: string | null;
+  functionName: string | null;
+  accessKind: string | null;
+  accessSize: number | null;
+  instructionAddress: string | null;
+  occurrenceCount: number;
+  reason: string;
+  counterEvidence: string[];
+  requiredEvidence: string[];
+}
+
+export interface MemoryRuntimeCluster {
+  clusterId: string;
+  baseAddress: string;
+  endAddress: string;
+  pageCount: number;
+  firstSeq: number;
+  lastSeq: number;
+  readCount: number;
+  writeCount: number;
+  sampleAddresses: string[];
+  evidenceLevel: string;
+  rationale: string;
+}
+
+export interface MemoryObjectStatistics {
+  totalObjects: number;
+  heapObjects: number;
+  mmapObjects: number;
+  stackFrameObjects: number;
+  activeAtScopeEnd: number;
+  releasedOrEnded: number;
+  reusedAddressCount: number;
+  failedAllocationCount: number;
+  lifecycleUnknownCount: number;
+  processedAccessCount: number;
+  attributedAccessCount: number;
+  unattributedAccessCount: number;
+  aliasCount: number;
+  anomalyCount: number;
+}
+
+export interface MemoryObjectGraphReport {
+  schemaVersion: string;
+  scope: { startSeq: number; endSeq: number };
+  objects: MemoryObjectRecord[];
+  runtimeClusters: MemoryRuntimeCluster[];
+  anomalies: MemoryObjectAnomaly[];
+  statistics: MemoryObjectStatistics;
+  objectsTruncated: boolean;
+  runtimeClustersTruncated: boolean;
+  anomaliesTruncated: boolean;
+  accessesTruncated: boolean;
+  verificationGateMet: boolean;
+  limitations: string[];
+  nextSteps: string[];
+}
+
+export interface MemoryPointerObjectMatch {
+  objectId: string;
+  kind: string;
+  generation: number;
+  baseAddress: string;
+  size: number | null;
+  offset: string;
+  lifetimeStateAtSeq: string;
+  evidenceLevel: string;
+  rationale: string;
+}
+
+export interface MemoryRegisterAlias {
+  register: string;
+  value: string;
+  relation: string;
+  displacement: string;
+  objectId: string | null;
+  evidenceLevel: string;
+}
+
+export interface MemoryPointerExplanation {
+  schemaVersion: string;
+  address: string;
+  seq: number;
+  objectMatches: MemoryPointerObjectMatch[];
+  registerAliases: MemoryRegisterAlias[];
+  callAliases: MemoryAliasObservation[];
+  nearbyAccesses: MemoryAccessSample[];
+  assessment: string;
+  risks: string[];
+  unknowns: string[];
+  nextSteps: string[];
+  verificationGateMet: boolean;
 }

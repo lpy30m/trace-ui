@@ -51,6 +51,7 @@ fn request(
         capture_registers: true,
         capture_return: true,
         capture_backtrace: false,
+        capture_exact_call: false,
         stalker: FridaStalkerMode::Off,
         stalker_duration_ms: 10_000,
         max_bytes,

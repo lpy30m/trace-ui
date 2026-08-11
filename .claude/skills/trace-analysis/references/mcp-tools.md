@@ -30,6 +30,23 @@ Line numbers in taint `@LINE` specs are **1-based**; `start_seq`/`end_seq`/`seq`
   historical-memory, and exact trace-text hits. Memory hits expose \`addr\`, \`firstSeq\`, \`lastSeq\`,
   and \`writeSeqs\`. It searches digest bytes; use \`analyze_known_digest\` to recompute candidate inputs.
 
+## Memory objects / aliases / lifetime
+
+- **reconstruct_memory_objects** `{session_id?,start_seq?,end_seq?,include_stack_frames?=true,
+  include_runtime_clusters?=true,max_objects?=1000,max_aliases_per_object?=64,
+  max_field_windows_per_object?=64,max_access_samples_per_object?=16,max_anomalies?=256,
+  max_runtime_clusters?=256,max_accesses?=2000000,max_stack_distance?=1048576}` returns
+  `trace-ui/memory-object-graph-v1`. It reconstructs allocation/mmap/stack/runtime-cluster candidates,
+  object generations, bounds, release/reuse state, base+offset aliases, field windows, nearby accesses,
+  and Candidate access-after-lifetime/out-of-bounds leads. Missing allocator/free calls, trace truncation,
+  and unattributed pages remain explicit unknowns. The result saves an `analysis_id` and never proves
+  ownership, type, a memory-safety defect, or exploitability.
+- **explain_memory_pointer** `{session_id?,address,seq?,include_stack_frames?=true}` explains one pointer
+  at an exact 0-based sequence using the reconstructed allocation generation, live/released state,
+  interior offset, register/call-argument aliases, field windows, and nearby access samples. Use it before
+  treating equal absolute addresses across time as one buffer. A released-only or out-of-bounds match is
+  Candidate/Related evidence and requires exact trace/allocator counter-evidence review.
+
 ## Crypto
 
 - **analyze_crypto_implementations** `{algorithm?="aes", static_binary_path?}` → preferred implementation
@@ -84,7 +101,8 @@ Line numbers in taint `@LINE` specs are **1-based**; `start_seq`/`end_seq`/`seq`
   OpenSSL/BoringSSL and Apple CommonCrypto MD5/SHA, EVP, HMAC, PBKDF2, and CCCrypt call shapes. Each
   recipe includes evidence roles and ABI/algorithm warnings; applying one only prefills generation.
 - **generate_frida_hook** `{module_name, symbol?|offset?, function_name?, arguments?,
-  capture_registers?=true, capture_return?=true, capture_backtrace?=false, stalker?=off,
+  capture_registers?=true, capture_return?=true, capture_backtrace?=false,
+  capture_exact_call?=false, stalker?=off,
   stalker_duration_ms?=10000, max_bytes?=256}` returns a bounded JavaScript hook using the Frida 16.x
   APIs. Each argument selects X0-X7 with `kind` (`integer`, `pointer`, `utf8String`, `utf16String`,
   `byteArray`), `direction` (`input`, `output`, `inOut`), and one optional length source: fixed `length`,
@@ -93,6 +111,26 @@ Line numbers in taint `@LINE` specs are **1-based**; `start_seq`/`end_seq`/`seq`
   emits `trace-ui/frida-hook-v1` messages and `TRACE_UI_JSON` strict-JSON log lines. It is generated
   only; the user manually attaches and loads it. `capture_registers:true` records X0-X28, FP/LR/SP/PC,
   plus NZCV when the Frida 16 ARM64 context exposes it; buffer argument selection remains X0-X7.
+  `capture_exact_call:true` requires register and return capture, captures every configured argument on
+  enter and leave, and emits exact caller/call-site/target/`PC+4` return metadata under one
+  `hookId+callId`. It contains sensitive state and does not itself authorize replay.
+- **summarize_exact_calls** `{capture_path,caller_module_name,static_binary_path,max_calls?=1024,
+  max_memory_bytes_per_call?=1048576,output_path?}` strictly recomputes paired exact-call records from a
+  user capture and exact AArch64 caller ELF. It reports full GPR/NZCV/return/register differences,
+  paired byteArray mutations, truncation/read errors, callee-saved violations, unpaired events, exact
+  call-site/target/return, and `captureReady`. Hidden memory, SIMD/FP, TLS/errno, system/syscall, and
+  asynchronous effects remain unknown. `verificationGateMet` is always false.
+- **authorize_exact_call_replay** `{summary_path,static_binary_path,call_ids,
+  captured_memory_effects_complete?=false,no_simd_fp_side_effects?=false,
+  no_tls_side_effects?=false,no_system_register_or_syscall_effects?=false,
+  no_thread_signal_or_callback_effects?=false,deterministic_for_exact_preconditions?=false,
+  output_path?}` reopens and recomputes the summary and exact ELF. One to 64 selected calls remain
+  blocked unless all six assumptions are explicitly true and every intrinsic capture check passes.
+  Authorized records are Candidate/Related replay effects, contain sensitive state, and never prove API
+  semantics or set `verificationGateMet:true`. When imported into an Analysis Case, ingest the exact ELF
+  and source Frida capture before the summary, then ingest the authorization. The case auto-binds and
+  strictly recomputes summary parents (capture + ELF) and authorization parents (summary + same ELF);
+  parent integrity or parser drift invalidates the downstream artifact.
 - **generate_frida_runtime_attestation** `{module_name,static_binary_path,window_bytes?=4096,
   max_windows?=1024}` reads the exact AArch64 ELF, maps ELF-header/Build-ID and file-backed executable
   `PT_LOAD` windows to module-relative offsets, embeds expected SHA-256 values and a pure JavaScript
@@ -241,14 +279,17 @@ Line numbers in taint `@LINE` specs are **1-based**; `start_seq`/`end_seq`/`seq`
   `frida_capture_path`, one to 32 exact `frida_event_indices` (legacy `frida_event_index` is accepted),
   mandatory `static_binary_path`, and bounded concrete limits: `max_instructions?=50000`,
   `timeout_ms?=5000`, `max_memory_writes?=4096`, `max_recorded_offsets?=50000`,
-  `stop_on_call?=true`, `loop_visit_limit?=2`, and optional `checkpoint_result_path`. Every event must
+  `stop_on_call?=true`, `loop_visit_limit?=2`, optional `checkpoint_result_path`, and optional
+  `exact_call_authorization_paths` (up to 16 strict authorization artifacts / 64 calls). Every event must
   exactly match an opaque branch, condition-source offset, dispatcher entry, or—when the prior result is
   supplied—a supported checkpoint offset authorized from the same module and exact ELF SHA-256. The
   generated Python requires Unicorn, Capstone, and
   pyelftools, verifies the AArch64 ELF SHA-256, maps PT_LOAD segments, applies captured registers and
   byteArray memory, and stops explicitly at next-dispatcher, return, call, loop, missing register/memory,
   unsupported SIMD/system state, timeout, or bounds. It never silently treats uncaptured runtime memory
-  as valid zero state.
+  as valid zero state. An authorized external call is crossed only when call-site, target, `PC+4`
+  return, X0-X7/SP, and captured input memory all match exactly; mismatch/apply/limit conditions are
+  explicit stop reasons and unknown calls remain `call-boundary`.
 - **inspect_unicorn_ollvm_results** `{file_path}` strictly validates
   `trace-ui/unicorn-ollvm-v1`, including exact ELF identity, per-event concrete replay runs,
   dispatcher transition groups, register changes, memory writes, missing-state evidence, and bounded
@@ -271,8 +312,8 @@ Line numbers in taint `@LINE` specs are **1-based**; `start_seq`/`end_seq`/`seq`
 ## Analysis case / accuracy gates
 
 - **open_analysis_case** `{case_path,create?=false,title?,session_id?,primary_trace_path?,exact_binary_path?}` opens or creates a strict `trace-ui/case-v1` `.traceui-case`. Creating from a session records its trace artifact; `exact_binary_path` must be an AArch64 ELF. It stores SHA-256/provenance only and executes nothing.
-- **ingest_analysis_case_artifact** `{case_path,artifact_path,kind_hint?,label?,parent_artifact_ids?}` hashes and strictly parses one Trace/ELF/runtime-attestation/Frida/Unicorn/angr/IDA/OLLVM/coverage/analysis/crypto artifact. Runtime attestation must bind exactly one static-binary parent. A coverage report must bind exactly one static-binary parent and at least one non-binary dynamic/source parent whose SHA-256 covers every `dynamicRuns.sourceArtifactSha256`. Refuted/partial artifacts are still accepted as counter-evidence or unknowns. Duplicate content is deduplicated per parent; invalid parent IDs, schemas, identities, and non-AArch64 static binaries are rejected.
-- **diagnose_analysis_case** `{case_path,persist_generated_claims?=false}` runs `trace-ui/replay-doctor-v1`. It re-hashes artifacts, strictly verifies bound runtime attestations, Crypto KATs, and coverage reconciliations, compares compatible Unicorn rounds by exact module/build/seed offset, detects authorized closer captures, and returns `claimLedgerAudit`, `stateReadiness`, `experimentMatrix`, `runtimeAttestations`, `cryptoKats`, `coverageReconciliations`, `capturePlan`, deterministic next actions, and scoped generated claims. Uncovered block/branch samples become explicit capture targets/unknowns. It never runs Frida, Unicorn, angr, IDA, or the target.
+- **ingest_analysis_case_artifact** `{case_path,artifact_path,kind_hint?,label?,parent_artifact_ids?}` hashes and strictly parses one Trace/ELF/runtime-attestation/Frida/Unicorn/angr/IDA/OLLVM/coverage/evidence-slice/analysis/crypto artifact. Runtime attestation must bind exactly one static-binary parent. A coverage report must bind exactly one static-binary parent and at least one non-binary dynamic/source parent whose SHA-256 covers every `dynamicRuns.sourceArtifactSha256`. An Evidence Slice must bind exactly the complete declared source-artifact ID set as parents. Refuted/partial artifacts are still accepted as counter-evidence or unknowns. Duplicate content is deduplicated per parent; invalid parent IDs, schemas, identities, and non-AArch64 static binaries are rejected.
+- **diagnose_analysis_case** `{case_path,persist_generated_claims?=false}` runs `trace-ui/replay-doctor-v1`. It re-hashes artifacts, strictly verifies bound runtime attestations, Crypto KATs, coverage reconciliations, and Minimal Evidence Slices, compares compatible Unicorn rounds by exact module/build/seed offset, detects authorized closer captures, and returns `claimLedgerAudit`, `stateReadiness`, `experimentMatrix`, `runtimeAttestations`, `cryptoKats`, `coverageReconciliations`, `evidenceSlices`, `capturePlan`, deterministic next actions, and scoped generated claims. Nested slice inspection validates persisted bindings without recursively regenerating claims; use the standalone inspector for full current generated-claim revalidation. Uncovered block/branch samples become explicit capture targets/unknowns. It never runs Frida, Unicorn, angr, IDA, or the target.
 - **plan_analysis_case_capture** `{case_path,max_targets?=12}` returns the case's bounded
   `trace-ui/information-gain-capture-plan-v1`, truncated to 1-32 ranked targets. It combines claim
   blockers/counter-evidence, exact-ELF/runtime-attestation gaps, GPR/NZCV/stack/pointer/SIMD/system
@@ -308,6 +349,26 @@ Line numbers in taint `@LINE` specs are **1-based**; `start_seq`/`end_seq`/`seq`
   total/omitted counts. JSON is intended for tool reasoning and Markdown for review. This is context
   packaging only: descriptions, summaries, and the pack itself cannot open a verification gate. Coverage
   gaps are retained as `coverage-gap` unknowns rather than summarized away.
+- **generate_minimal_evidence_slice** `{case_path,trace_session_bindings?=[],claim_ids?=[],
+  include_generated_claims?=true,include_sensitive_values?=false,context_before?=2,context_after?=2,
+  module_bytes_before?=16,module_bytes_after?=32,max_memory_bytes_per_record?=4096,
+  max_records?=256,max_total_payload_bytes?=8388608,output_path?}` creates
+  `trace-ui/minimal-evidence-slice-v1` for selected persisted/current generated claims. Each Trace source
+  reference requires an exact case-artifact to open-session binding during generation. The bundle binds
+  source artifact SHA-256, size, stored path, full parent lineage, claim/reference fingerprints, and
+  materializes locator-focused Trace lines, known-mask memory bytes with per-byte provenance, one exact
+  Frida event, file-backed ELF `PT_LOAD` bytes, or a bounded JSON fragment. It also emits a typed graph
+  connecting case/claim/reference/artifact/build/process/event/record. Raw trace changes, memory bytes,
+  Frida registers/captures/returns, and JSON values are excluded unless `include_sensitive_values=true`;
+  redaction may intentionally make materialization partial. When `output_path` is supplied the file is
+  saved and bounded metadata is returned. The slice is auditable provenance, never semantic proof.
+- **inspect_minimal_evidence_slice** `{case_path,artifact_path}` strictly parses one saved slice, re-hashes
+  every declared source, checks exact artifact metadata and parent lineage, revalidates persisted/current
+  generated claim fingerprints, reopens Trace/Frida/ELF/JSON sources, recomputes every record/content hash,
+  reconstructs the typed provenance graph, and recomputes summary/status. It reports stale claims,
+  unrevalidated generated claims, mismatched records, blockers, unresolved/truncated/redacted state, and
+  source artifact IDs. A valid result proves only bounded source/record provenance; it never proves AES
+  semantics, OLLVM structure, branch reachability, deobfuscation, or simulator completeness.
 - **audit_analysis_case_claims** `{case_path}` returns only the contradiction/counter-evidence gate. It
   auto-classifies negative-existence, scope-complete, global-invariance, exhaustive-enumeration, and
   complete-control-flow wording, requires an exact matching coverage artifact when applicable, and
@@ -322,7 +383,9 @@ Line numbers in taint `@LINE` specs are **1-based**; `start_seq`/`end_seq`/`seq`
   1-128 `.traceui-case` fixtures; relative case paths resolve from the suite directory. It reports
   replay/capture-plan ranking drift, claim gate/recommended-status drift, coverage requirement/gate/
   maximum-status drift, Verified false positives/false negatives, unexpected Verified claims, and fixture errors in
-  `trace-ui/accuracy-benchmark-report-v1`. Any mismatch makes `gateMet:false`. This is a regression gate
+  `trace-ui/accuracy-benchmark-report-v1`. Optional Evidence Slice expectations also check strict status,
+  record count, unresolved/truncated bounds, claim/generated binding state, record content, and provenance
+  graph drift. Any mismatch makes `gateMet:false`. This is a regression gate
   over reviewed fixtures, not new proof that fixture labels describe ground truth.
 - **diagnose_crypto_detection** `{session_id?,target_algorithm?="AES",static_binary_path?}` explains each detection stage: trace/index, magic constants, ARM64 crypto instructions, function attribution, software/S-box/schedule structure, semantic verification, and optional exact ELF reconciliation. `not-observed` is not absence. The static stage distinguishes `matched` from `completed-no-match`; only deterministic semantic recomputation can produce `verified`.
 

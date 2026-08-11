@@ -3,8 +3,8 @@ use std::sync::Arc;
 use serde::{Deserialize, Serialize};
 use tauri::{AppHandle, Emitter, State};
 use trace_core::{
-    parse_hex_addr, BuildOptions, DepTreeOptions, ExportConfig, Progress, SearchOptions,
-    SliceOptions, StringQueryOptions, TraceEngine,
+    parse_hex_addr, BuildOptions, DepTreeOptions, ExportConfig, MemoryObjectOptions, Progress,
+    SearchOptions, SliceOptions, StringQueryOptions, TraceEngine,
 };
 
 // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
@@ -369,6 +369,54 @@ pub fn get_mem_history_range(
         .map_err(|e| e.to_string())
 }
 
+#[tauri::command]
+pub async fn reconstruct_memory_objects(
+    session_id: String,
+    options: Option<MemoryObjectOptions>,
+    engine: State<'_, Arc<TraceEngine>>,
+) -> Result<trace_core::MemoryObjectGraphReport, String> {
+    let engine = engine.inner().clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        engine
+            .reconstruct_memory_objects(&session_id, options.unwrap_or_default())
+            .map_err(|error| error.to_string())
+    })
+    .await
+    .map_err(|error| format!("Task execution failed: {error}"))?
+}
+
+#[tauri::command]
+pub async fn explain_memory_pointer(
+    session_id: String,
+    address: String,
+    seq: Option<u32>,
+    include_stack_frames: Option<bool>,
+    engine: State<'_, Arc<TraceEngine>>,
+) -> Result<trace_core::MemoryPointerExplanation, String> {
+    let address = parse_hex_addr(&address)?;
+    let engine = engine.inner().clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        let query_seq = match seq {
+            Some(value) => value,
+            None => engine
+                .get_session_info(&session_id)
+                .map_err(|error| error.to_string())?
+                .total_lines
+                .saturating_sub(1),
+        };
+        engine
+            .explain_memory_pointer(
+                &session_id,
+                address,
+                query_seq,
+                include_stack_frames.unwrap_or(true),
+            )
+            .map_err(|error| error.to_string())
+    })
+    .await
+    .map_err(|error| format!("Task execution failed: {error}"))?
+}
+
 // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 //  Registers (模板 1: 同步查询)
 // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
@@ -690,6 +738,68 @@ pub async fn save_frida_hook(
         std::fs::write(&output_path, generated.script.as_bytes())
             .map_err(|error| format!("failed to save hook script: {error}"))?;
         Ok(output_path.to_string_lossy().into_owned())
+    })
+    .await
+    .map_err(|error| format!("Task execution failed: {error}"))?
+}
+
+#[tauri::command]
+pub async fn summarize_exact_calls(
+    capture_path: String,
+    caller_module_name: String,
+    static_binary_path: String,
+    max_calls: Option<u32>,
+    max_memory_bytes_per_call: Option<u64>,
+    output_path: Option<String>,
+) -> Result<trace_core::ExactCallSummaryBundle, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        let request = trace_core::ExactCallSummaryRequest {
+            caller_module_name,
+            static_binary_path,
+            max_calls: max_calls.unwrap_or(1_024),
+            max_memory_bytes_per_call: max_memory_bytes_per_call.unwrap_or(1_048_576),
+        };
+        match output_path
+            .as_deref()
+            .filter(|path| !path.trim().is_empty())
+        {
+            Some(path) => trace_core::save_exact_call_summary(path, &capture_path, &request),
+            None => trace_core::summarize_exact_calls(&capture_path, &request),
+        }
+    })
+    .await
+    .map_err(|error| format!("Task execution failed: {error}"))?
+}
+
+#[tauri::command]
+pub async fn authorize_exact_call_replay(
+    summary_path: String,
+    static_binary_path: String,
+    call_ids: Vec<String>,
+    assumptions: trace_core::ExactCallReplayAssumptions,
+    output_path: Option<String>,
+) -> Result<trace_core::ExactCallReplayAuthorizationBundle, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        let request = trace_core::ExactCallReplayAuthorizationRequest {
+            call_ids,
+            assumptions,
+        };
+        match output_path
+            .as_deref()
+            .filter(|path| !path.trim().is_empty())
+        {
+            Some(path) => trace_core::save_exact_call_replay_authorization(
+                path,
+                &summary_path,
+                &static_binary_path,
+                &request,
+            ),
+            None => trace_core::authorize_exact_call_replay(
+                &summary_path,
+                &static_binary_path,
+                &request,
+            ),
+        }
     })
     .await
     .map_err(|error| format!("Task execution failed: {error}"))?
@@ -1417,6 +1527,7 @@ pub fn generate_unicorn_ollvm_script(
     frida_event_indices: Option<Vec<u64>>,
     static_binary_path: String,
     checkpoint_result_path: Option<String>,
+    exact_call_authorization_paths: Vec<String>,
 ) -> Result<trace_core::UnicornOllvmScript, String> {
     let seeds = build_angr_frida_seeds(
         frida_bundle.as_ref(),
@@ -1436,7 +1547,12 @@ pub fn generate_unicorn_ollvm_script(
         .filter(|path| !path.trim().is_empty())
         .map(read_unicorn_ollvm_results)
         .transpose()?;
-    trace_core::generate_unicorn_ollvm_script_with_checkpoint_result(
+    let exact_call_authorizations = trace_core::load_authorized_exact_calls(
+        &exact_call_authorization_paths,
+        &static_binary_path,
+        &report.scope.module_name,
+    )?;
+    trace_core::generate_unicorn_ollvm_script_with_checkpoint_and_exact_calls(
         &report,
         seeds.iter().collect(),
         trace_core::UnicornOllvmConfig {
@@ -1449,6 +1565,7 @@ pub fn generate_unicorn_ollvm_script(
         },
         &identity,
         checkpoint_result.as_ref(),
+        &exact_call_authorizations,
     )
 }
 
@@ -1467,6 +1584,7 @@ pub async fn save_unicorn_ollvm_script(
     frida_event_indices: Option<Vec<u64>>,
     static_binary_path: String,
     checkpoint_result_path: Option<String>,
+    exact_call_authorization_paths: Vec<String>,
 ) -> Result<String, String> {
     tauri::async_runtime::spawn_blocking(move || {
         let seeds = build_angr_frida_seeds(
@@ -1487,7 +1605,12 @@ pub async fn save_unicorn_ollvm_script(
             .filter(|path| !path.trim().is_empty())
             .map(read_unicorn_ollvm_results)
             .transpose()?;
-        let generated = trace_core::generate_unicorn_ollvm_script_with_checkpoint_result(
+        let exact_call_authorizations = trace_core::load_authorized_exact_calls(
+            &exact_call_authorization_paths,
+            &static_binary_path,
+            &report.scope.module_name,
+        )?;
+        let generated = trace_core::generate_unicorn_ollvm_script_with_checkpoint_and_exact_calls(
             &report,
             seeds.iter().collect(),
             trace_core::UnicornOllvmConfig {
@@ -1500,6 +1623,7 @@ pub async fn save_unicorn_ollvm_script(
             },
             &identity,
             checkpoint_result.as_ref(),
+            &exact_call_authorizations,
         )?;
         let trimmed = path.trim();
         if trimmed.is_empty() {
@@ -2084,6 +2208,43 @@ pub async fn inspect_coverage_reconciliation(
             &static_binary_path,
             &source_artifact_paths.unwrap_or_default(),
         )
+    })
+    .await
+    .map_err(|error| format!("Task execution failed: {error}"))?
+}
+
+#[tauri::command]
+pub async fn generate_minimal_evidence_slice(
+    request: trace_core::MinimalEvidenceSliceRequest,
+    output_path: Option<String>,
+    engine: State<'_, Arc<TraceEngine>>,
+) -> Result<trace_core::MinimalEvidenceSliceBundle, String> {
+    let engine = engine.inner().clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        let bundle = trace_core::generate_minimal_evidence_slice(&engine, &request)
+            .map_err(|error| error.to_string())?;
+        if let Some(output_path) = output_path
+            .as_deref()
+            .map(str::trim)
+            .filter(|path| !path.is_empty())
+        {
+            trace_core::save_minimal_evidence_slice_bundle(&bundle, output_path)
+                .map_err(|error| error.to_string())?;
+        }
+        Ok(bundle)
+    })
+    .await
+    .map_err(|error| format!("Task execution failed: {error}"))?
+}
+
+#[tauri::command]
+pub async fn inspect_minimal_evidence_slice(
+    case_path: String,
+    artifact_path: String,
+) -> Result<trace_core::MinimalEvidenceSliceInspectionReport, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        trace_core::inspect_minimal_evidence_slice(&case_path, &artifact_path)
+            .map_err(|error| error.to_string())
     })
     .await
     .map_err(|error| format!("Task execution failed: {error}"))?

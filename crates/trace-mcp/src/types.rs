@@ -73,6 +73,107 @@ fn default_mem_length() -> u32 {
     64
 }
 
+#[derive(Debug, Serialize, Deserialize, JsonSchema)]
+pub struct ReconstructMemoryObjectsRequest {
+    #[schemars(description = "Session ID (optional if only one session is open)")]
+    pub session_id: Option<String>,
+    #[schemars(description = "Optional first 0-based trace sequence included in access analysis")]
+    pub start_seq: Option<u32>,
+    #[schemars(description = "Optional last 0-based trace sequence included in access analysis")]
+    pub end_seq: Option<u32>,
+    #[schemars(
+        description = "Infer candidate stack-frame objects from call-tree lifetime and SP checkpoints (default: true)"
+    )]
+    #[serde(default = "default_true")]
+    pub include_stack_frames: bool,
+    #[schemars(
+        description = "Group unattributed accesses into runtime/global/TLS/custom-allocator page candidates (default: true)"
+    )]
+    #[serde(default = "default_true")]
+    pub include_runtime_clusters: bool,
+    #[schemars(description = "Maximum serialized objects (default: 500, max: 5000)")]
+    #[serde(default = "default_memory_object_max_objects")]
+    pub max_objects: u32,
+    #[schemars(description = "Maximum aliases retained per object (default: 64, max: 256)")]
+    #[serde(default = "default_memory_object_max_aliases")]
+    pub max_aliases_per_object: u32,
+    #[schemars(
+        description = "Maximum 16-byte field windows retained per object (default: 64, max: 256)"
+    )]
+    #[serde(default = "default_memory_object_max_fields")]
+    pub max_field_windows_per_object: u32,
+    #[schemars(
+        description = "Maximum exact access samples retained per object (default: 16, max: 64)"
+    )]
+    #[serde(default = "default_memory_object_max_samples")]
+    pub max_access_samples_per_object: u32,
+    #[schemars(description = "Maximum serialized anomaly groups (default: 256, max: 1000)")]
+    #[serde(default = "default_memory_object_max_anomalies")]
+    pub max_anomalies: u32,
+    #[schemars(
+        description = "Maximum unattributed runtime page clusters (default: 128, max: 1000)"
+    )]
+    #[serde(default = "default_memory_object_max_clusters")]
+    pub max_runtime_clusters: u32,
+    #[schemars(
+        description = "Maximum memory accesses processed before an explicit truncation flag (default: 5000000, max: 20000000)"
+    )]
+    #[serde(default = "default_memory_object_max_accesses")]
+    pub max_accesses: u64,
+    #[schemars(
+        description = "Maximum bytes below entry SP considered for a candidate stack frame (default: 1048576, max: 16777216)"
+    )]
+    #[serde(default = "default_memory_object_stack_distance")]
+    pub max_stack_distance: u64,
+}
+
+fn default_memory_object_max_objects() -> u32 {
+    500
+}
+
+fn default_memory_object_max_aliases() -> u32 {
+    64
+}
+
+fn default_memory_object_max_fields() -> u32 {
+    64
+}
+
+fn default_memory_object_max_samples() -> u32 {
+    16
+}
+
+fn default_memory_object_max_anomalies() -> u32 {
+    256
+}
+
+fn default_memory_object_max_clusters() -> u32 {
+    128
+}
+
+fn default_memory_object_max_accesses() -> u64 {
+    5_000_000
+}
+
+fn default_memory_object_stack_distance() -> u64 {
+    1024 * 1024
+}
+
+#[derive(Debug, Serialize, Deserialize, JsonSchema)]
+pub struct ExplainMemoryPointerRequest {
+    #[schemars(description = "Session ID (optional if only one session is open)")]
+    pub session_id: Option<String>,
+    #[schemars(description = "Runtime memory address in hex, for example 0x7fd84c7ad0")]
+    pub address: String,
+    #[schemars(description = "0-based trace sequence; defaults to the last trace sequence")]
+    pub seq: Option<u32>,
+    #[schemars(
+        description = "Include inferred stack-frame candidates and SP/X29 relations (default: true)"
+    )]
+    #[serde(default = "default_true")]
+    pub include_stack_frames: bool,
+}
+
 // ── 搜索与分析 ──
 
 #[derive(Debug, Deserialize, JsonSchema)]
@@ -701,6 +802,103 @@ fn default_evidence_pack_items() -> u32 {
 }
 
 #[derive(Debug, Deserialize, JsonSchema)]
+pub struct EvidenceSliceTraceSessionBindingRequest {
+    #[schemars(description = "Trace artifact ID in the selected .traceui-case")]
+    pub artifact_id: String,
+    #[schemars(description = "Currently open Trace UI MCP session ID for that exact trace file")]
+    pub session_id: String,
+}
+
+fn default_evidence_slice_context_lines() -> u32 {
+    2
+}
+
+fn default_evidence_slice_module_bytes_before() -> u32 {
+    16
+}
+
+fn default_evidence_slice_module_bytes_after() -> u32 {
+    32
+}
+
+fn default_evidence_slice_memory_bytes() -> u32 {
+    4_096
+}
+
+fn default_evidence_slice_records() -> u32 {
+    256
+}
+
+fn default_evidence_slice_payload_bytes() -> u64 {
+    8 * 1024 * 1024
+}
+
+#[derive(Debug, Deserialize, JsonSchema)]
+pub struct GenerateMinimalEvidenceSliceRequest {
+    #[schemars(description = "Absolute path to an existing .traceui-case manifest")]
+    pub case_path: String,
+    #[schemars(
+        description = "Optional exact case-artifact to open-session bindings. Required for trace references unless the source trace can be reopened during later inspection."
+    )]
+    #[serde(default)]
+    pub trace_session_bindings: Vec<EvidenceSliceTraceSessionBindingRequest>,
+    #[schemars(
+        description = "Claim IDs to materialize. Empty selects every current persisted/generated claim allowed by includeGeneratedClaims."
+    )]
+    #[serde(default)]
+    pub claim_ids: Vec<String>,
+    #[schemars(description = "Include current Replay Doctor generated claims (default: true)")]
+    #[serde(default = "default_true")]
+    pub include_generated_claims: bool,
+    #[schemars(
+        description = "Include raw trace register/change text, memory bytes, Frida registers/captures/returns, and JSON fragments. Default false; enabling may expose secrets."
+    )]
+    #[serde(default)]
+    pub include_sensitive_values: bool,
+    #[schemars(description = "Trace context lines before each exact locator (default 2, max 16)")]
+    #[serde(default = "default_evidence_slice_context_lines")]
+    pub context_before: u32,
+    #[schemars(description = "Trace context lines after each exact locator (default 2, max 16)")]
+    #[serde(default = "default_evidence_slice_context_lines")]
+    pub context_after: u32,
+    #[schemars(
+        description = "Static ELF bytes before an exact module offset (default 16, max 128)"
+    )]
+    #[serde(default = "default_evidence_slice_module_bytes_before")]
+    pub module_bytes_before: u32,
+    #[schemars(
+        description = "Static ELF bytes after an exact module offset (default 32, max 128)"
+    )]
+    #[serde(default = "default_evidence_slice_module_bytes_after")]
+    pub module_bytes_after: u32,
+    #[schemars(
+        description = "Maximum bytes in one materialized memory record (default 4096, max 65536)"
+    )]
+    #[serde(default = "default_evidence_slice_memory_bytes")]
+    pub max_memory_bytes_per_record: u32,
+    #[schemars(description = "Maximum evidence records (default 256, max 512)")]
+    #[serde(default = "default_evidence_slice_records")]
+    pub max_records: u32,
+    #[schemars(
+        description = "Canonical content byte budget (default 8388608, range 65536-16777216)"
+    )]
+    #[serde(default = "default_evidence_slice_payload_bytes")]
+    pub max_total_payload_bytes: u64,
+    #[schemars(
+        description = "Optional absolute JSON output path. When omitted, the complete bounded bundle is returned inline."
+    )]
+    pub output_path: Option<String>,
+}
+
+#[derive(Debug, Deserialize, JsonSchema)]
+pub struct InspectMinimalEvidenceSliceRequest {
+    #[schemars(description = "Absolute path to the .traceui-case bound by the slice")]
+    pub case_path: String,
+    #[schemars(description = "Absolute path to a trace-ui/minimal-evidence-slice-v1 JSON file")]
+    pub artifact_path: String,
+}
+
+#[derive(Debug, Deserialize, JsonSchema)]
 pub struct AuditAnalysisCaseClaimsRequest {
     #[schemars(description = "Absolute path to an existing .traceui-case manifest")]
     pub case_path: String,
@@ -1156,6 +1354,11 @@ pub struct GenerateFridaHookRequest {
     #[serde(default)]
     pub capture_backtrace: bool,
     #[schemars(
+        description = "Capture every configured argument on both enter and leave and emit exact caller call-site/return metadata for bounded exact-call summaries. Requires register and return capture; hidden memory/SIMD/TLS/system/thread effects remain unknown."
+    )]
+    #[serde(default)]
+    pub capture_exact_call: bool,
+    #[schemars(
         description = "Optional Frida Stalker event level: off, calls, blocks, or instructions"
     )]
     #[serde(default)]
@@ -1258,6 +1461,82 @@ pub struct InspectFridaCaptureRequest {
         description = "Absolute path to JSON, JSON-array, or NDJSON containing trace-ui/frida-hook-v1 send() messages captured by the user"
     )]
     pub file_path: String,
+}
+
+#[derive(Debug, Deserialize, JsonSchema)]
+pub struct SummarizeExactCallsRequest {
+    #[schemars(
+        description = "Absolute path to a user-captured trace-ui/frida-hook-v1 JSON/NDJSON file containing paired hook-enter/hook-leave events"
+    )]
+    pub capture_path: String,
+    #[schemars(
+        description = "Caller module basename whose exact BL/BLR call-site and PC+4 return offsets must be reconstructed"
+    )]
+    pub caller_module_name: String,
+    #[schemars(
+        description = "Absolute path to the exact AArch64 caller ELF/shared object used to bind module-relative call sites"
+    )]
+    pub static_binary_path: String,
+    #[schemars(description = "Maximum paired calls summarized (default: 1024, max: 4096)")]
+    #[serde(default = "default_exact_call_max_calls")]
+    pub max_calls: u32,
+    #[schemars(
+        description = "Maximum paired enter+leave byteArray bytes retained per call (default: 1048576, max: 8388608)"
+    )]
+    #[serde(default = "default_exact_call_memory_bytes")]
+    pub max_memory_bytes_per_call: u64,
+    #[schemars(
+        description = "Optional absolute JSON output path for trace-ui/exact-call-summary-v1. The artifact contains sensitive registers, pointers, and memory bytes."
+    )]
+    pub output_path: Option<String>,
+}
+
+#[derive(Debug, Deserialize, JsonSchema)]
+pub struct AuthorizeExactCallReplayRequest {
+    #[schemars(
+        description = "Absolute path to a recomputable trace-ui/exact-call-summary-v1 artifact"
+    )]
+    pub summary_path: String,
+    #[schemars(
+        description = "Absolute path to the same exact AArch64 caller ELF used by the summary"
+    )]
+    pub static_binary_path: String,
+    #[schemars(description = "One to 64 explicit callId values selected from the summary")]
+    pub call_ids: Vec<String>,
+    #[schemars(
+        description = "Explicitly accept that configured paired byteArray captures cover every memory side effect needed by replay"
+    )]
+    #[serde(default)]
+    pub captured_memory_effects_complete: bool,
+    #[schemars(
+        description = "Explicitly accept that the call has no relevant SIMD/FP side effects"
+    )]
+    #[serde(default)]
+    pub no_simd_fp_side_effects: bool,
+    #[schemars(
+        description = "Explicitly accept that the call has no relevant TLS/errno side effects"
+    )]
+    #[serde(default)]
+    pub no_tls_side_effects: bool,
+    #[schemars(
+        description = "Explicitly accept that the call has no relevant system-register, syscall, or process-state side effects"
+    )]
+    #[serde(default)]
+    pub no_system_register_or_syscall_effects: bool,
+    #[schemars(
+        description = "Explicitly accept that the call has no relevant thread, signal, callback, or asynchronous side effects"
+    )]
+    #[serde(default)]
+    pub no_thread_signal_or_callback_effects: bool,
+    #[schemars(
+        description = "Explicitly accept deterministic replay only when every serialized call-site, target, return, register, and memory precondition matches exactly"
+    )]
+    #[serde(default)]
+    pub deterministic_for_exact_preconditions: bool,
+    #[schemars(
+        description = "Optional absolute JSON output path for trace-ui/exact-call-replay-authorization-v1. The artifact contains sensitive exact-call state."
+    )]
+    pub output_path: Option<String>,
 }
 
 #[derive(Debug, Deserialize, JsonSchema)]
@@ -1407,6 +1686,14 @@ fn default_frida_materials() -> u32 {
 
 fn default_frida_max_bytes() -> u32 {
     256
+}
+
+fn default_exact_call_max_calls() -> u32 {
+    1_024
+}
+
+fn default_exact_call_memory_bytes() -> u64 {
+    1_048_576
 }
 
 fn default_runtime_attestation_window_bytes() -> u32 {
@@ -1745,6 +2032,11 @@ pub struct GenerateUnicornOllvmScriptRequest {
         description = "Optional absolute path to a strictly validated prior trace-ui/unicorn-ollvm-v1 result. It authorizes only supported closer checkpoint offsets from the same module and exact ELF SHA-256."
     )]
     pub checkpoint_result_path: Option<String>,
+    #[schemars(
+        description = "Zero to 16 absolute trace-ui/exact-call-replay-authorization-v1 paths. Every artifact is strictly recomputed from its bound summary/capture and same exact ELF before authorized calls are embedded. Unknown calls and precondition mismatches still stop."
+    )]
+    #[serde(default)]
+    pub exact_call_authorization_paths: Vec<String>,
     #[schemars(description = "Maximum concrete instructions per seed (1-2000000, default: 50000)")]
     #[serde(default = "default_unicorn_max_instructions")]
     pub max_instructions: u64,
@@ -2135,6 +2427,7 @@ mod tests {
         assert!(request.capture_registers);
         assert!(request.capture_return);
         assert!(!request.capture_backtrace);
+        assert!(!request.capture_exact_call);
         assert!(matches!(request.stalker, FridaStalkerModeRequest::Off));
         assert_eq!(request.stalker_duration_ms, 10_000);
         assert_eq!(request.max_bytes, 256);

@@ -35,6 +35,27 @@ pub struct AccuracyBenchmarkClaimExpectation {
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct AccuracyBenchmarkEvidenceSliceExpectation {
+    pub artifact_id: String,
+    pub expected_status: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub expected_record_count: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub maximum_unresolved_reference_count: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub maximum_truncated_record_count: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub expected_claim_bindings_matched: Option<bool>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub expected_generated_claim_bindings_revalidated: Option<bool>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub expected_record_content_matched: Option<bool>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub expected_provenance_graph_valid: Option<bool>,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct AccuracyBenchmarkCase {
     pub case_id: String,
     pub case_path: String,
@@ -46,6 +67,8 @@ pub struct AccuracyBenchmarkCase {
     pub expected_top_capture_action: Option<String>,
     #[serde(default)]
     pub claim_expectations: Vec<AccuracyBenchmarkClaimExpectation>,
+    #[serde(default)]
+    pub evidence_slice_expectations: Vec<AccuracyBenchmarkEvidenceSliceExpectation>,
     #[serde(default = "default_require_no_unexpected_verified")]
     pub require_no_unexpected_verified: bool,
 }
@@ -80,6 +103,7 @@ pub struct AccuracyBenchmarkCaseResult {
     pub verified_false_negative_count: u64,
     pub fixture_error_count: u64,
     pub coverage_gate_drift_count: u64,
+    pub evidence_slice_drift_count: u64,
     pub failures: Vec<AccuracyBenchmarkFailure>,
 }
 
@@ -99,6 +123,7 @@ pub struct AccuracyBenchmarkReport {
     pub verified_false_negative_count: u64,
     pub fixture_error_count: u64,
     pub coverage_gate_drift_count: u64,
+    pub evidence_slice_drift_count: u64,
     pub cases: Vec<AccuracyBenchmarkCaseResult>,
     pub limitations: Vec<String>,
 }
@@ -121,7 +146,7 @@ fn validate_suite(suite: &AccuracyBenchmarkSuite) -> Result<(), String> {
     let expectation_count = suite
         .cases
         .iter()
-        .map(|case| case.claim_expectations.len())
+        .map(|case| case.claim_expectations.len() + case.evidence_slice_expectations.len())
         .sum::<usize>();
     if expectation_count > MAX_EXPECTATIONS {
         return Err(format!(
@@ -194,6 +219,18 @@ fn validate_suite(suite: &AccuracyBenchmarkSuite) -> Result<(), String> {
                 ));
             }
         }
+        let mut evidence_slice_artifact_ids = std::collections::BTreeSet::new();
+        for expectation in &case.evidence_slice_expectations {
+            if expectation.artifact_id.trim().is_empty()
+                || expectation.expected_status.trim().is_empty()
+                || !evidence_slice_artifact_ids.insert(expectation.artifact_id.as_str())
+            {
+                return Err(format!(
+                    "benchmark case {} contains an invalid or duplicate evidence-slice artifact expectation: {}",
+                    case.case_id, expectation.artifact_id
+                ));
+            }
+        }
     }
     Ok(())
 }
@@ -229,6 +266,20 @@ fn push_assertion(
     }
 }
 
+fn push_evidence_slice_assertion(
+    result: &mut AccuracyBenchmarkCaseResult,
+    passed: bool,
+    kind: &str,
+    subject: impl Into<String>,
+    expected: impl Into<String>,
+    actual: impl Into<String>,
+) {
+    if !passed {
+        result.evidence_slice_drift_count += 1;
+    }
+    push_assertion(result, passed, kind, subject, expected, actual);
+}
+
 pub fn run_accuracy_benchmark_suite(
     suite: &AccuracyBenchmarkSuite,
     base_dir: &Path,
@@ -248,6 +299,7 @@ pub fn run_accuracy_benchmark_suite(
             verified_false_negative_count: 0,
             fixture_error_count: 0,
             coverage_gate_drift_count: 0,
+            evidence_slice_drift_count: 0,
             failures: Vec::new(),
         };
         let report = match diagnose_trace_analysis_case(&path.to_string_lossy()) {
@@ -299,6 +351,101 @@ pub fn run_accuracy_benchmark_suite(
                 expected.clone(),
                 actual,
             );
+        }
+
+        for expectation in &case.evidence_slice_expectations {
+            let actual = report
+                .evidence_slices
+                .iter()
+                .find(|slice| slice.artifact_id == expectation.artifact_id);
+            let Some(actual) = actual else {
+                push_evidence_slice_assertion(
+                    &mut result,
+                    false,
+                    "missing-evidence-slice",
+                    expectation.artifact_id.clone(),
+                    "strictly inspected evidence slice present".to_string(),
+                    "evidence slice absent or invalid".to_string(),
+                );
+                continue;
+            };
+            push_evidence_slice_assertion(
+                &mut result,
+                actual.report.status == expectation.expected_status,
+                "evidence-slice-status-drift",
+                expectation.artifact_id.clone(),
+                expectation.expected_status.clone(),
+                actual.report.status.clone(),
+            );
+            if let Some(expected) = expectation.expected_record_count {
+                push_evidence_slice_assertion(
+                    &mut result,
+                    actual.report.summary_recomputed.record_count == expected,
+                    "evidence-slice-record-count-drift",
+                    expectation.artifact_id.clone(),
+                    expected.to_string(),
+                    actual.report.summary_recomputed.record_count.to_string(),
+                );
+            }
+            if let Some(maximum) = expectation.maximum_unresolved_reference_count {
+                let actual_count = actual.report.summary_recomputed.unresolved_reference_count;
+                push_evidence_slice_assertion(
+                    &mut result,
+                    actual_count <= maximum,
+                    "evidence-slice-unresolved-drift",
+                    expectation.artifact_id.clone(),
+                    format!("<= {maximum}"),
+                    actual_count.to_string(),
+                );
+            }
+            if let Some(maximum) = expectation.maximum_truncated_record_count {
+                let actual_count = actual.report.summary_recomputed.truncated_record_count;
+                push_evidence_slice_assertion(
+                    &mut result,
+                    actual_count <= maximum,
+                    "evidence-slice-truncation-drift",
+                    expectation.artifact_id.clone(),
+                    format!("<= {maximum}"),
+                    actual_count.to_string(),
+                );
+            }
+            for (expected, actual_value, kind, field) in [
+                (
+                    expectation.expected_claim_bindings_matched,
+                    actual.report.claim_bindings_matched,
+                    "evidence-slice-claim-binding-drift",
+                    "claimBindingsMatched",
+                ),
+                (
+                    expectation.expected_generated_claim_bindings_revalidated,
+                    actual.report.generated_claim_bindings_revalidated,
+                    "evidence-slice-generated-binding-drift",
+                    "generatedClaimBindingsRevalidated",
+                ),
+                (
+                    expectation.expected_record_content_matched,
+                    actual.report.record_content_matched,
+                    "evidence-slice-record-content-drift",
+                    "recordContentMatched",
+                ),
+                (
+                    expectation.expected_provenance_graph_valid,
+                    actual.report.provenance_graph_valid,
+                    "evidence-slice-provenance-drift",
+                    "provenanceGraphValid",
+                ),
+            ] {
+                if let Some(expected) = expected {
+                    push_evidence_slice_assertion(
+                        &mut result,
+                        actual_value == expected,
+                        kind,
+                        format!("{}:{field}", expectation.artifact_id),
+                        expected.to_string(),
+                        actual_value.to_string(),
+                    );
+                }
+            }
         }
 
         for expectation in &case.claim_expectations {
@@ -471,6 +618,10 @@ pub fn run_accuracy_benchmark_suite(
         .iter()
         .map(|case| case.coverage_gate_drift_count)
         .sum();
+    let evidence_slice_drift_count = case_results
+        .iter()
+        .map(|case| case.evidence_slice_drift_count)
+        .sum();
     let passed_case_count = case_results.iter().filter(|case| case.passed).count() as u64;
     let failed_case_count = case_results.len() as u64 - passed_case_count;
     Ok(AccuracyBenchmarkReport {
@@ -480,7 +631,8 @@ pub fn run_accuracy_benchmark_suite(
             && verified_false_positive_count == 0
             && verified_false_negative_count == 0
             && fixture_error_count == 0
-            && coverage_gate_drift_count == 0,
+            && coverage_gate_drift_count == 0
+            && evidence_slice_drift_count == 0,
         case_count: case_results.len() as u64,
         passed_case_count,
         failed_case_count,
@@ -491,11 +643,14 @@ pub fn run_accuracy_benchmark_suite(
         verified_false_negative_count,
         fixture_error_count,
         coverage_gate_drift_count,
+        evidence_slice_drift_count,
         cases: case_results,
         limitations: vec![
             "The benchmark detects declared status/gate/ranking drift, coverage-requirement/gate drift, and unexpected Verified claims; it does not establish that fixture labels describe ground truth unless the fixtures themselves are independently reviewed."
                 .to_string(),
             "Positive and negative fixtures should include wrong ELF, forged marker/coverage summary, partial coverage, invalid/tampered KAT, sampled attestation, counter-evidence, and OLLVM/simulation non-promotion cases."
+                .to_string(),
+            "Evidence-slice expectations regression-check strict source/record/provenance handling and unresolved/truncated limits; a passing fixture still does not make the sliced claim semantically true."
                 .to_string(),
         ],
     })

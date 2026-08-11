@@ -5,7 +5,7 @@ description: >
   Use for native/.so reverse engineering, crypto key/IV/nonce/salt/material identification,
   MD5/SHA/HMAC/PBKDF2 input matching, backward or forward taint, function I/O inspection, cross-run
   diffing, static ELF-to-trace table reconciliation, software/table-driven/obfuscated/white-box crypto
-  classification, strict crypto KAT verification, coverage-aware claim gating, information-gain capture planning, Frida ABI candidate inference, accuracy benchmarking, Frida 16 hook generation/capture import, angr state seeding, dynamic IDA/angr/Unicorn/OLLVM analysis, missing-memory recapture, closer checkpoint capture, and cross-version dispatcher/state structural mapping. Trigger on requests
+  classification, strict crypto KAT verification, minimal evidence slicing, coverage-aware claim gating, information-gain capture planning, Frida ABI candidate inference, accuracy benchmarking, Frida 16 hook generation/capture import, angr state seeding, dynamic IDA/angr/Unicorn/OLLVM analysis, missing-memory recapture, closer checkpoint capture, and cross-version dispatcher/state structural mapping. Trigger on requests
   such as analyze this trace, reverse this native function, inspect this .so with its trace, find the key
   or algorithm, isolate a salt, generate a Frida hook, inspect OLLVM, map OLLVM across versions, where did this value come from, or
   分析 trace / 逆向 so / 污点 / 加密分析 / Frida hook / OLLVM.
@@ -67,7 +67,14 @@ Trace UI app (embedded MCP on `127.0.0.1:19821`) or register `trace-cli`, then r
 12. **Regression-check confidence logic** — before accepting gate/status/ranking changes, call
     `run_accuracy_benchmark` on reviewed positive and negative case fixtures. A passing suite prevents
     declared drift; it does not establish that fixture labels are ground truth.
-13. **Close** — `close_trace` when done to free memory (optional; cancels background tasks).
+13. **Materialize load-bearing evidence** — call `generate_minimal_evidence_slice` for the selected
+    claim IDs when another AI or reviewer needs the exact bounded payload rather than only summaries.
+    Bind every Trace artifact to its exact open session, keep sensitive runtime/register/memory values
+    excluded unless the user explicitly opts in, save the JSON, then call
+    `inspect_minimal_evidence_slice` before reuse. Import it as `evidence-slice` with every declared
+    source artifact as a parent. Slice validity proves record/source provenance only and never upgrades
+    crypto semantics, OLLVM structure, reachability, or simulator completeness.
+14. **Close** — `close_trace` when done to free memory (optional; cancels background tasks).
 
 ## Playbooks (question → tool sequence)
 
@@ -113,6 +120,9 @@ confounded comparisons as insufficient. Replay Doctor organizes evidence and nex
 not execute the target, Frida, Unicorn, angr, or IDA, and it does not turn OLLVM structure into proof.
 Before handing the case to another AI/model, call `generate_analysis_case_evidence_pack` with an explicit
 token/item budget. Do not discard its counter-evidence, unknowns, invalid artifacts, or omitted counts.
+For any load-bearing claim selected from that pack, call `generate_minimal_evidence_slice`, explicitly
+opt in only when raw sensitive values are necessary, then save and run `inspect_minimal_evidence_slice`.
+The slice must retain all declared source parents and is bounded provenance, not semantic proof.
 Call `plan_analysis_case_capture` to obtain the highest-information exact offset/register/memory or
 controlled-run request, and use its redundancy key to avoid asking for the same unchanged capture again.
 Run `run_accuracy_benchmark` only against reviewed suites when changing confidence/gate logic.
@@ -159,6 +169,15 @@ unchanged. A returned `saltOrNonceCandidate` is a precise changing range, not pr
 → `taint_analysis{from_specs:["reg:X0@line:N"], data_only:true}`. For memory use
 `["mem:0xADDR:SIZE@seq:N"]` (SIZE bytes, e.g. 16 for an MD5 buffer). Page results with
 `get_tainted_lines{analysis_id}`; pagination is isolated by the saved analysis ID.
+
+**"What object/generation does this pointer belong to, and was the address reused?"**
+→ call `reconstruct_memory_objects` on a bounded seq range. Review allocator/mmap/stack/runtime-cluster
+provenance, object bounds, allocation generation, release/reuse, base+offset aliases, field windows,
+unattributed accesses, and truncation/unknown lifecycle warnings. Then call `explain_memory_pointer`
+with the exact 0-based seq and pointer. A released-only or out-of-bounds match is a Candidate lead, not
+proof of ownership, type, use-after-free, or exploitability. Use the returned generation/object ID to
+avoid joining two different allocations that reused the same absolute address in ABI, taint, crypto, or
+Unicorn reasoning.
 
 **"Where does this input flow to (sinks: file/socket/log/return)?"** (forward)
 → `forward_taint_analysis{from_specs:["reg:X0@line:N"|"mem:0xADDR:SIZE@seq:N"], data_only:true}`. Inspect
@@ -266,6 +285,22 @@ If that closer concrete replay still lacks state, pass the same capture, exact E
 to `generate_angr_ollvm_script`; keep bounded flow small and inspect `checkpointProbes` as
 Candidate/Related rather than recovered control flow.
 
+**"Unicorn keeps stopping at the same external call; can I replay that exact call?"**
+→ regenerate the ordinary Frida Hook with `capture_exact_call:true` and explicit bounded argument
+captures. The user runs it manually. Call `summarize_exact_calls` with the exact caller AArch64 ELF,
+review the paired `hookId+callId`, call-site/target/`PC+4` return, GPR/NZCV, return, byteArray mutations,
+capture errors/truncation, and callee-saved preservation. Select only `captureReady` calls. Then call
+`authorize_exact_call_replay` only after the user explicitly accepts every hidden-effect assumption:
+captured memory effects complete, no SIMD/FP, no TLS/errno, no system-register/syscall, no
+thread/signal/callback effects, and deterministic for exact preconditions. Pass the saved authorization
+path to `generate_unicorn_ollvm_script.exact_call_authorization_paths`. Replay occurs only when the
+runtime call-site, target, return, X0-X7/SP, and captured input memory match exactly; otherwise it stops
+with a replay mismatch/apply/limit reason. Summary, authorization, and replay remain Candidate/Related,
+contain sensitive state, and never set `verificationGateMet:true`. If the result is load-bearing, import
+the exact ELF and source Frida capture into one `.traceui-case`, then import the summary and authorization
+in that order. Require Replay Doctor to report the exact capture/ELF/summary parent IDs and strict
+recomputation before giving the authorization to another AI or simulator.
+
 **"Does this dispatcher or opaque branch stay stable across runs?"**
 → open two to sixteen controlled traces, then `compare_ollvm_traces{cases:[...]}` with a scope and
 `static_binary_path` for each run; enable `require_matching_binary:true`. Differing supplied ELF SHA-256
@@ -312,6 +347,9 @@ recomputes to a known digest.
   to "this function produced it" without dependency evidence.
 - A Crypto KAT can verify only its exact serialized vector and claimScope. It does not prove that a
   traced function produced those bytes or that a simulator path is reachable.
+- A valid Minimal Evidence Slice proves only that its bounded records were recomputed from the declared
+  source artifacts and claim/reference bindings. Redacted records may be intentionally partial; neither
+  complete nor partial slices prove AES semantics, OLLVM structure, real-entry reachability, or CFG completeness.
 - Information-gain capture scores are deterministic ordering heuristics, not probabilities or confidence
   percentages. Re-run the plan after importing new evidence and do not duplicate an unchanged redundancy key.
 - **`data_only:true`** unless you specifically need control-dependency flow (it explodes result size).
@@ -335,14 +373,15 @@ recomputes to a known digest.
 |---|---|
 | Session | `open_trace`, `close_trace` |
 | Browse / verify | `get_trace_lines`, `get_memory`, `get_strings`, `get_call_tree`, `search_instructions` |
+| Memory objects | `reconstruct_memory_objects`, `explain_memory_pointer` |
 | Crypto | `analyze_crypto_implementations`, `analyze_crypto_functions`, `analyze_crypto_materials`, `compare_crypto_material_traces`, `analyze_crypto`, `analyze_known_digest`, `investigate_crypto_flow`, `verify_crypto_semantic_kat`, `inspect_crypto_semantic_kat` |
 | Taint | `taint_analysis` (backward), `forward_taint_analysis`, `get_tainted_lines`, `start_forward_taint_analysis` |
 | Functions | `analyze_function` (node_id / name / list) |
 | Diff | `compare_traces`, `start_trace_diff` |
-| Frida | `list_frida_hook_recipes`, `generate_frida_hook`, `generate_frida_runtime_attestation`, `inspect_runtime_attestation`, `generate_frida_ollvm_dispatcher_hook`, `generate_frida_unicorn_recapture_hook`, `generate_frida_unicorn_checkpoint_hook`, `inspect_frida_capture`, `search_frida_capture_events`, `get_frida_capture_event`, `infer_frida_abi`, `analyze_frida_crypto_materials`, `analyze_frida_ollvm_dispatcher_capture`, `generate_angr_state_seed` (user executes hooks manually) |
-| IDA / angr / Unicorn / OLLVM | `analyze_ollvm`, `compare_ollvm_traces`, `map_ollvm_versions`, `generate_ida_ollvm_script`, `inspect_ida_annotations`, `generate_angr_ollvm_script`, `inspect_angr_ollvm_results`, `generate_unicorn_ollvm_script`, `inspect_unicorn_ollvm_results`, `compare_unicorn_ollvm_rounds`, `generate_frida_unicorn_checkpoint_hook` |
+| Frida | `list_frida_hook_recipes`, `generate_frida_hook`, `summarize_exact_calls`, `authorize_exact_call_replay`, `generate_frida_runtime_attestation`, `inspect_runtime_attestation`, `generate_frida_ollvm_dispatcher_hook`, `generate_frida_unicorn_recapture_hook`, `generate_frida_unicorn_checkpoint_hook`, `inspect_frida_capture`, `search_frida_capture_events`, `get_frida_capture_event`, `infer_frida_abi`, `analyze_frida_crypto_materials`, `analyze_frida_ollvm_dispatcher_capture`, `generate_angr_state_seed` (user executes hooks manually) |
+| IDA / angr / Unicorn / OLLVM | `analyze_ollvm`, `compare_ollvm_traces`, `map_ollvm_versions`, `generate_ida_ollvm_script`, `inspect_ida_annotations`, `generate_angr_ollvm_script`, `inspect_angr_ollvm_results`, `generate_unicorn_ollvm_script` (`exact_call_authorization_paths` optional), `inspect_unicorn_ollvm_results`, `compare_unicorn_ollvm_rounds`, `generate_frida_unicorn_checkpoint_hook` |
 | Orchestration | `auto_investigate`, `start_auto_investigation`, `start_crypto_investigation` |
-| Case / evidence gates | `open_analysis_case`, `ingest_analysis_case_artifact`, `diagnose_analysis_case`, `plan_analysis_case_capture`, `generate_coverage_reconciliation_script`, `inspect_coverage_reconciliation`, `generate_analysis_case_evidence_pack`, `audit_analysis_case_claims`, `upsert_analysis_case_experiment`, `run_accuracy_benchmark`, `diagnose_crypto_detection` |
+| Case / evidence gates | `open_analysis_case`, `ingest_analysis_case_artifact`, `diagnose_analysis_case`, `plan_analysis_case_capture`, `generate_coverage_reconciliation_script`, `inspect_coverage_reconciliation`, `generate_analysis_case_evidence_pack`, `generate_minimal_evidence_slice`, `inspect_minimal_evidence_slice`, `audit_analysis_case_claims`, `upsert_analysis_case_experiment`, `run_accuracy_benchmark`, `diagnose_crypto_detection` |
 | Evidence store | `list_analyses`, `get_analysis`, `compare_analyses`, `export_analysis_report`, `delete_analysis` |
 | Recipes | `list_analysis_recipes`, `run_analysis_recipe`, `save_analysis_recipe`, `delete_analysis_recipe` |
 | Background tasks | `get_analysis_task`, `list_analysis_tasks`, `cancel_analysis_task` |

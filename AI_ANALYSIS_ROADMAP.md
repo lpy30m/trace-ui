@@ -60,9 +60,9 @@
 
 ### 2.2 下一阶段准确率候选
 
-1. [ ] Minimal Evidence Slice + typed provenance graph：导出带 hash 的原始 trace/register/memory/offset 小包，并显式连接 artifact/build/process/event 关系，避免 AI 只读摘要或跨身份混用证据。
-2. [ ] Memory object/alias/lifetime reconstruction：按 allocation、stack frame、base+offset、free/reuse 重建对象边界与别名，提高 ABI、污点和模拟状态判断。
-3. [ ] Exact-call record/replay summaries：由同 offset 的 Frida enter/leave 捕获生成有界外部调用摘要，让 Unicorn 在严格授权下跨越常见 call boundary，未知副作用继续停止。
+1. [x] Minimal Evidence Slice + typed provenance graph：`trace-ui/minimal-evidence-slice-v1` 精确绑定 source artifact SHA-256/大小/parent lineage 与 claim/reference fingerprint，物化 Trace 行、known-mask memory/逐字节来源、Frida event、ELF `PT_LOAD` bytes 或有界 JSON fragment，并连接 case/claim/reference/artifact/build/process/event/record。默认隐藏敏感值；独立 inspector 重开源文件并复算所有记录与 graph。Analysis Case、Replay Doctor、Evidence Pack、Accuracy Benchmark、MCP/Tauri/GUI 和端到端 smoke test 已接入，切片有效不产生语义 Verified。
+2. [x] Memory object/alias/lifetime reconstruction：`trace-ui/memory-object-graph-v1` 按 malloc/calloc/realloc/free、mmap/munmap、栈帧、base+offset、地址生成和跨调用 pointer 传播重建对象边界、generation、别名、字段窗口、释放/复用与越界/过期访问候选；Core/MCP/Tauri/GUI/真实日志回归已接入，结果始终为 Candidate，不证明所有权、类型或内存安全缺陷。
+3. [x] Exact-call record/replay summaries：Frida `captureExactCall` 对同一 `hookId+callId` 做 enter/leave 双阶段完整 GPR/NZCV/byteArray 捕获，并记录 caller、BL/BLR call-site、target 与 `PC+4` return；`trace-ui/exact-call-summary-v1` / replay-authorization-v1 默认拒绝，必须显式接受六项未知副作用假设。Unicorn 仅在 call-site/target/return/X0-X7/SP/输入内存全部精确匹配时应用授权寄存器与内存效果，否则明确停止；Analysis Case 自动绑定 capture + exact ELF、summary + 同一 ELF，Replay Doctor 重新复算父链并输出聚合报告。Core/MCP/Tauri/GUI、案件测试与 Python smoke 已接入，始终为 Candidate/Related 且 `verificationGateMet=false`。
 4. [ ] Counterfactual paired replay：同一 checkpoint 仅改变一个明确变量来搜索 opaque/dispatcher 反例，结果始终标为 hypothetical/counterexample candidate。
 5. [ ] Cross-engine differential validation：对 Capstone/IDA/angr/Unicorn 的解码、block 边界、successor 和 stop reason 做结构化差异报告；一致只增加置信，冲突必须成为 counter-evidence，不能多数表决为真。
 6. [ ] Hypothesis/contradiction search planner：把“AES”“白盒”“opaque”“dispatcher”“完整 CFG”等假设拆成可证伪子命题，优先主动搜索 alternate outcome、wrong-key、wrong-build、alias reuse 和 dynamic-only edge 反例。

@@ -9,6 +9,7 @@ pub mod chunk_scan;
 pub mod engine;
 pub mod error;
 pub mod evidence_pack;
+pub mod evidence_slice;
 pub mod flat;
 pub mod line_index;
 pub mod merge;
@@ -23,9 +24,9 @@ pub mod utils;
 
 pub use accuracy_benchmark::{
     run_accuracy_benchmark_file, run_accuracy_benchmark_suite, AccuracyBenchmarkCase,
-    AccuracyBenchmarkCaseResult, AccuracyBenchmarkClaimExpectation, AccuracyBenchmarkFailure,
-    AccuracyBenchmarkReport, AccuracyBenchmarkSuite, ACCURACY_BENCHMARK_REPORT_SCHEMA,
-    ACCURACY_BENCHMARK_SUITE_SCHEMA,
+    AccuracyBenchmarkCaseResult, AccuracyBenchmarkClaimExpectation,
+    AccuracyBenchmarkEvidenceSliceExpectation, AccuracyBenchmarkFailure, AccuracyBenchmarkReport,
+    AccuracyBenchmarkSuite, ACCURACY_BENCHMARK_REPORT_SCHEMA, ACCURACY_BENCHMARK_SUITE_SCHEMA,
 };
 pub use analysis::{
     AnalysisComparison, AnalysisEvidence, AnalysisRecord, AnalysisRecordSummary,
@@ -43,8 +44,9 @@ pub use analysis_case::{
     TraceCaseArtifactImportResult, TraceCaseArtifactKind, TraceCaseArtifactSummary, TraceCaseClaim,
     TraceCaseClaimAuditEntry, TraceCaseClaimLedgerAudit, TraceCaseClaimStatus,
     TraceCaseControlledExperimentPair, TraceCaseCoverageReport, TraceCaseCoverageRequirement,
-    TraceCaseCryptoKatReport, TraceCaseEvidenceRef, TraceCaseExperiment, TraceCaseExperimentAxis,
-    TraceCaseExperimentCell, TraceCaseExperimentMatrixReport, TraceCaseExperimentRecommendation,
+    TraceCaseCryptoKatReport, TraceCaseEvidenceRef, TraceCaseEvidenceSliceReport,
+    TraceCaseExperiment, TraceCaseExperimentAxis, TraceCaseExperimentCell,
+    TraceCaseExperimentMatrixReport, TraceCaseExperimentRecommendation,
     TraceCaseRuntimeAttestationReport, CLAIM_LEDGER_AUDIT_SCHEMA, COVERAGE_CLAIM_GATE_SCHEMA,
     EXPERIMENT_MATRIX_SCHEMA, INFORMATION_GAIN_CAPTURE_PLAN_SCHEMA, REPLAY_DOCTOR_SCHEMA,
     REPLAY_STATE_READINESS_SCHEMA, TRACE_ANALYSIS_CASE_SCHEMA,
@@ -57,8 +59,22 @@ pub use evidence_pack::{
     build_analysis_case_evidence_pack, parse_evidence_locator,
     render_analysis_case_evidence_pack_markdown, AnalysisCaseEvidencePack,
     AnalysisCaseEvidencePackRequest, EvidencePackBudget, EvidencePackClaim,
-    EvidencePackEvidenceItem, EvidencePackInvalidArtifact, EvidencePackLocator,
-    EvidencePackUnknown, AI_EVIDENCE_PACK_SCHEMA,
+    EvidencePackEvidenceItem, EvidencePackEvidenceSlice, EvidencePackInvalidArtifact,
+    EvidencePackLocator, EvidencePackUnknown, AI_EVIDENCE_PACK_SCHEMA,
+};
+pub use evidence_slice::{
+    generate_minimal_evidence_slice, inspect_minimal_evidence_slice,
+    inspect_minimal_evidence_slice_bundle, parse_minimal_evidence_slice_bundle,
+    save_minimal_evidence_slice_bundle, EvidenceSliceConfig, EvidenceSliceFridaCaptureValue,
+    EvidenceSliceFridaEventPayload, EvidenceSliceJsonFragmentPayload, EvidenceSliceLocator,
+    EvidenceSliceMemoryByteProvenance, EvidenceSliceMemoryPayload, EvidenceSliceModuleBytesPayload,
+    EvidenceSliceRecord, EvidenceSliceRecordPayload, EvidenceSliceReference,
+    EvidenceSliceReferenceRole, EvidenceSliceSourceArtifact, EvidenceSliceTraceLine,
+    EvidenceSliceTraceLinesPayload, EvidenceSliceTraceSessionBinding, MinimalEvidenceSliceBundle,
+    MinimalEvidenceSliceContent, MinimalEvidenceSliceInspectionReport, MinimalEvidenceSliceRequest,
+    MinimalEvidenceSliceSummary, ProvenanceNodeKind, ProvenanceRelation, TypedProvenanceEdge,
+    TypedProvenanceGraph, TypedProvenanceNode, MAX_MINIMAL_EVIDENCE_SLICE_BYTES,
+    MINIMAL_EVIDENCE_SLICE_INSPECTION_SCHEMA, MINIMAL_EVIDENCE_SLICE_SCHEMA,
 };
 pub use query::aes_schedule::{expand_aes_key, verify_aes_schedule, AesScheduleVerification};
 pub use query::analysis_summary::{
@@ -118,6 +134,18 @@ pub use query::elf_identity::{
 pub use query::evidence_score::{
     score_evidence, EvidenceAssessment, EvidenceScoreFactor, EvidenceScoreSignal,
 };
+pub use query::exact_call::{
+    authorize_exact_call_replay, inspect_exact_call_replay_authorization,
+    inspect_exact_call_summary, load_authorized_exact_calls,
+    parse_exact_call_replay_authorization_bundle, parse_exact_call_summary_bundle,
+    save_exact_call_replay_authorization, save_exact_call_summary, summarize_exact_calls,
+    ExactCallCaptureCompleteness, ExactCallChangedRange, ExactCallMemoryEffect, ExactCallRecord,
+    ExactCallRegisterEffect, ExactCallRegisterValue, ExactCallReplayAssumptions,
+    ExactCallReplayAuthorization, ExactCallReplayAuthorizationBundle,
+    ExactCallReplayAuthorizationRequest, ExactCallSummaryBundle, ExactCallSummaryRequest,
+    EXACT_CALL_REPLAY_AUTHORIZATION_SCHEMA, EXACT_CALL_SUMMARY_SCHEMA,
+    MAX_EXACT_CALL_ARTIFACT_BYTES,
+};
 pub use query::frida_abi::{
     infer_frida_abi, inspect_frida_abi_capture, save_frida_abi_inference,
     FridaAbiArgumentCandidate, FridaAbiInferenceOptions, FridaAbiInferenceReport,
@@ -161,6 +189,14 @@ pub use query::hash_match::{
     HashAlgorithm, HashDigestQueryResult, HashMatchRequest, HashMatchResponse, HashMatchResult,
     HashMemoryMatchResponse, HashMemoryMatchResult, HashTransform, HashTransformOptions,
 };
+pub use query::memory_object::{
+    explain_memory_pointer_from_report, reconstruct_memory_objects, MemoryAccessKind,
+    MemoryAccessObservation, MemoryAccessSample, MemoryAliasObservation, MemoryFieldWindow,
+    MemoryObjectAccessSummary, MemoryObjectAnomaly, MemoryObjectGraphReport, MemoryObjectOptions,
+    MemoryObjectRecord, MemoryObjectScope, MemoryObjectStatistics, MemoryPointerExplanation,
+    MemoryPointerObjectMatch, MemoryRegisterAlias, MemoryRuntimeCluster,
+    MemoryStackFrameObservation, MEMORY_OBJECT_GRAPH_SCHEMA, MEMORY_POINTER_EXPLANATION_SCHEMA,
+};
 pub use query::ollvm::{
     generate_ida_ollvm_script, parse_ida_annotation_bundle, BranchConditionOutcomeProfile,
     BranchConditionStateProfile, BranchConditionValueCount, BranchFlagBitProfile,
@@ -195,11 +231,12 @@ pub use query::source_sink::{
     FlowEndpointClassification, ResourceValidation,
 };
 pub use query::unicorn::{
-    generate_unicorn_ollvm_script, generate_unicorn_ollvm_script_with_checkpoint_result,
-    parse_unicorn_ollvm_result_bundle, UnicornCallBoundary, UnicornMemoryWrite,
-    UnicornMissingMemory, UnicornOllvmConfig, UnicornOllvmResultBundle, UnicornOllvmScript,
-    UnicornRecaptureSuggestion, UnicornRegisterChange, UnicornReplayRun, UnicornSeedQuality,
-    UnicornStateValue, UnicornTransitionEvidence,
+    generate_unicorn_ollvm_script, generate_unicorn_ollvm_script_with_checkpoint_and_exact_calls,
+    generate_unicorn_ollvm_script_with_checkpoint_result, parse_unicorn_ollvm_result_bundle,
+    UnicornCallBoundary, UnicornExactCallAuthorizationProvenance, UnicornExactCallReplay,
+    UnicornMemoryWrite, UnicornMissingMemory, UnicornOllvmConfig, UnicornOllvmResultBundle,
+    UnicornOllvmScript, UnicornRecaptureSuggestion, UnicornRegisterChange, UnicornReplayRun,
+    UnicornSeedQuality, UnicornStateValue, UnicornTransitionEvidence,
 };
 pub use query::unicorn_compare::{
     compare_unicorn_ollvm_rounds, UnicornOllvmRoundComparisonReport, UnicornOllvmRoundDelta,

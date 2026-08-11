@@ -48,9 +48,11 @@ REPORT = json.loads(__REPORT_JSON__)
 SEEDS = json.loads(__SEEDS_JSON__)
 EXPECTED_BINARY_IDENTITY = json.loads(__EXPECTED_BINARY_IDENTITY__)
 CONFIG = json.loads(__CONFIG_JSON__)
+EXACT_CALL_AUTHORIZATIONS = json.loads(__EXACT_CALL_AUTHORIZATIONS__)
 PAGE_SIZE = 0x1000
 MAX_MISSING_RECORDS = 64
 MAX_BLOCK_RECORDS = 100000
+MAX_EXACT_CALL_REPLAYS = 64
 
 
 def _align_down(value):
@@ -359,6 +361,39 @@ def _call_target(uc, instruction, layout):
     return (_hex(target) if target is not None else None, _module_offset(layout, target) if target is not None else None)
 
 
+def _exact_call_candidates(call_site_offset):
+    lowered = (call_site_offset or "").lower()
+    return [
+        authorization
+        for authorization in EXACT_CALL_AUTHORIZATIONS
+        if authorization.get("authorized")
+        and str(authorization.get("callSiteOffset") or "").lower() == lowered
+    ]
+
+
+def _rebase_exact_call_value(value, authorization, layout):
+    parsed = _parse_hex(value)
+    source_base = authorization.get("callerModuleBase")
+    source_size = int(authorization.get("callerModuleSize") or 0)
+    if source_base and source_size > 0:
+        source_base = _parse_hex(source_base)
+        if source_base <= parsed < source_base + source_size:
+            return layout["moduleBase"] + (parsed - source_base)
+    return parsed
+
+
+def _target_matches(target_address, target_offset, authorization, layout):
+    expected_module = str(authorization.get("targetModuleName") or "")
+    caller_module = str(authorization.get("callerModuleName") or "")
+    expected_offset = str(authorization.get("targetOffset") or "").lower()
+    if expected_module.lower() == caller_module.lower() and target_offset is not None:
+        return str(target_offset).lower() == expected_offset
+    if target_address is None:
+        return False
+    expected_address = _rebase_exact_call_value(authorization.get("targetAddress"), authorization, layout)
+    return _parse_hex(target_address) == expected_address
+
+
 def _run_seed(binary_path, seed):
     requested_base = _parse_hex(seed["moduleBase"]) if seed.get("moduleBase") else None
     uc = Uc(UC_ARCH_ARM64, UC_MODE_ARM)
@@ -386,6 +421,8 @@ def _run_seed(binary_path, seed):
         "memoryWritesTruncated": False,
         "writeKeys": set(),
         "callBoundaries": [],
+        "exactCallReplays": [],
+        "exactCallReplayCount": 0,
         "missingMemory": [],
         "warnings": [],
         "visits": {},
@@ -437,6 +474,115 @@ def _run_seed(binary_path, seed):
             "valueHex": value_hex,
             "pcOffset": state["currentPcOffset"],
         })
+
+    def record_exact_call(authorization, target_address, target_offset, status, reason, applied_registers=0, applied_memory=0):
+        if len(state["exactCallReplays"]) >= MAX_EXACT_CALL_REPLAYS:
+            return
+        state["exactCallReplays"].append({
+            "authorizationId": authorization.get("authorizationId"),
+            "callId": authorization.get("callId"),
+            "callSiteOffset": authorization.get("callSiteOffset"),
+            "targetAddress": target_address,
+            "targetOffset": target_offset,
+            "returnOffset": authorization.get("returnOffset"),
+            "status": status,
+            "reason": reason,
+            "appliedRegisterCount": int(applied_registers),
+            "appliedMemoryEffectCount": int(applied_memory),
+        })
+
+    def try_exact_call_replay(target_address, target_offset, return_address, return_offset):
+        candidates = _exact_call_candidates(state["currentPcOffset"])
+        if not candidates:
+            return False, False
+        if state["exactCallReplayCount"] >= MAX_EXACT_CALL_REPLAYS:
+            record_exact_call(candidates[0], target_address, target_offset, "replay-limit", "bounded exact-call replay limit reached")
+            request_stop("call-replay-limit", "bounded exact-call replay limit reached")
+            return True, False
+        mismatch_reasons = []
+        for authorization in candidates:
+            mismatches = []
+            if str(authorization.get("returnOffset") or "").lower() != str(return_offset or "").lower():
+                mismatches.append("return-offset")
+            if not _target_matches(target_address, target_offset, authorization, layout):
+                mismatches.append("target")
+            for expected in authorization.get("preconditionRegisters", []):
+                name = _normalize_register(expected.get("register"))
+                if name not in REGISTER_IDS:
+                    mismatches.append("unsupported-register:{}".format(expected.get("register")))
+                    continue
+                expected_value = _rebase_exact_call_value(expected.get("value"), authorization, layout)
+                try:
+                    actual_value = uc.reg_read(REGISTER_IDS[name])
+                except UcError:
+                    mismatches.append("unreadable-register:{}".format(name.upper()))
+                    continue
+                if int(actual_value) != int(expected_value):
+                    mismatches.append("register:{}".format(name.upper()))
+            prepared_memory = []
+            for effect in authorization.get("memoryEffects", []):
+                try:
+                    address = _rebase_exact_call_value(effect.get("pointer"), authorization, layout)
+                    before = bytes.fromhex(effect.get("beforeHex") or "")
+                    after = bytes.fromhex(effect.get("afterHex") or "")
+                except Exception:
+                    mismatches.append("invalid-memory-effect:{}".format(effect.get("label") or "unknown"))
+                    continue
+                if not before or len(before) != len(after) or len(before) != int(effect.get("byteLength") or 0):
+                    mismatches.append("memory-length:{}".format(effect.get("label") or "unknown"))
+                    continue
+                if not _range_contains(layout["validRanges"], address, len(before)):
+                    mismatches.append("memory-unavailable:{}".format(effect.get("label") or "unknown"))
+                    continue
+                try:
+                    actual = bytes(uc.mem_read(address, len(before)))
+                except UcError:
+                    mismatches.append("memory-unreadable:{}".format(effect.get("label") or "unknown"))
+                    continue
+                if actual != before:
+                    mismatches.append("memory-bytes:{}".format(effect.get("label") or "unknown"))
+                    continue
+                prepared_memory.append((address, after, effect))
+            if mismatches:
+                reason = ",".join(mismatches[:16])
+                mismatch_reasons.append("{}:{}".format(authorization.get("authorizationId"), reason))
+                record_exact_call(authorization, target_address, target_offset, "precondition-mismatch", reason)
+                continue
+            try:
+                for address, after, _effect in prepared_memory:
+                    _ensure_mapped(uc, layout["mappedPages"], address, len(after))
+                    uc.mem_write(address, after)
+                    layout["validRanges"].append((address, address + len(after), "exact-call-replay"))
+                applied_registers = 0
+                for write in authorization.get("registerWrites", []):
+                    name = _normalize_register(write.get("register"))
+                    if name not in REGISTER_IDS or name == "pc":
+                        raise RuntimeError("unsupported register write {}".format(write.get("register")))
+                    value = _rebase_exact_call_value(write.get("value"), authorization, layout)
+                    uc.reg_write(REGISTER_IDS[name], value)
+                    state["validRegisters"].add(name)
+                    applied_registers += 1
+                uc.reg_write(REGISTER_IDS["pc"], return_address)
+                state["validRegisters"].add("pc")
+                state["exactCallReplayCount"] += 1
+                record_exact_call(
+                    authorization,
+                    target_address,
+                    target_offset,
+                    "replayed",
+                    "all exact call-site/target/return/register/memory preconditions matched",
+                    applied_registers,
+                    len(prepared_memory),
+                )
+                return True, True
+            except Exception as error:
+                reason = "apply-error:{}".format(error)
+                record_exact_call(authorization, target_address, target_offset, "apply-error", reason)
+                request_stop("call-replay-apply-error", reason)
+                return True, False
+        reason = ";".join(mismatch_reasons[:8]) or "no authorization matched exact preconditions"
+        request_stop("call-replay-precondition-mismatch", reason)
+        return True, False
 
     def on_block(_uc, address, _size, _user_data):
         offset = _module_offset(layout, address)
@@ -525,6 +671,16 @@ def _run_seed(binary_path, seed):
                 "returnAddress": _hex(return_address),
                 "returnOffset": _module_offset(layout, return_address),
             })
+            attempted, replayed = try_exact_call_replay(
+                target_address,
+                target_offset,
+                return_address,
+                _module_offset(layout, return_address),
+            )
+            if attempted:
+                if replayed:
+                    return
+                return
             request_stop("call-boundary")
 
     def on_read(_uc, _access, address, size, _value, _user_data):
@@ -621,6 +777,7 @@ def _run_seed(binary_path, seed):
         "memoryWrites": state["memoryWrites"],
         "memoryWritesTruncated": state["memoryWritesTruncated"],
         "callBoundaries": state["callBoundaries"],
+        "exactCallReplays": state["exactCallReplays"],
         "missingMemory": state["missingMemory"],
         "warnings": state["warnings"],
         "error": state["error"],
@@ -738,6 +895,9 @@ def analyze(binary_path):
         "A next-dispatcher result is execution-specific Candidate/Related evidence. Alternate inputs, threads, or uncaptured memory may produce different transitions.",
         "The SHA-256 guard validates the manually selected ELF file, not the image mapped during the original runtime capture.",
     ]
+    if EXACT_CALL_AUTHORIZATIONS:
+        warnings.append("{} exact-call authorization(s) were embedded; unknown calls and every precondition mismatch still stop explicitly.".format(len(EXACT_CALL_AUTHORIZATIONS)))
+        warnings.append("Exact-call summaries rely on explicit manual hidden-side-effect assumptions and remain Candidate/Related evidence.")
     partial = [quality for quality in [seed.get("quality") for seed in SEEDS] if quality and quality.get("status") != "ready"]
     if partial:
         warnings.append("{} replay seed(s) were partial; inspect missing state and recapture suggestions.".format(len(partial)))

@@ -11,6 +11,7 @@ Use `mcp__trace-ui__analyze_ollvm`, `mcp__trace-ui__compare_ollvm_traces`, `mcp_
 `mcp__trace-ui__infer_frida_abi`, and
 `mcp__trace-ui__generate_angr_state_seed`, `mcp__trace-ui__generate_unicorn_ollvm_script`,
 `mcp__trace-ui__inspect_unicorn_ollvm_results`, and
+`mcp__trace-ui__summarize_exact_calls`, `mcp__trace-ui__authorize_exact_call_replay`, and
 `mcp__trace-ui__generate_frida_unicorn_recapture_hook`, and
 `mcp__trace-ui__generate_frida_unicorn_checkpoint_hook`, and
 `mcp__trace-ui__compare_unicorn_ollvm_rounds`. For multi-dispatcher manual capture, also use
@@ -23,6 +24,8 @@ rank the next non-redundant runtime evidence request and `mcp__trace-ui__run_acc
 regression-check reviewed OLLVM/non-promotion fixtures. For any absence, global-invariance, exhaustive
 dispatcher, or complete-CFG claim, also use `mcp__trace-ui__generate_coverage_reconciliation_script`
 and `mcp__trace-ui__inspect_coverage_reconciliation`.
+For a bounded exact-evidence handoff, use `mcp__trace-ui__generate_minimal_evidence_slice` and
+`mcp__trace-ui__inspect_minimal_evidence_slice`; the slice remains provenance evidence only.
 
 ## Workflow
 
@@ -85,6 +88,17 @@ and `mcp__trace-ui__inspect_coverage_reconciliation`.
    unclear, call `infer_frida_abi` before expanding pointer capture. Use its exact event indices and
    Candidate/Related pointer+length/context/field leads only; never reinterpret runtime pointers as
    module-relative offsets.
+   If the remaining stall is a stable external BL/BLR and the user needs bounded replay across it,
+   generate an ordinary Frida Hook with `capture_exact_call:true`, run it manually, and call
+   `summarize_exact_calls` with the exact caller ELF. Only `captureReady` paired `hookId+callId` records
+   may be selected. `authorize_exact_call_replay` must remain default-deny until the user explicitly
+   accepts complete captured memory effects plus no SIMD/FP, TLS/errno, system/syscall,
+   thread/signal/callback effects and deterministic exact preconditions. Pass saved artifacts through
+   `exact_call_authorization_paths`. Unicorn must still stop when call-site, target, return, X0-X7/SP,
+   or input memory differs; successful replay is exact-seed Candidate/Related evidence, not API proof.
+   In a `.traceui-case`, import the exact ELF and source Frida capture before the summary, then import
+   the authorization. Replay Doctor must strictly recompute summary = capture + ELF and authorization =
+   summary + the same ELF; any parent drift invalidates the downstream replay evidence.
 10. To observe several ranked dispatchers in one user-controlled run, call
     `generate_frida_ollvm_dispatcher_hook`, return/save the Frida 16.x script, and stop until the user
     supplies its capture. Then call `analyze_frida_ollvm_dispatcher_capture` on the same OLLVM scope.
@@ -120,7 +134,12 @@ and `mcp__trace-ui__inspect_coverage_reconciliation`.
     artifacts and resolve counter-evidence before raising confidence; OLLVM, angr, or Unicorn structure
     alone remains Candidate/Related even when every file passes integrity checks. Use
     `generate_analysis_case_evidence_pack` for a bounded AI handoff; never send only the supporting
-    section or treat the pack's summary as proof. Then call `plan_analysis_case_capture` and prefer the
+    section or treat the pack's summary as proof. For each load-bearing OLLVM/simulator claim handed to
+    another model or reviewer, generate a Minimal Evidence Slice for the selected claim IDs, keep
+    sensitive register/memory/capture values excluded unless explicitly authorized, save it, run
+    `inspect_minimal_evidence_slice`, and import it with all declared source parents. A valid slice cannot
+    upgrade OLLVM/IDA/angr/Unicorn structure above Candidate/Related. Then call
+    `plan_analysis_case_capture` and prefer the
     top target that can distinguish the active competing hypotheses without repeating an unchanged
     redundancy key. Its score is a deterministic priority, not a probability. Before merging changes to
     OLLVM gate/status/ranking logic, run `run_accuracy_benchmark` on reviewed positive/negative fixtures;
@@ -173,6 +192,10 @@ and `mcp__trace-ui__inspect_coverage_reconciliation`.
 - Unicorn is concrete replay, not path exploration. A successful next-dispatcher transition applies only
   to the exact captured seed. Missing memory, uncaptured registers, SIMD state, TLS/system registers,
   calls, loops, timeouts, and instruction bounds must remain explicit stop reasons.
+- Exact-call replay is a narrowly authorized call-boundary effect application, not native execution of
+  the callee. The summary and authorization are bound to the exact caller ELF/capture/call ID; hidden
+  memory, SIMD/FP, TLS/errno, system/syscall, and asynchronous effects are user-accepted assumptions.
+  Unknown calls and any exact precondition mismatch must stop, and `verificationGateMet` remains false.
 - Writable ELF segment bytes are not assumed to equal runtime state. Prefer exact Frida byteArray regions;
   use register-relative recapture suggestions to improve a partial seed instead of silently filling zeros.
 - Unicorn recapture hooks run at the original exact seed offset, not the later missing-memory PC. This
@@ -201,6 +224,9 @@ and `mcp__trace-ui__inspect_coverage_reconciliation`.
   prove real-entry reachability, or convert a dynamic transition atlas into a recovered CFG.
 - Information-gain capture-plan scores order bounded next actions only. They are not confidence values,
   probabilities, or proof that the requested capture will resolve a hypothesis.
+- Minimal Evidence Slice validity establishes only bounded source/claim/record/provenance consistency.
+  Redaction may intentionally make a record partial, and neither a complete nor partial slice proves
+  dispatcher classification, opaque-branch infeasibility, real-entry reachability, or CFG completeness.
 
 ## IDA bridge boundary
 
@@ -234,5 +260,6 @@ launches Unicorn or angr during generation or comparison.
 Report the selected scope, module, sequence range, block/edge counts, top candidates with exact module
 offsets, and the saved `analysis_id`. When a `.traceui-case` is used, also report its path, relevant
 artifact IDs, integrity/counter-evidence status, coverage requirement/gate/max status, and Claim Ledger
-maximum status. Clearly separate
+maximum status. If a Minimal Evidence Slice is used, report its path, inspection status, source artifact
+IDs, unresolved/truncated/redaction state, and non-proof boundary. Clearly separate
 observed dynamic facts from OLLVM hypotheses and note coverage limitations.

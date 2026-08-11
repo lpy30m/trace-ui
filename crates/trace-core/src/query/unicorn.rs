@@ -4,6 +4,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::query::angr::{prepare_frida_seed_with_allowed_offsets, AngrOllvmFridaSeedProvenance};
 use crate::query::elf_identity::ElfBinaryIdentity;
+use crate::query::exact_call::ExactCallReplayAuthorization;
 use crate::query::frida_capture::AngrStateSeed;
 use crate::query::frida_checkpoint::authorize_unicorn_checkpoint_offsets;
 use crate::query::ollvm::OllvmReport;
@@ -81,6 +82,7 @@ pub struct UnicornOllvmScript {
     pub seed_qualities: Vec<UnicornSeedQuality>,
     pub seed_recapture_plans: Vec<UnicornSeedRecapturePlan>,
     pub expected_binary_identity: ElfBinaryIdentity,
+    pub exact_call_authorizations: Vec<UnicornExactCallAuthorizationProvenance>,
     pub config: UnicornOllvmConfig,
     pub warnings: Vec<String>,
 }
@@ -148,6 +150,37 @@ pub struct UnicornCallBoundary {
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
+pub struct UnicornExactCallAuthorizationProvenance {
+    pub authorization_id: String,
+    pub call_id: String,
+    pub call_site_offset: String,
+    pub return_offset: String,
+    pub target_module_name: String,
+    pub target_offset: String,
+    pub precondition_register_count: u64,
+    pub register_write_count: u64,
+    pub memory_effect_count: u64,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct UnicornExactCallReplay {
+    pub authorization_id: String,
+    pub call_id: String,
+    pub call_site_offset: String,
+    #[serde(default)]
+    pub target_address: Option<String>,
+    #[serde(default)]
+    pub target_offset: Option<String>,
+    pub return_offset: String,
+    pub status: String,
+    pub reason: String,
+    pub applied_register_count: u64,
+    pub applied_memory_effect_count: u64,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct UnicornReplayRun {
     pub source_event_index: u64,
     pub seed_kind: String,
@@ -181,6 +214,8 @@ pub struct UnicornReplayRun {
     pub memory_writes_truncated: bool,
     #[serde(default)]
     pub call_boundaries: Vec<UnicornCallBoundary>,
+    #[serde(default)]
+    pub exact_call_replays: Vec<UnicornExactCallReplay>,
     #[serde(default)]
     pub missing_memory: Vec<UnicornMissingMemory>,
     #[serde(default)]
@@ -479,7 +514,7 @@ fn build_seed_recapture_plan(
     }
 }
 
-fn quoted_json<T: Serialize>(value: &T, label: &str) -> Result<String, String> {
+fn quoted_json<T: Serialize + ?Sized>(value: &T, label: &str) -> Result<String, String> {
     let json = serde_json::to_string(value)
         .map_err(|error| format!("serialize {label} failed: {error}"))?;
     serde_json::to_string(&json).map_err(|error| format!("quote {label} failed: {error}"))
@@ -507,6 +542,24 @@ pub fn generate_unicorn_ollvm_script_with_checkpoint_result(
     expected_binary_identity: &ElfBinaryIdentity,
     checkpoint_result: Option<&UnicornOllvmResultBundle>,
 ) -> Result<UnicornOllvmScript, String> {
+    generate_unicorn_ollvm_script_with_checkpoint_and_exact_calls(
+        report,
+        frida_seeds,
+        config,
+        expected_binary_identity,
+        checkpoint_result,
+        &[],
+    )
+}
+
+pub fn generate_unicorn_ollvm_script_with_checkpoint_and_exact_calls(
+    report: &OllvmReport,
+    frida_seeds: Vec<&AngrStateSeed>,
+    config: UnicornOllvmConfig,
+    expected_binary_identity: &ElfBinaryIdentity,
+    checkpoint_result: Option<&UnicornOllvmResultBundle>,
+    exact_call_authorizations: &[ExactCallReplayAuthorization],
+) -> Result<UnicornOllvmScript, String> {
     if report.scope.module_name.trim().is_empty() {
         return Err("OLLVM report module name must not be empty".to_string());
     }
@@ -522,6 +575,64 @@ pub fn generate_unicorn_ollvm_script_with_checkpoint_result(
     }
     if frida_seeds.len() > 32 {
         return Err("at most 32 Frida seeds may be embedded in one Unicorn replay".to_string());
+    }
+    if exact_call_authorizations.len() > 64 {
+        return Err("at most 64 exact-call replay authorizations may be embedded".to_string());
+    }
+    if !exact_call_authorizations.is_empty() && !config.stop_on_call {
+        return Err(
+            "exact-call replay requires stop_on_call=true so every unknown or mismatched call still stops explicitly"
+                .to_string(),
+        );
+    }
+    let mut exact_call_ids = BTreeSet::new();
+    let mut exact_call_provenance = Vec::with_capacity(exact_call_authorizations.len());
+    for authorization in exact_call_authorizations {
+        if !authorization.authorized || authorization.status != "authorized-candidate" {
+            return Err(format!(
+                "exact-call authorization {} is not authorized-candidate",
+                authorization.authorization_id
+            ));
+        }
+        if !authorization
+            .caller_module_name
+            .eq_ignore_ascii_case(&report.scope.module_name)
+        {
+            return Err(format!(
+                "exact-call authorization {} caller module {} does not match OLLVM replay module {}",
+                authorization.authorization_id,
+                authorization.caller_module_name,
+                report.scope.module_name
+            ));
+        }
+        if !exact_call_ids.insert(authorization.authorization_id.clone()) {
+            return Err(format!(
+                "duplicate exact-call authorization ID {}",
+                authorization.authorization_id
+            ));
+        }
+        validate_offset(&authorization.call_site_offset, "exact-call callSiteOffset")?;
+        validate_offset(&authorization.return_offset, "exact-call returnOffset")?;
+        validate_offset(&authorization.target_offset, "exact-call targetOffset")?;
+        let call_site = parse_hex_addr(&authorization.call_site_offset)?;
+        let return_offset = parse_hex_addr(&authorization.return_offset)?;
+        if call_site.checked_add(4) != Some(return_offset) {
+            return Err(format!(
+                "exact-call authorization {} returnOffset must equal callSiteOffset + 4",
+                authorization.authorization_id
+            ));
+        }
+        exact_call_provenance.push(UnicornExactCallAuthorizationProvenance {
+            authorization_id: authorization.authorization_id.clone(),
+            call_id: authorization.call_id.clone(),
+            call_site_offset: authorization.call_site_offset.clone(),
+            return_offset: authorization.return_offset.clone(),
+            target_module_name: authorization.target_module_name.clone(),
+            target_offset: authorization.target_offset.clone(),
+            precondition_register_count: authorization.precondition_registers.len() as u64,
+            register_write_count: authorization.register_writes.len() as u64,
+            memory_effect_count: authorization.memory_effects.len() as u64,
+        });
     }
     let allowed_checkpoint_offsets = if let Some(bundle) = checkpoint_result {
         authorize_unicorn_checkpoint_offsets(
@@ -563,12 +674,14 @@ pub fn generate_unicorn_ollvm_script_with_checkpoint_result(
     let seeds_literal = quoted_json(&payloads, "Frida seeds")?;
     let identity_literal = quoted_json(expected_binary_identity, "expected ELF identity")?;
     let config_literal = quoted_json(&config, "Unicorn config")?;
+    let exact_calls_literal = quoted_json(exact_call_authorizations, "exact-call authorizations")?;
     let template = include_str!("unicorn_bridge.py");
     let script = template
         .replace("__REPORT_JSON__", &report_literal)
         .replace("__SEEDS_JSON__", &seeds_literal)
         .replace("__EXPECTED_BINARY_IDENTITY__", &identity_literal)
-        .replace("__CONFIG_JSON__", &config_literal);
+        .replace("__CONFIG_JSON__", &config_literal)
+        .replace("__EXACT_CALL_AUTHORIZATIONS__", &exact_calls_literal);
 
     let function_name = report
         .scope
@@ -609,6 +722,16 @@ pub fn generate_unicorn_ollvm_script_with_checkpoint_result(
             allowed_checkpoint_offsets.len()
         ));
     }
+    if !exact_call_provenance.is_empty() {
+        warnings.push(format!(
+            "{} exact-call authorization(s) were embedded. Only exact call-site/target/return/register/memory precondition matches may cross a call; every unknown or mismatch still stops.",
+            exact_call_provenance.len()
+        ));
+        warnings.push(
+            "Exact-call replay relies on explicit manual hidden-side-effect assumptions and remains Candidate/Related evidence."
+                .to_string(),
+        );
+    }
 
     Ok(UnicornOllvmScript {
         file_name,
@@ -618,6 +741,7 @@ pub fn generate_unicorn_ollvm_script_with_checkpoint_result(
         seed_qualities: qualities,
         seed_recapture_plans: recapture_plans,
         expected_binary_identity: expected_binary_identity.clone(),
+        exact_call_authorizations: exact_call_provenance,
         config,
         warnings,
     })
@@ -848,6 +972,9 @@ pub fn parse_unicorn_ollvm_result_bundle(bytes: &[u8]) -> Result<UnicornOllvmRes
         "next-dispatcher",
         "return",
         "call-boundary",
+        "call-replay-precondition-mismatch",
+        "call-replay-apply-error",
+        "call-replay-limit",
         "loop-detected",
         "missing-memory",
         "missing-register",
@@ -901,6 +1028,51 @@ pub fn parse_unicorn_ollvm_result_bundle(bytes: &[u8]) -> Result<UnicornOllvmRes
                 "Unicorn replay run {} contains more than 64 call-boundary records",
                 run.source_event_index
             ));
+        }
+        if run.exact_call_replays.len() > 64 {
+            return Err(format!(
+                "Unicorn replay run {} contains more than 64 exact-call replay records",
+                run.source_event_index
+            ));
+        }
+        for replay in &run.exact_call_replays {
+            if replay.authorization_id.trim().is_empty()
+                || replay.call_id.trim().is_empty()
+                || ![
+                    "replayed",
+                    "precondition-mismatch",
+                    "apply-error",
+                    "replay-limit",
+                ]
+                .contains(&replay.status.as_str())
+            {
+                return Err("Unicorn exact-call replay record is invalid".to_string());
+            }
+            validate_offset(&replay.call_site_offset, "exact-call replay callSiteOffset")?;
+            validate_offset(&replay.return_offset, "exact-call replay returnOffset")?;
+            if let Some(address) = &replay.target_address {
+                validate_offset(address, "exact-call replay targetAddress")?;
+            }
+            if let Some(offset) = &replay.target_offset {
+                validate_offset(offset, "exact-call replay targetOffset")?;
+            }
+            let call_site = parse_hex_addr(&replay.call_site_offset)
+                .map_err(|error| format!("invalid exact-call replay callSiteOffset: {error}"))?;
+            let return_offset = parse_hex_addr(&replay.return_offset)
+                .map_err(|error| format!("invalid exact-call replay returnOffset: {error}"))?;
+            if call_site.checked_add(4) != Some(return_offset) {
+                return Err(
+                    "Unicorn exact-call replay returnOffset must equal callSiteOffset + 4"
+                        .to_string(),
+                );
+            }
+            if replay.status != "replayed"
+                && (replay.applied_register_count != 0 || replay.applied_memory_effect_count != 0)
+            {
+                return Err(
+                    "Unicorn failed exact-call replay must not report applied effects".to_string(),
+                );
+            }
         }
         for boundary in &run.call_boundaries {
             validate_offset(&boundary.pc_offset, "call-boundary pcOffset")?;
@@ -1264,6 +1436,7 @@ mod tests {
                 memory_writes: Vec::new(),
                 memory_writes_truncated: false,
                 call_boundaries: Vec::new(),
+                exact_call_replays: Vec::new(),
                 missing_memory: vec![UnicornMissingMemory {
                     access: "read".to_string(),
                     address: "0x60000020".to_string(),
@@ -1517,6 +1690,7 @@ mod tests {
                 memory_writes: Vec::new(),
                 memory_writes_truncated: false,
                 call_boundaries: Vec::new(),
+                exact_call_replays: Vec::new(),
                 missing_memory: Vec::new(),
                 warnings: Vec::new(),
                 error: None,
@@ -1770,6 +1944,126 @@ mod tests {
         .unwrap();
         assert_eq!(checkpoint.targets[0].offset, "0x104");
         assert!(!checkpoint.targets[0].captures.is_empty());
+        std::fs::remove_dir_all(temp).unwrap();
+    }
+
+    #[test]
+    fn generated_script_replays_only_an_exact_authorized_call_when_python_modules_exist() {
+        use std::process::Command;
+
+        use crate::query::exact_call::{ExactCallRegisterValue, ExactCallReplayAssumptions};
+
+        let python = if cfg!(windows) { "python" } else { "python3" };
+        if !Command::new(python)
+            .args(["-c", "import unicorn, capstone, elftools"])
+            .status()
+            .is_ok_and(|status| status.success())
+        {
+            eprintln!(
+                "skipping Unicorn exact-call replay smoke test because Python modules are unavailable"
+            );
+            return;
+        }
+        let mut elf = minimal_aarch64_elf();
+        elf[0x100..0x104].copy_from_slice(&0x94000002u32.to_le_bytes());
+        let identity = inspect_elf_bytes("libtarget.so", &elf).unwrap();
+        let seed = sample_seed();
+        let precondition_registers = (0..=7)
+            .map(|index| ExactCallRegisterValue {
+                register: format!("X{index}"),
+                value: "0x0".to_string(),
+            })
+            .chain(std::iter::once(ExactCallRegisterValue {
+                register: "SP".to_string(),
+                value: "0x50000000".to_string(),
+            }))
+            .collect();
+        let authorization = ExactCallReplayAuthorization {
+            authorization_id: "exact-call:test".to_string(),
+            call_id: "callee:1".to_string(),
+            status: "authorized-candidate".to_string(),
+            authorized: true,
+            evidence_level: "related".to_string(),
+            caller_module_name: "libtarget.so".to_string(),
+            caller_module_base: "0x40000000".to_string(),
+            caller_module_size: 0x2000,
+            call_site_offset: "0x100".to_string(),
+            return_offset: "0x104".to_string(),
+            target_module_name: "libtarget.so".to_string(),
+            target_module_base: "0x40000000".to_string(),
+            target_module_size: 0x2000,
+            target_address: "0x40000108".to_string(),
+            target_offset: "0x108".to_string(),
+            precondition_registers,
+            register_writes: vec![
+                ExactCallRegisterValue {
+                    register: "X0".to_string(),
+                    value: "0x42".to_string(),
+                },
+                ExactCallRegisterValue {
+                    register: "X30".to_string(),
+                    value: "0x40000104".to_string(),
+                },
+                ExactCallRegisterValue {
+                    register: "NZCV".to_string(),
+                    value: "0x0".to_string(),
+                },
+            ],
+            memory_effects: Vec::new(),
+            return_value: "0x42".to_string(),
+            assumptions: ExactCallReplayAssumptions {
+                captured_memory_effects_complete: true,
+                no_simd_fp_side_effects: true,
+                no_tls_side_effects: true,
+                no_system_register_or_syscall_effects: true,
+                no_thread_signal_or_callback_effects: true,
+                deterministic_for_exact_preconditions: true,
+            },
+            blockers: Vec::new(),
+            limitations: Vec::new(),
+            verification_gate_met: false,
+        };
+        let generated = generate_unicorn_ollvm_script_with_checkpoint_and_exact_calls(
+            &sample_report(),
+            vec![&seed],
+            UnicornOllvmConfig::default(),
+            &identity,
+            None,
+            &[authorization],
+        )
+        .unwrap();
+        let temp = std::env::temp_dir().join(format!(
+            "trace-ui-unicorn-exact-call-test-{}",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_dir_all(&temp);
+        std::fs::create_dir_all(&temp).unwrap();
+        let binary_path = temp.join("libtarget.so");
+        let script_path = temp.join("replay.py");
+        let result_path = temp.join("result.json");
+        std::fs::write(&binary_path, elf).unwrap();
+        std::fs::write(&script_path, generated.script).unwrap();
+        let output = Command::new(python)
+            .arg(&script_path)
+            .arg(&binary_path)
+            .arg("-o")
+            .arg(&result_path)
+            .output()
+            .unwrap();
+        assert!(
+            output.status.success(),
+            "generated Unicorn exact-call replay failed: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        let parsed =
+            parse_unicorn_ollvm_result_bundle(&std::fs::read(&result_path).unwrap()).unwrap();
+        assert_eq!(parsed.runs[0].stop_reason, "next-dispatcher");
+        assert_eq!(parsed.runs[0].exact_call_replays.len(), 1);
+        assert_eq!(parsed.runs[0].exact_call_replays[0].status, "replayed");
+        assert!(parsed.runs[0]
+            .register_changes
+            .iter()
+            .any(|change| change.register == "X0" && change.after == "0x42"));
         std::fs::remove_dir_all(temp).unwrap();
     }
 

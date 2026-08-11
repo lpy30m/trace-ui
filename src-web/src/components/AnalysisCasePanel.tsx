@@ -9,6 +9,9 @@ import type {
   CryptoDetectionDoctorReport,
   FridaRuntimeAttestationRequest,
   FridaRuntimeAttestationScript,
+  MinimalEvidenceSliceBundle,
+  MinimalEvidenceSliceInspectionReport,
+  MinimalEvidenceSliceRequest,
   ReplayDoctorReport,
   RuntimeAttestationInspectionReport,
   TraceAnalysisCaseDocument,
@@ -71,6 +74,15 @@ function artifactSummary(artifact: TraceCaseArtifact): string {
   if (artifact.summary.matchedExecutableBytes !== undefined && artifact.summary.totalExecutableBytes !== undefined) {
     parts.push(`${artifact.summary.matchedExecutableBytes}/${artifact.summary.totalExecutableBytes} executable bytes`);
   }
+  if (artifact.summary.evidenceSliceStatus) parts.push(artifact.summary.evidenceSliceStatus);
+  if (artifact.summary.evidenceSliceRecordCount !== undefined) parts.push(`${artifact.summary.evidenceSliceRecordCount} evidence records`);
+  if (artifact.summary.evidenceSliceUnresolvedReferenceCount) parts.push(`${artifact.summary.evidenceSliceUnresolvedReferenceCount} unresolved`);
+  if (artifact.summary.evidenceSliceTruncatedRecordCount) parts.push(`${artifact.summary.evidenceSliceTruncatedRecordCount} truncated`);
+  if (artifact.summary.evidenceSliceContainsSensitiveValues) parts.push("sensitive values");
+  if (artifact.summary.exactCallCaptureReadyCount !== undefined) parts.push(`${artifact.summary.exactCallCaptureReadyCount} exact-call ready`);
+  if (artifact.summary.exactCallIncompleteCount !== undefined) parts.push(`${artifact.summary.exactCallIncompleteCount} exact-call incomplete`);
+  if (artifact.summary.exactCallAuthorizedCount !== undefined) parts.push(`${artifact.summary.exactCallAuthorizedCount} exact-call authorized`);
+  if (artifact.summary.exactCallBlockedCount !== undefined) parts.push(`${artifact.summary.exactCallBlockedCount} exact-call blocked`);
   if (artifact.summary.captureOffsets.length) parts.push(`${artifact.summary.captureOffsets.length} offsets`);
   if (artifact.summary.eventCount) parts.push(`${artifact.summary.eventCount} events/seeds`);
   if (artifact.summary.runCount) parts.push(`${artifact.summary.runCount} runs/probes`);
@@ -104,6 +116,16 @@ export default function AnalysisCasePanel({ sessionId }: Props) {
   const [coverageSavedPath, setCoverageSavedPath] = useState("");
   const [coverageArtifactPath, setCoverageArtifactPath] = useState("");
   const [coverageInspection, setCoverageInspection] = useState<CoverageReconciliationInspectionReport | null>(null);
+  const [selectedEvidenceSliceClaimIds, setSelectedEvidenceSliceClaimIds] = useState<string[]>([]);
+  const [evidenceSliceIncludeGenerated, setEvidenceSliceIncludeGenerated] = useState(true);
+  const [evidenceSliceIncludeSensitive, setEvidenceSliceIncludeSensitive] = useState(false);
+  const [evidenceSliceContextBefore, setEvidenceSliceContextBefore] = useState(2);
+  const [evidenceSliceContextAfter, setEvidenceSliceContextAfter] = useState(2);
+  const [evidenceSliceMaxRecords, setEvidenceSliceMaxRecords] = useState(256);
+  const [evidenceSliceBundle, setEvidenceSliceBundle] = useState<MinimalEvidenceSliceBundle | null>(null);
+  const [evidenceSliceSavedPath, setEvidenceSliceSavedPath] = useState("");
+  const [evidenceSliceArtifactPath, setEvidenceSliceArtifactPath] = useState("");
+  const [evidenceSliceInspection, setEvidenceSliceInspection] = useState<MinimalEvidenceSliceInspectionReport | null>(null);
   const [experimentLabel, setExperimentLabel] = useState("");
   const [experimentBinarySha, setExperimentBinarySha] = useState("");
   const [experimentKeyGroup, setExperimentKeyGroup] = useState("");
@@ -439,6 +461,126 @@ export default function AnalysisCasePanel({ sessionId }: Props) {
     finally { setBusy(false); }
   }, [document, coverageArtifactPath, coverageBinaryArtifactId, coverageOllvmArtifactId, coverageInspection, remember]);
 
+  const buildEvidenceSliceRequest = useCallback((): MinimalEvidenceSliceRequest => {
+    if (!document) throw new Error("请先新建或打开 Analysis Case。");
+    if (!selectedEvidenceSliceClaimIds.length) throw new Error("请至少选择一个要交给 AI 的 claim。");
+    const traceSessionBindings = sessionId && document.case.primaryTraceArtifactId
+      ? [{ artifactId: document.case.primaryTraceArtifactId, sessionId }]
+      : [];
+    return {
+      casePath: document.casePath,
+      traceSessionBindings,
+      claimIds: selectedEvidenceSliceClaimIds,
+      includeGeneratedClaims: evidenceSliceIncludeGenerated,
+      includeSensitiveValues: evidenceSliceIncludeSensitive,
+      contextBefore: evidenceSliceContextBefore,
+      contextAfter: evidenceSliceContextAfter,
+      moduleBytesBefore: 16,
+      moduleBytesAfter: 32,
+      maxMemoryBytesPerRecord: 4096,
+      maxRecords: evidenceSliceMaxRecords,
+      maxTotalPayloadBytes: 8 * 1024 * 1024,
+    };
+  }, [
+    document, sessionId, selectedEvidenceSliceClaimIds, evidenceSliceIncludeGenerated,
+    evidenceSliceIncludeSensitive, evidenceSliceContextBefore, evidenceSliceContextAfter,
+    evidenceSliceMaxRecords,
+  ]);
+
+  const confirmEvidenceSliceSensitiveValues = useCallback((): boolean => {
+    if (!evidenceSliceIncludeSensitive) return true;
+    return window.confirm(
+      "该 Evidence Slice 将包含原始寄存器、内存、Frida 捕获值或 JSON 片段，可能含密钥、口令、Token 和明文。确认保存并交给 AI 分析吗？",
+    );
+  }, [evidenceSliceIncludeSensitive]);
+
+  const generateEvidenceSlice = useCallback(async () => {
+    let request: MinimalEvidenceSliceRequest;
+    try { request = buildEvidenceSliceRequest(); }
+    catch (e) { setError(String(e)); return; }
+    if (!confirmEvidenceSliceSensitiveValues()) return;
+    setBusy(true); setError(null);
+    try {
+      const bundle = await invoke<MinimalEvidenceSliceBundle>("generate_minimal_evidence_slice", {
+        request,
+        outputPath: null,
+      });
+      setEvidenceSliceBundle(bundle);
+      setEvidenceSliceSavedPath("");
+      setEvidenceSliceArtifactPath("");
+      setEvidenceSliceInspection(null);
+    } catch (e) { setError(String(e)); }
+    finally { setBusy(false); }
+  }, [buildEvidenceSliceRequest, confirmEvidenceSliceSensitiveValues]);
+
+  const saveEvidenceSlice = useCallback(async () => {
+    let request: MinimalEvidenceSliceRequest;
+    try { request = buildEvidenceSliceRequest(); }
+    catch (e) { setError(String(e)); return; }
+    if (!confirmEvidenceSliceSensitiveValues()) return;
+    const { save } = await import("@tauri-apps/plugin-dialog");
+    const selected = await save({
+      title: "保存 Minimal Evidence Slice",
+      defaultPath: "trace-ui-evidence-slice.json",
+      filters: [{ name: "JSON", extensions: ["json"] }],
+    });
+    if (!selected) return;
+    setBusy(true); setError(null);
+    try {
+      const bundle = await invoke<MinimalEvidenceSliceBundle>("generate_minimal_evidence_slice", {
+        request,
+        outputPath: selected,
+      });
+      setEvidenceSliceBundle(bundle);
+      setEvidenceSliceSavedPath(selected);
+      setEvidenceSliceArtifactPath(selected);
+      setEvidenceSliceInspection(await invoke<MinimalEvidenceSliceInspectionReport>("inspect_minimal_evidence_slice", {
+        casePath: request.casePath,
+        artifactPath: selected,
+      }));
+    } catch (e) { setError(String(e)); }
+    finally { setBusy(false); }
+  }, [buildEvidenceSliceRequest, confirmEvidenceSliceSensitiveValues]);
+
+  const inspectEvidenceSlice = useCallback(async () => {
+    if (!document) return;
+    const { open } = await import("@tauri-apps/plugin-dialog");
+    const selected = await open({
+      title: "检查 Minimal Evidence Slice",
+      multiple: false,
+      directory: false,
+      filters: [{ name: "JSON", extensions: ["json"] }],
+    });
+    if (typeof selected !== "string") return;
+    setBusy(true); setError(null);
+    try {
+      const inspection = await invoke<MinimalEvidenceSliceInspectionReport>("inspect_minimal_evidence_slice", {
+        casePath: document.casePath,
+        artifactPath: selected,
+      });
+      setEvidenceSliceArtifactPath(selected);
+      setEvidenceSliceInspection(inspection);
+    } catch (e) { setError(String(e)); }
+    finally { setBusy(false); }
+  }, [document]);
+
+  const importEvidenceSlice = useCallback(async () => {
+    if (!document || !evidenceSliceArtifactPath || !evidenceSliceInspection || evidenceSliceInspection.status === "invalid") return;
+    setBusy(true); setError(null);
+    try {
+      const imported = await invoke<{ case: TraceAnalysisCaseDocument["case"] }>("add_analysis_case_artifact", {
+        casePath: document.casePath,
+        artifactPath: evidenceSliceArtifactPath,
+        kindHint: "evidence-slice",
+        label: `Evidence slice · ${evidenceSliceInspection.sliceId.slice(0, 12)}`,
+        parentArtifactIds: evidenceSliceInspection.sourceArtifactIds,
+      });
+      remember({ casePath: document.casePath, case: imported.case });
+      setReport(null);
+    } catch (e) { setError(String(e)); }
+    finally { setBusy(false); }
+  }, [document, evidenceSliceArtifactPath, evidenceSliceInspection, remember]);
+
   const diagnoseAes = useCallback(async () => {
     if (!sessionId) return;
     setBusy(true); setError(null);
@@ -495,6 +637,25 @@ export default function AnalysisCasePanel({ sessionId }: Props) {
     () => document?.case.artifacts.filter(artifact => artifact.kind === "ollvm-report") ?? [],
     [document],
   );
+  const evidenceSliceClaims = useMemo(() => {
+    const persisted = (document?.case.claims ?? []).map(claim => ({ claim, source: "persisted" as const }));
+    if (!evidenceSliceIncludeGenerated) return persisted;
+    const persistedIds = new Set(persisted.map(item => item.claim.claimId));
+    return [
+      ...persisted,
+      ...(report?.generatedClaims ?? [])
+        .filter(claim => !persistedIds.has(claim.claimId))
+        .map(claim => ({ claim, source: "generated" as const })),
+    ];
+  }, [document, report, evidenceSliceIncludeGenerated]);
+  useEffect(() => {
+    const available = new Set(evidenceSliceClaims.map(item => item.claim.claimId));
+    setSelectedEvidenceSliceClaimIds(current => {
+      const retained = current.filter(claimId => available.has(claimId));
+      if (retained.length || !evidenceSliceClaims.length) return retained;
+      return [evidenceSliceClaims[0].claim.claimId];
+    });
+  }, [evidenceSliceClaims]);
   const selectedAttestationBinary = useMemo(
     () => staticBinaryArtifacts.find(artifact => artifact.artifactId === attestationBinaryArtifactId),
     [staticBinaryArtifacts, attestationBinaryArtifactId],
@@ -639,6 +800,27 @@ export default function AnalysisCasePanel({ sessionId }: Props) {
                 <span style={{ marginLeft: 6, color: "var(--text-secondary)", fontSize: 10 }}>{item.report.records.reduce((sum, record) => sum + record.matchedExecutableBytes, 0)}/{item.report.records.reduce((sum, record) => sum + record.totalExecutableBytes, 0)} executable bytes</span>
               </div>)}
             </div>}
+            {!!report?.exactCallSummaries.length && <div style={{ marginTop: 8 }}>
+              <div style={{ color: "var(--text-primary)", fontSize: 10, fontWeight: 600 }}>Exact-call provenance reports</div>
+              {report.exactCallSummaries.map(item => <div key={item.artifactId} style={{ marginTop: 5, padding: 7, background: "var(--bg-primary)", borderLeft: "3px solid #d29922" }}>
+                <span style={{ color: "#d29922", fontSize: 10 }}>Related only · gate {String(item.verificationGateMet)}</span>
+                <span style={{ marginLeft: 6, color: "var(--text-secondary)", fontSize: 10 }}>{item.captureReadyCallCount}/{item.pairedCallCount} capture-ready · {item.incompleteCallCount} incomplete</span>
+                <div style={{ marginTop: 3, color: "var(--text-tertiary)", fontSize: 9 }}>
+                  {item.callerModuleName} · capture {shortHash(item.sourceCaptureSha256)} · ELF {shortHash(item.binarySha256)}
+                </div>
+              </div>)}
+            </div>}
+            {!!report?.exactCallAuthorizations.length && <div style={{ marginTop: 8 }}>
+              <div style={{ color: "var(--text-primary)", fontSize: 10, fontWeight: 600 }}>Exact-call replay authorizations</div>
+              {report.exactCallAuthorizations.map(item => <div key={item.artifactId} style={{ marginTop: 5, padding: 7, background: "var(--bg-primary)", borderLeft: "3px solid #d29922" }}>
+                <span style={{ color: "#d29922", fontSize: 10 }}>Candidate/Related · gate {String(item.verificationGateMet)}</span>
+                <span style={{ marginLeft: 6, color: "var(--text-secondary)", fontSize: 10 }}>{item.authorizedCount} authorized · {item.blockedCount} blocked</span>
+                <div style={{ marginTop: 3, color: "var(--text-tertiary)", fontSize: 9 }}>
+                  summary {shortHash(item.summarySha256)} · ELF {shortHash(item.binarySha256)}
+                </div>
+                {!!item.blockedCallIds.length && <div style={{ marginTop: 3, color: "#d29922", fontSize: 9 }}>blocked call IDs: {item.blockedCallIds.slice(0, 4).join(", ")}</div>}
+              </div>)}
+            </div>}
             {!!report?.cryptoKats.length && <div style={{ marginTop: 8 }}>
               <div style={{ color: "var(--text-primary)", fontSize: 10, fontWeight: 600 }}>Strict crypto KAT reports</div>
               {report.cryptoKats.map(item => <div key={item.artifactId} style={{ marginTop: 5, padding: 7, background: "var(--bg-primary)", borderLeft: `3px solid ${statusColor(item.report.status)}` }}>
@@ -771,6 +953,99 @@ export default function AnalysisCasePanel({ sessionId }: Props) {
                 <span style={{ color: statusColor(item.report.status), fontSize: 10 }}>{item.report.status}</span>
                 <span style={{ marginLeft: 6, color: "var(--text-secondary)", fontSize: 10 }}>blocks {item.report.summary.observedStaticCounts.blocks}/{item.report.summary.staticCounts.blocks} · branches {item.report.summary.observedStaticCounts.branches}/{item.report.summary.staticCounts.branches}</span>
                 <div title={item.report.claimScope} style={{ marginTop: 3, color: "var(--text-tertiary)", fontSize: 9, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{item.report.claimScope}</div>
+              </div>)}
+            </div>}
+          </section>
+
+          <section style={cardStyle}>
+            <div style={{ display: "flex", alignItems: "center", gap: 7 }}>
+              <div style={{ color: "var(--text-primary)", fontSize: 12, fontWeight: 600 }}>Minimal Evidence Slice（AI 精确证据切片）</div>
+              {evidenceSliceInspection && <span style={{ color: statusColor(evidenceSliceInspection.status), fontSize: 10 }}>{evidenceSliceInspection.status}</span>}
+            </div>
+            <div style={{ marginTop: 4, color: "var(--text-secondary)", fontSize: 10, lineHeight: 1.5 }}>
+              只把所选 claim 对应的精确 Trace/内存/Frida/ELF/JSON 记录和 typed provenance graph 交给 AI，并绑定源文件 SHA-256 与 parent lineage。切片有效只证明这些有限记录可复算，不证明算法语义、OLLVM 结构或真实入口可达。
+            </div>
+            <div style={{ display: "flex", flexWrap: "wrap", gap: 8, marginTop: 8 }}>
+              <label style={{ color: "var(--text-secondary)", fontSize: 10 }}>
+                <input type="checkbox" checked={evidenceSliceIncludeGenerated} onChange={event => setEvidenceSliceIncludeGenerated(event.target.checked)} /> 包含 Replay Doctor generated claims
+              </label>
+              <label style={{ color: evidenceSliceIncludeSensitive ? "#e5484d" : "var(--text-secondary)", fontSize: 10 }}>
+                <input type="checkbox" checked={evidenceSliceIncludeSensitive} onChange={event => setEvidenceSliceIncludeSensitive(event.target.checked)} /> 包含敏感寄存器/内存/Frida 值（生成时再次确认）
+              </label>
+              <button type="button" style={buttonStyle} disabled={!evidenceSliceClaims.length} onClick={() => setSelectedEvidenceSliceClaimIds(evidenceSliceClaims.map(item => item.claim.claimId))}>全选 claims</button>
+              <button type="button" style={buttonStyle} disabled={!selectedEvidenceSliceClaimIds.length} onClick={() => setSelectedEvidenceSliceClaimIds([])}>清空</button>
+            </div>
+            <div style={{ display: "flex", flexDirection: "column", gap: 5, marginTop: 7, maxHeight: 180, overflow: "auto", padding: 6, background: "var(--bg-primary)", borderRadius: 4 }}>
+              {!evidenceSliceClaims.length && <div style={{ color: "#d29922", fontSize: 10 }}>案件暂无 persisted claim；先保存 claim，或运行 Replay Doctor 获取 generated claim。</div>}
+              {evidenceSliceClaims.map(({ claim, source }) => <label key={`${source}-${claim.claimId}`} style={{ display: "grid", gridTemplateColumns: "18px 78px minmax(0, 1fr)", gap: 5, alignItems: "start", color: "var(--text-secondary)", fontSize: 10 }}>
+                <input
+                  type="checkbox"
+                  checked={selectedEvidenceSliceClaimIds.includes(claim.claimId)}
+                  onChange={() => setSelectedEvidenceSliceClaimIds(current => current.includes(claim.claimId)
+                    ? current.filter(claimId => claimId !== claim.claimId)
+                    : [...current, claim.claimId])}
+                />
+                <span style={{ color: source === "generated" ? "#d29922" : "#58a6ff" }}>{source} · {claim.status}</span>
+                <span title={`${claim.scope}\n${claim.claimId}`} style={{ color: "var(--text-primary)" }}>{claim.statement}</span>
+              </label>)}
+            </div>
+            <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(150px, 1fr))", gap: 6, marginTop: 8 }}>
+              <label style={{ color: "var(--text-secondary)", fontSize: 10 }}>context before
+                <input aria-label="Evidence Slice context before" type="number" min={0} max={16} value={evidenceSliceContextBefore} onChange={event => setEvidenceSliceContextBefore(Number(event.target.value))} style={{ ...buttonStyle, width: "100%", height: 28, marginTop: 2 }} />
+              </label>
+              <label style={{ color: "var(--text-secondary)", fontSize: 10 }}>context after
+                <input aria-label="Evidence Slice context after" type="number" min={0} max={16} value={evidenceSliceContextAfter} onChange={event => setEvidenceSliceContextAfter(Number(event.target.value))} style={{ ...buttonStyle, width: "100%", height: 28, marginTop: 2 }} />
+              </label>
+              <label style={{ color: "var(--text-secondary)", fontSize: 10 }}>max records
+                <input aria-label="Evidence Slice max records" type="number" min={1} max={512} value={evidenceSliceMaxRecords} onChange={event => setEvidenceSliceMaxRecords(Number(event.target.value))} style={{ ...buttonStyle, width: "100%", height: 28, marginTop: 2 }} />
+              </label>
+            </div>
+            <div style={{ marginTop: 6, color: sessionId && document.case.primaryTraceArtifactId ? "#3fb950" : "#d29922", fontSize: 10 }}>
+              {sessionId && document.case.primaryTraceArtifactId
+                ? `已自动绑定当前 Trace session → primary trace artifact ${document.case.primaryTraceArtifactId}`
+                : "当前没有可自动绑定的 primary Trace session；涉及 Trace locator 的引用可能无法在生成阶段物化。"}
+            </div>
+            <div style={{ display: "flex", flexWrap: "wrap", gap: 6, marginTop: 8 }}>
+              <button type="button" style={{ ...buttonStyle, background: "var(--btn-primary)", color: "#fff" }} disabled={busy || !selectedEvidenceSliceClaimIds.length} onClick={generateEvidenceSlice}>生成切片</button>
+              <button type="button" style={buttonStyle} disabled={busy || !selectedEvidenceSliceClaimIds.length} onClick={saveEvidenceSlice}>生成并保存</button>
+              <button type="button" style={buttonStyle} disabled={busy} onClick={inspectEvidenceSlice}>检查已有切片</button>
+              <button type="button" style={buttonStyle} disabled={busy || !evidenceSliceInspection || evidenceSliceInspection.status === "invalid" || !evidenceSliceArtifactPath} onClick={importEvidenceSlice}>导入案件并绑定源 parents</button>
+            </div>
+            {evidenceSliceBundle && <div style={{ marginTop: 8, padding: 8, background: "var(--bg-primary)", borderLeft: `3px solid ${evidenceSliceBundle.content.summary.materializationComplete ? "#3fb950" : "#d29922"}` }}>
+              <div style={{ display: "flex", alignItems: "center", gap: 7 }}>
+                <span style={{ color: "var(--text-primary)", fontSize: 10, fontWeight: 600 }}>{evidenceSliceBundle.sliceId}</span>
+                <span style={{ marginLeft: "auto", color: evidenceSliceBundle.content.summary.containsSensitiveValues ? "#e5484d" : "var(--text-tertiary)", fontSize: 9 }}>
+                  {evidenceSliceBundle.content.summary.containsSensitiveValues ? "包含敏感值" : "敏感值已省略"}
+                </span>
+              </div>
+              <div style={{ marginTop: 3, color: "var(--text-secondary)", fontSize: 10 }}>
+                claims {evidenceSliceBundle.content.summary.selectedClaimCount} · references {evidenceSliceBundle.content.summary.materializedReferenceCount}/{evidenceSliceBundle.content.summary.selectedReferenceCount} · records {evidenceSliceBundle.content.summary.recordCount} · payload {evidenceSliceBundle.content.summary.payloadBytes} bytes
+              </div>
+              {(evidenceSliceBundle.content.summary.unresolvedReferenceCount > 0 || evidenceSliceBundle.content.summary.truncatedRecordCount > 0) && <div style={{ marginTop: 3, color: "#d29922", fontSize: 10 }}>
+                unresolved {evidenceSliceBundle.content.summary.unresolvedReferenceCount} · truncated {evidenceSliceBundle.content.summary.truncatedRecordCount}
+              </div>}
+              {evidenceSliceSavedPath && <div title={evidenceSliceSavedPath} style={{ marginTop: 3, color: "#58a6ff", fontSize: 10, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>已保存：{evidenceSliceSavedPath}</div>}
+            </div>}
+            {evidenceSliceInspection && <div style={{ marginTop: 8, padding: 8, background: "var(--bg-primary)", border: "1px solid var(--border-color)", borderLeft: `3px solid ${statusColor(evidenceSliceInspection.status)}`, borderRadius: 4 }}>
+              <div style={{ color: statusColor(evidenceSliceInspection.status), fontSize: 10, fontWeight: 700 }}>{evidenceSliceInspection.status}</div>
+              <div style={{ marginTop: 3, color: "var(--text-secondary)", fontSize: 9 }}>
+                content hash {String(evidenceSliceInspection.contentSha256Matched)} · sources {String(evidenceSliceInspection.sourceArtifactsMatched)} · claims {String(evidenceSliceInspection.claimBindingsMatched)} · records {String(evidenceSliceInspection.recordContentMatched)} · graph {String(evidenceSliceInspection.provenanceGraphValid)}
+              </div>
+              <div style={{ marginTop: 3, color: evidenceSliceInspection.summaryRecomputed.materializationComplete ? "#3fb950" : "#d29922", fontSize: 9 }}>
+                unresolved {evidenceSliceInspection.summaryRecomputed.unresolvedReferenceCount} · truncated {evidenceSliceInspection.summaryRecomputed.truncatedRecordCount} · generated bindings revalidated {String(evidenceSliceInspection.generatedClaimBindingsRevalidated)}
+              </div>
+              {evidenceSliceInspection.staleClaimIds.map(claimId => <div key={`stale-${claimId}`} style={{ marginTop: 3, color: "#d29922", fontSize: 9 }}>stale claim: {claimId}</div>)}
+              {evidenceSliceInspection.unrevalidatedGeneratedClaimIds.map(claimId => <div key={`unrevalidated-${claimId}`} style={{ marginTop: 3, color: "#d29922", fontSize: 9 }}>generated binding not revalidated in nested Replay Doctor: {claimId}</div>)}
+              {evidenceSliceInspection.mismatchedRecordIds.map(recordId => <div key={`mismatch-${recordId}`} style={{ marginTop: 3, color: "#e5484d", fontSize: 9 }}>mismatched record: {recordId}</div>)}
+              {evidenceSliceInspection.blockers.map((blocker, index) => <div key={index} style={{ marginTop: 3, color: "#e5484d", fontSize: 10 }}>{blocker}</div>)}
+              {evidenceSliceInspection.warnings.map((warning, index) => <div key={index} style={{ marginTop: 3, color: "#d29922", fontSize: 10 }}>{warning}</div>)}
+            </div>}
+            {!!report?.evidenceSlices?.length && <div style={{ marginTop: 8 }}>
+              <div style={{ color: "var(--text-primary)", fontSize: 10, fontWeight: 600 }}>案件中的严格 Evidence Slices</div>
+              {report.evidenceSlices.map(item => <div key={item.artifactId} style={{ marginTop: 5, padding: 7, background: "var(--bg-primary)", borderLeft: `3px solid ${statusColor(item.report.status)}` }}>
+                <span style={{ color: statusColor(item.report.status), fontSize: 10 }}>{item.report.status}</span>
+                <span style={{ marginLeft: 6, color: "var(--text-secondary)", fontSize: 10 }}>records {item.report.summaryRecomputed.recordCount} · unresolved {item.report.summaryRecomputed.unresolvedReferenceCount} · truncated {item.report.summaryRecomputed.truncatedRecordCount}</span>
+                {!item.report.generatedClaimBindingsRevalidated && <div style={{ marginTop: 3, color: "#d29922", fontSize: 9 }}>Replay Doctor 内部为避免递归，未重生成 generated claim fingerprint；请使用独立检查按钮复验。</div>}
               </div>)}
             </div>}
           </section>

@@ -1021,6 +1021,7 @@ mod tests {
                 memory_writes: Vec::new(),
                 memory_writes_truncated: false,
                 call_boundaries: Vec::new(),
+                exact_call_replays: Vec::new(),
                 missing_memory,
                 warnings: Vec::new(),
                 error: None,

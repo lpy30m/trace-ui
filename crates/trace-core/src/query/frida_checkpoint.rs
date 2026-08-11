@@ -817,6 +817,7 @@ mod tests {
                 memory_writes: Vec::new(),
                 memory_writes_truncated: false,
                 call_boundaries: Vec::new(),
+                exact_call_replays: Vec::new(),
                 missing_memory: vec![UnicornMissingMemory {
                     access: "read".to_string(),
                     address: "0x90000020".to_string(),

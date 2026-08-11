@@ -78,6 +78,24 @@ pub struct FridaCaptureEvent {
     #[serde(default)]
     pub target: Option<String>,
     #[serde(default)]
+    pub target_offset: Option<String>,
+    #[serde(default)]
+    pub caller_module_name: Option<String>,
+    #[serde(default)]
+    pub caller_module_base: Option<String>,
+    #[serde(default)]
+    pub caller_module_size: Option<u64>,
+    #[serde(default)]
+    pub call_site: Option<String>,
+    #[serde(default)]
+    pub call_site_offset: Option<String>,
+    #[serde(default)]
+    pub return_address: Option<String>,
+    #[serde(default)]
+    pub return_offset: Option<String>,
+    #[serde(default)]
+    pub exact_call_record: bool,
+    #[serde(default)]
     pub dispatcher_offset: Option<String>,
     #[serde(default)]
     pub capture_session_id: Option<String>,
@@ -143,6 +161,15 @@ pub struct FridaCaptureEventSummary {
     pub module_base: Option<String>,
     pub module_size: Option<u64>,
     pub target: Option<String>,
+    pub target_offset: Option<String>,
+    pub caller_module_name: Option<String>,
+    pub caller_module_base: Option<String>,
+    pub caller_module_size: Option<u64>,
+    pub call_site: Option<String>,
+    pub call_site_offset: Option<String>,
+    pub return_address: Option<String>,
+    pub return_offset: Option<String>,
+    pub exact_call_record: bool,
     pub dispatcher_offset: Option<String>,
     pub capture_session_id: Option<String>,
     pub flow_id: Option<String>,
@@ -254,6 +281,8 @@ struct HookMetadata {
     module_base: Option<String>,
     module_size: Option<u64>,
     target: Option<String>,
+    target_offset: Option<String>,
+    exact_call_record: bool,
 }
 
 fn push_warning(warnings: &mut Vec<String>, warning: String) {
@@ -384,6 +413,18 @@ fn parse_event(value: Value, index: u64, warnings: &mut Vec<String>) -> Option<F
         module_base: string_field(object, "moduleBase"),
         module_size: u64_field(object, "moduleSize"),
         target: string_field(object, "target"),
+        target_offset: string_field(object, "targetOffset"),
+        caller_module_name: string_field(object, "callerModuleName"),
+        caller_module_base: string_field(object, "callerModuleBase"),
+        caller_module_size: u64_field(object, "callerModuleSize"),
+        call_site: string_field(object, "callSite"),
+        call_site_offset: string_field(object, "callSiteOffset"),
+        return_address: string_field(object, "returnAddress"),
+        return_offset: string_field(object, "returnOffset"),
+        exact_call_record: object
+            .get("exactCallRecord")
+            .and_then(Value::as_bool)
+            .unwrap_or(false),
         dispatcher_offset: string_field(object, "dispatcherOffset"),
         capture_session_id: string_field(object, "captureSessionId"),
         flow_id: string_field(object, "flowId"),
@@ -490,6 +531,12 @@ fn normalize_metadata_and_calls(events: &mut [FridaCaptureEvent]) {
         if event.target.is_some() {
             hook_metadata.target.clone_from(&event.target);
         }
+        if event.target_offset.is_some() {
+            hook_metadata.target_offset.clone_from(&event.target_offset);
+        }
+        if event.exact_call_record {
+            hook_metadata.exact_call_record = true;
+        }
         if event.module_name.is_none() {
             event.module_name.clone_from(&hook_metadata.module_name);
         }
@@ -501,6 +548,26 @@ fn normalize_metadata_and_calls(events: &mut [FridaCaptureEvent]) {
         }
         if event.target.is_none() {
             event.target.clone_from(&hook_metadata.target);
+        }
+        if event.target_offset.is_none() {
+            event.target_offset.clone_from(&hook_metadata.target_offset);
+        }
+        if !event.exact_call_record {
+            event.exact_call_record = hook_metadata.exact_call_record;
+        }
+        if event.target_offset.is_none() {
+            event.target_offset = event
+                .target
+                .as_deref()
+                .and_then(|target| parse_hex_addr(target).ok())
+                .zip(
+                    event
+                        .module_base
+                        .as_deref()
+                        .and_then(|base| parse_hex_addr(base).ok()),
+                )
+                .and_then(|(target, base)| target.checked_sub(base))
+                .map(|offset| format!("0x{offset:x}"));
         }
 
         let key = (event.hook_id.clone(), event.thread_id);
@@ -657,6 +724,15 @@ fn event_summary(event: &FridaCaptureEvent) -> FridaCaptureEventSummary {
         module_base: event.module_base.clone(),
         module_size: event.module_size,
         target: event.target.clone(),
+        target_offset: event.target_offset.clone(),
+        caller_module_name: event.caller_module_name.clone(),
+        caller_module_base: event.caller_module_base.clone(),
+        caller_module_size: event.caller_module_size,
+        call_site: event.call_site.clone(),
+        call_site_offset: event.call_site_offset.clone(),
+        return_address: event.return_address.clone(),
+        return_offset: event.return_offset.clone(),
+        exact_call_record: event.exact_call_record,
         dispatcher_offset: event.dispatcher_offset.clone(),
         capture_session_id: event.capture_session_id.clone(),
         flow_id: event.flow_id.clone(),

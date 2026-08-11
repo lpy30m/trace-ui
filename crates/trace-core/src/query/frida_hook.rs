@@ -84,6 +84,8 @@ pub struct FridaHookRequest {
     #[serde(default)]
     pub capture_backtrace: bool,
     #[serde(default)]
+    pub capture_exact_call: bool,
+    #[serde(default)]
     pub stalker: FridaStalkerMode,
     #[serde(default = "default_stalker_duration")]
     pub stalker_duration_ms: u32,
@@ -187,6 +189,12 @@ fn validate_request(request: &FridaHookRequest) -> Result<(String, Option<u64>),
             && !matches!(argument.direction, FridaCaptureDirection::Output)
     }) {
         return Err("length_pointer_arg is supported only for output captures".to_string());
+    }
+    if request.capture_exact_call && (!request.capture_registers || !request.capture_return) {
+        return Err(
+            "capture_exact_call requires capture_registers and capture_return so enter/leave state can be paired without inventing effects"
+                .to_string(),
+        );
     }
     let max_bytes = request.max_bytes.clamp(1, 1_048_576);
     if max_bytes == 0 {
@@ -299,6 +307,8 @@ let nextCallId = 1;
 let nextEventId = 1;
 let resolvedModuleBase = null;
 let resolvedModuleSize = 0;
+let resolvedTarget = null;
+let resolvedTargetOffset = null;
 
 function sendEvent(event, payload) {
   const record = Object.assign({
@@ -310,6 +320,9 @@ function sendEvent(event, payload) {
     moduleName: MODULE_NAME,
     moduleBase: resolvedModuleBase !== null ? resolvedModuleBase.toString() : null,
     moduleSize: resolvedModuleSize,
+    target: resolvedTarget !== null ? resolvedTarget.toString() : null,
+    targetOffset: resolvedTargetOffset,
+    exactCallRecord: __CAPTURE_EXACT_CALL__,
     timestampMs: Date.now(),
     threadId: Process.getCurrentThreadId()
   }, payload || {});
@@ -340,9 +353,9 @@ function safeRead(pointer, kind, length) {
 }
 
 function captureArguments(args, phase) {
-  return ARG_SPECS.filter(spec => phase === 'enter'
+  return ARG_SPECS.filter(spec => __CAPTURE_EXACT_CALL__ || (phase === 'enter'
     ? spec.direction === 'input' || spec.direction === 'inOut'
-    : spec.direction === 'output' || spec.direction === 'inOut')
+    : spec.direction === 'output' || spec.direction === 'inOut'))
     .map(spec => {
       let length = spec.length;
       let lengthSource = length !== null && length !== undefined ? 'fixed' : null;
@@ -414,6 +427,26 @@ function captureBacktrace(context) {
   }
 }
 
+function captureCaller(context) {
+  try {
+    const returnAddress = context.lr;
+    if (returnAddress === null || returnAddress === undefined) return {};
+    const callSite = returnAddress.sub(4);
+    const callerModule = Process.findModuleByAddress(callSite);
+    return {
+      callerModuleName: callerModule ? callerModule.name : null,
+      callerModuleBase: callerModule ? callerModule.base.toString() : null,
+      callerModuleSize: callerModule ? callerModule.size : 0,
+      callSite: callSite.toString(),
+      callSiteOffset: callerModule ? callSite.sub(callerModule.base).toString() : null,
+      returnAddress: returnAddress.toString(),
+      returnOffset: callerModule ? returnAddress.sub(callerModule.base).toString() : null
+    };
+  } catch (error) {
+    return { callerMetadataError: String(error) };
+  }
+}
+
 function stopStalker(state) {
   if (!state || state.stalkerTid === null || state.stalkerTid === undefined) return;
   try {
@@ -464,6 +497,8 @@ function install() {
     if (resolvedModuleBase === null) throw new Error('module not loaded: ' + MODULE_NAME);
     try { resolvedModuleSize = Process.getModuleByName(MODULE_NAME).size; } catch (_) { resolvedModuleSize = 0; }
     target = resolveTarget();
+    resolvedTarget = target;
+    resolvedTargetOffset = target.sub(resolvedModuleBase).toString();
   } catch (error) {
     sendEvent('hook-error', { error: 'target resolution failed: ' + String(error) });
     return;
@@ -472,26 +507,26 @@ function install() {
   Interceptor.attach(target, {
     onEnter: function (args) {
       const callId = HOOK_ID + ':' + Process.getCurrentThreadId() + ':' + (nextCallId++);
-      this.__traceUiState = { args: copyArguments(args), callId: callId, stalkerTid: null, stalkerTimer: null };
-      sendEvent('hook-enter', {
+      const caller = captureCaller(this.context);
+      this.__traceUiState = { args: copyArguments(args), callId: callId, caller: caller, stalkerTid: null, stalkerTimer: null };
+      sendEvent('hook-enter', Object.assign({
         callId: callId,
-        target: target.toString(),
         registers: __CAPTURE_REGISTERS__ ? captureRegisters(this.context) : null,
         backtrace: __CAPTURE_BACKTRACE__ ? captureBacktrace(this.context) : null,
         captures: captureArguments(args, 'enter')
-      });
+      }, caller));
       startStalker(this.__traceUiState);
     },
     onLeave: function (retval) {
       const state = this.__traceUiState;
       stopStalker(state);
       if (state && state.stalkerTimer !== null) clearTimeout(state.stalkerTimer);
-      sendEvent('hook-leave', {
+      sendEvent('hook-leave', Object.assign({
         callId: state ? state.callId : null,
         returnValue: __CAPTURE_RETURN__ ? retval.toString() : null,
         captures: state ? captureArguments(state.args, 'leave') : [],
         registers: __CAPTURE_REGISTERS__ ? captureRegisters(this.context) : null
-      });
+      }, state ? state.caller : {}));
     }
   });
   sendEvent('hook-installed', { target: target.toString() });
@@ -549,6 +584,14 @@ setImmediate(install);
             } else {
                 "false"
             },
+        )
+        .replace(
+            "__CAPTURE_EXACT_CALL__",
+            if request.capture_exact_call {
+                "true"
+            } else {
+                "false"
+            },
         );
 
     let mut warnings = vec![
@@ -560,6 +603,12 @@ setImmediate(install);
         "Output length-pointer captures are dereferenced only on function leave and remain bounded by max_bytes.".to_string(),
         "An offset is relative to the loaded module base and must match the target SO/dylib build.".to_string(),
     ];
+    if request.capture_exact_call {
+        warnings.push(
+            "Exact-call recording captures every configured argument on both enter and leave, plus caller call-site/return metadata. It still cannot prove that unconfigured memory, SIMD/FP, TLS, syscalls, thread state, or other hidden side effects are absent."
+                .to_string(),
+        );
+    }
     match request.stalker {
         FridaStalkerMode::Instructions => warnings.push(
             "Instruction exec events are high volume; use calls/blocks first and bound capture duration."
@@ -604,6 +653,7 @@ mod tests {
             capture_registers: true,
             capture_return: true,
             capture_backtrace: true,
+            capture_exact_call: false,
             stalker: FridaStalkerMode::Calls,
             stalker_duration_ms: 5000,
             max_bytes: 512,

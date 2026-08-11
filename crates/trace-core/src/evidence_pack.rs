@@ -104,6 +104,25 @@ pub struct EvidencePackEvidenceItem {
 
 #[derive(Clone, Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
+pub struct EvidencePackEvidenceSlice {
+    pub artifact_id: String,
+    pub status: String,
+    pub selected_claim_ids: Vec<String>,
+    pub source_artifact_ids: Vec<String>,
+    pub record_count: u64,
+    pub unresolved_reference_count: u64,
+    pub truncated_record_count: u64,
+    pub contains_sensitive_values: bool,
+    pub claim_bindings_matched: bool,
+    pub generated_claim_bindings_revalidated: bool,
+    pub record_content_matched: bool,
+    pub provenance_graph_valid: bool,
+    pub blockers: Vec<String>,
+    pub warnings: Vec<String>,
+}
+
+#[derive(Clone, Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
 pub struct EvidencePackUnknown {
     pub unknown_id: String,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -148,6 +167,8 @@ pub struct EvidencePackBudget {
     pub omitted_unknown_count: u32,
     pub total_invalid_artifact_count: u32,
     pub omitted_invalid_artifact_count: u32,
+    pub total_evidence_slice_count: u32,
+    pub omitted_evidence_slice_count: u32,
     pub truncated: bool,
     pub token_estimate_method: String,
 }
@@ -165,6 +186,7 @@ pub struct AnalysisCaseEvidencePack {
     pub claims: Vec<EvidencePackClaim>,
     pub supporting_evidence: Vec<EvidencePackEvidenceItem>,
     pub counter_evidence: Vec<EvidencePackEvidenceItem>,
+    pub evidence_slices: Vec<EvidencePackEvidenceSlice>,
     pub unknowns: Vec<EvidencePackUnknown>,
     pub invalid_artifacts: Vec<EvidencePackInvalidArtifact>,
     pub warnings: Vec<String>,
@@ -394,6 +416,7 @@ fn pack_item_count(pack: &AnalysisCaseEvidencePack) -> u32 {
     (pack.claims.len()
         + pack.supporting_evidence.len()
         + pack.counter_evidence.len()
+        + pack.evidence_slices.len()
         + pack.unknowns.len()
         + pack.invalid_artifacts.len())
     .min(u32::MAX as usize) as u32
@@ -421,11 +444,16 @@ fn recalculate_budget(pack: &mut AnalysisCaseEvidencePack) {
         .budget
         .total_invalid_artifact_count
         .saturating_sub(pack.invalid_artifacts.len() as u32);
+    pack.budget.omitted_evidence_slice_count = pack
+        .budget
+        .total_evidence_slice_count
+        .saturating_sub(pack.evidence_slices.len() as u32);
     pack.budget.truncated = pack.budget.omitted_claim_count > 0
         || pack.budget.omitted_supporting_evidence_count > 0
         || pack.budget.omitted_counter_evidence_count > 0
         || pack.budget.omitted_unknown_count > 0
-        || pack.budget.omitted_invalid_artifact_count > 0;
+        || pack.budget.omitted_invalid_artifact_count > 0
+        || pack.budget.omitted_evidence_slice_count > 0;
     pack.budget.estimated_token_count = estimate_serialized_tokens(pack);
 }
 
@@ -441,6 +469,9 @@ fn trim_to_actual_budget(pack: &mut AnalysisCaseEvidencePack) {
 
 fn remove_low_priority_item(pack: &mut AnalysisCaseEvidencePack) -> bool {
     if pack.unknowns.pop().is_some() || pack.supporting_evidence.pop().is_some() {
+        return true;
+    }
+    if pack.evidence_slices.pop().is_some() {
         return true;
     }
     if pack.claims.len() > 1 {
@@ -529,6 +560,37 @@ pub fn build_analysis_case_evidence_pack(
         .map(|health| invalid_artifact(health))
         .collect::<Vec<_>>();
     invalid_candidates.sort_by(|left, right| left.artifact_id.cmp(&right.artifact_id));
+    let mut evidence_slice_candidates = doctor
+        .evidence_slices
+        .iter()
+        .map(|slice| EvidencePackEvidenceSlice {
+            artifact_id: slice.artifact_id.clone(),
+            status: slice.report.status.clone(),
+            selected_claim_ids: slice.selected_claim_ids.clone(),
+            source_artifact_ids: slice.source_artifact_ids.clone(),
+            record_count: slice.report.summary_recomputed.record_count,
+            unresolved_reference_count: slice.report.summary_recomputed.unresolved_reference_count,
+            truncated_record_count: slice.report.summary_recomputed.truncated_record_count,
+            contains_sensitive_values: slice.report.summary_recomputed.contains_sensitive_values,
+            claim_bindings_matched: slice.report.claim_bindings_matched,
+            generated_claim_bindings_revalidated: slice.report.generated_claim_bindings_revalidated,
+            record_content_matched: slice.report.record_content_matched,
+            provenance_graph_valid: slice.report.provenance_graph_valid,
+            blockers: slice
+                .report
+                .blockers
+                .iter()
+                .map(|value| truncate_text(value, MAX_ITEM_TEXT_CHARS))
+                .collect(),
+            warnings: slice
+                .report
+                .warnings
+                .iter()
+                .map(|value| truncate_text(value, MAX_ITEM_TEXT_CHARS))
+                .collect(),
+        })
+        .collect::<Vec<_>>();
+    evidence_slice_candidates.sort_by(|left, right| left.artifact_id.cmp(&right.artifact_id));
 
     let mut claim_candidates = Vec::new();
     let mut supporting_candidates = Vec::new();
@@ -797,6 +859,8 @@ pub fn build_analysis_case_evidence_pack(
             omitted_unknown_count: 0,
             total_invalid_artifact_count: invalid_candidates.len() as u32,
             omitted_invalid_artifact_count: 0,
+            total_evidence_slice_count: evidence_slice_candidates.len() as u32,
+            omitted_evidence_slice_count: 0,
             truncated: false,
             token_estimate_method:
                 "ASCII runs ceil(chars/4) plus one token per non-ASCII scalar; deterministic estimate, not a model tokenizer"
@@ -805,6 +869,7 @@ pub fn build_analysis_case_evidence_pack(
         claims: Vec::new(),
         supporting_evidence: Vec::new(),
         counter_evidence: Vec::new(),
+        evidence_slices: Vec::new(),
         unknowns: Vec::new(),
         invalid_artifacts: Vec::new(),
         warnings: (!doctor.warnings.is_empty()).then(|| {
@@ -821,6 +886,8 @@ pub fn build_analysis_case_evidence_pack(
             "Supporting evidence, counter-evidence, unknowns, and invalid artifacts are intentionally separated. Do not silently drop the latter three sections."
                 .to_string(),
             "Dynamic traces contain executed behavior only; unobserved paths and uncaptured state remain unknown."
+                .to_string(),
+            "Minimal evidence slices are exact bounded navigation/provenance objects, not semantic proof; unresolved, truncated, stale, or generated-binding-not-revalidated states must remain explicit."
                 .to_string(),
         ],
     };
@@ -857,6 +924,15 @@ pub fn build_analysis_case_evidence_pack(
         let _ = push_with_budget(
             &mut pack.counter_evidence,
             evidence,
+            &mut used_tokens,
+            &mut used_items,
+            request,
+        );
+    }
+    for slice in evidence_slice_candidates {
+        let _ = push_with_budget(
+            &mut pack.evidence_slices,
+            slice,
             &mut used_tokens,
             &mut used_items,
             request,
@@ -1003,6 +1079,35 @@ fn render_evidence_pack_markdown_unbounded(pack: &AnalysisCaseEvidencePack) -> S
         &pack.supporting_evidence,
     );
     render_markdown_evidence_section(&mut output, "Counter-evidence", &pack.counter_evidence);
+
+    output.push_str("## Minimal evidence slices\n\n");
+    if pack.evidence_slices.is_empty() {
+        output.push_str("- None included.\n\n");
+    }
+    for slice in &pack.evidence_slices {
+        output.push_str(&format!(
+            "- Artifact `{}` status `{}`: {} records, {} unresolved references, {} truncated records; sensitive values `{}`; claim bindings `{}`; generated bindings revalidated `{}`; record bytes `{}`; graph `{}`. Claims: {}. Sources: {}.\n",
+            markdown_inline(&slice.artifact_id),
+            markdown_inline(&slice.status),
+            slice.record_count,
+            slice.unresolved_reference_count,
+            slice.truncated_record_count,
+            slice.contains_sensitive_values,
+            slice.claim_bindings_matched,
+            slice.generated_claim_bindings_revalidated,
+            slice.record_content_matched,
+            slice.provenance_graph_valid,
+            slice.selected_claim_ids.iter().map(|value| format!("`{}`", markdown_inline(value))).collect::<Vec<_>>().join(", "),
+            slice.source_artifact_ids.iter().map(|value| format!("`{}`", markdown_inline(value))).collect::<Vec<_>>().join(", "),
+        ));
+        for blocker in &slice.blockers {
+            output.push_str(&format!("  - Blocker: {}\n", markdown_inline(blocker)));
+        }
+        for warning in &slice.warnings {
+            output.push_str(&format!("  - Warning: {}\n", markdown_inline(warning)));
+        }
+    }
+    output.push('\n');
 
     output.push_str("## Unknowns and next evidence needs\n\n");
     if pack.unknowns.is_empty() {

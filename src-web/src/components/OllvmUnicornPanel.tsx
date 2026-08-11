@@ -3,6 +3,9 @@ import { invoke } from "@tauri-apps/api/core";
 import type {
   AngrOllvmResultBundle,
   AngrOllvmScript,
+  ExactCallReplayAssumptions,
+  ExactCallReplayAuthorizationBundle,
+  ExactCallSummaryBundle,
   FridaCaptureBundle,
   FridaCaptureEvent,
   FridaUnicornCheckpointHookScript,
@@ -43,6 +46,24 @@ function positiveInteger(value: string, fallback: number): number {
   const parsed = Number(value);
   return Number.isInteger(parsed) && parsed > 0 ? parsed : fallback;
 }
+
+const initialExactCallAssumptions: ExactCallReplayAssumptions = {
+  capturedMemoryEffectsComplete: false,
+  noSimdFpSideEffects: false,
+  noTlsSideEffects: false,
+  noSystemRegisterOrSyscallEffects: false,
+  noThreadSignalOrCallbackEffects: false,
+  deterministicForExactPreconditions: false,
+};
+
+const exactCallAssumptionLabels: Array<[keyof ExactCallReplayAssumptions, string]> = [
+  ["capturedMemoryEffectsComplete", "已捕获全部内存副作用"],
+  ["noSimdFpSideEffects", "没有 SIMD/FP 副作用"],
+  ["noTlsSideEffects", "没有 TLS/errno 副作用"],
+  ["noSystemRegisterOrSyscallEffects", "没有系统寄存器或 syscall 副作用"],
+  ["noThreadSignalOrCallbackEffects", "没有线程、信号或 callback 副作用"],
+  ["deterministicForExactPreconditions", "对这些精确前置状态确定性一致"],
+];
 
 function eventOffset(event: FridaCaptureEvent): string {
   if (event.dispatcherOffset) return event.dispatcherOffset;
@@ -135,6 +156,12 @@ export default function OllvmUnicornPanel({ report }: Props) {
   const [capturePath, setCapturePath] = useState<string | null>(null);
   const [capture, setCapture] = useState<FridaCaptureBundle | null>(null);
   const [selectedEvents, setSelectedEvents] = useState<number[]>([]);
+  const [exactCallSummary, setExactCallSummary] = useState<ExactCallSummaryBundle | null>(null);
+  const [exactCallSummaryPath, setExactCallSummaryPath] = useState<string | null>(null);
+  const [selectedExactCallIds, setSelectedExactCallIds] = useState<string[]>([]);
+  const [exactCallAssumptions, setExactCallAssumptions] = useState<ExactCallReplayAssumptions>(initialExactCallAssumptions);
+  const [exactCallAuthorization, setExactCallAuthorization] = useState<ExactCallReplayAuthorizationBundle | null>(null);
+  const [exactCallAuthorizationPaths, setExactCallAuthorizationPaths] = useState<string[]>([]);
   const [maxInstructions, setMaxInstructions] = useState("50000");
   const [timeoutMs, setTimeoutMs] = useState("5000");
   const [maxMemoryWrites, setMaxMemoryWrites] = useState("4096");
@@ -208,19 +235,131 @@ export default function OllvmUnicornPanel({ report }: Props) {
     setAngrFallbackResultsPath(null);
   };
 
+  const resetExactCalls = () => {
+    setExactCallSummary(null);
+    setExactCallSummaryPath(null);
+    setSelectedExactCallIds([]);
+    setExactCallAssumptions(initialExactCallAssumptions);
+    setExactCallAuthorization(null);
+    setExactCallAuthorizationPaths([]);
+  };
+
+  const allExactCallAssumptionsAccepted = exactCallAssumptionLabels.every(([key]) => exactCallAssumptions[key]);
+
+  const toggleExactCall = (callId: string) => {
+    setSelectedExactCallIds(current => {
+      if (current.includes(callId)) return current.filter(value => value !== callId);
+      if (current.length >= 64) return current;
+      return [...current, callId];
+    });
+    setExactCallAuthorization(null);
+    setGenerated(null);
+  };
+
+  const createExactCallSummary = async () => {
+    if (!binaryPath || !capturePath) {
+      setError("请先选择精确 ELF 并导入由 Exact-call 模式生成的 Frida 捕获。");
+      return;
+    }
+    const { save } = await import("@tauri-apps/plugin-dialog");
+    const selected = await save({
+      defaultPath: "trace-ui-exact-call-summary.json",
+      filters: [{ name: "Trace UI exact-call summary", extensions: ["json"] }],
+    });
+    if (typeof selected !== "string") return;
+    const outputPath = selected.toLowerCase().endsWith(".json") ? selected : `${selected}.json`;
+    setBusy(true);
+    setError(null);
+    try {
+      const value = await invoke<ExactCallSummaryBundle>("summarize_exact_calls", {
+        capturePath,
+        callerModuleName: report.scope.moduleName,
+        staticBinaryPath: binaryPath,
+        maxCalls: 1_024,
+        maxMemoryBytesPerCall: 1_048_576,
+        outputPath,
+      });
+      setExactCallSummary(value);
+      setExactCallSummaryPath(outputPath);
+      setSelectedExactCallIds(value.calls.filter(call => call.completeness.captureReady).map(call => call.callId).slice(0, 64));
+      setExactCallAuthorization(null);
+      setGenerated(null);
+    } catch (reason) {
+      setError(String(reason));
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const authorizeExactCalls = async () => {
+    if (!binaryPath || !exactCallSummaryPath || selectedExactCallIds.length === 0) {
+      setError("请先生成摘要并选择至少一个 capture-ready callId。");
+      return;
+    }
+    if (!allExactCallAssumptionsAccepted) {
+      setError("Exact-call 重放默认拒绝；六项副作用/确定性假设必须由你逐项明确接受。");
+      return;
+    }
+    const { save } = await import("@tauri-apps/plugin-dialog");
+    const selected = await save({
+      defaultPath: "trace-ui-exact-call-authorization.json",
+      filters: [{ name: "Trace UI exact-call authorization", extensions: ["json"] }],
+    });
+    if (typeof selected !== "string") return;
+    const outputPath = selected.toLowerCase().endsWith(".json") ? selected : `${selected}.json`;
+    setBusy(true);
+    setError(null);
+    try {
+      const value = await invoke<ExactCallReplayAuthorizationBundle>("authorize_exact_call_replay", {
+        summaryPath: exactCallSummaryPath,
+        staticBinaryPath: binaryPath,
+        callIds: selectedExactCallIds,
+        assumptions: exactCallAssumptions,
+        outputPath,
+      });
+      setExactCallAuthorization(value);
+      if (value.authorizedCount > 0) {
+        setExactCallAuthorizationPaths(current => Array.from(new Set([...current, outputPath])).slice(0, 16));
+        setStopOnCall(true);
+      }
+      setGenerated(null);
+    } catch (reason) {
+      setError(String(reason));
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const importExactCallAuthorizations = async () => {
+    const { open } = await import("@tauri-apps/plugin-dialog");
+    const selected = await open({
+      multiple: true,
+      directory: false,
+      title: "选择 1–16 个严格 Exact-call replay authorization",
+      filters: [{ name: "Trace UI exact-call authorization", extensions: ["json"] }],
+    });
+    const paths = Array.isArray(selected) ? selected : typeof selected === "string" ? [selected] : [];
+    if (paths.length === 0) return;
+    setExactCallAuthorizationPaths(Array.from(new Set(paths)).slice(0, 16));
+    setStopOnCall(true);
+    setGenerated(null);
+    setError(null);
+  };
+
   const requestArgs = () => ({
     report,
     maxInstructions: positiveInteger(maxInstructions, 50_000),
     timeoutMs: positiveInteger(timeoutMs, 5_000),
     maxMemoryWrites: positiveInteger(maxMemoryWrites, 4_096),
     maxRecordedOffsets: positiveInteger(maxRecordedOffsets, 50_000),
-    stopOnCall,
+    stopOnCall: exactCallAuthorizationPaths.length > 0 ? true : stopOnCall,
     loopVisitLimit: positiveInteger(loopVisitLimit, 2),
     fridaBundle: capture,
     fridaEventIndex: null,
     fridaEventIndices: selectedEvents,
     staticBinaryPath: binaryPath || "",
     checkpointResultPath,
+    exactCallAuthorizationPaths,
   });
 
   const selectBinary = async () => {
@@ -241,6 +380,7 @@ export default function OllvmUnicornPanel({ report }: Props) {
       setSelectedCheckpointSeedOffsets([]);
       setCheckpointHook(null);
       setCheckpointSavedPath(null);
+      resetExactCalls();
       resetAngrFallback();
     }
   };
@@ -271,6 +411,7 @@ export default function OllvmUnicornPanel({ report }: Props) {
       setResultsPath(null);
       setSelectedRecaptureSuggestions([]);
       setRecaptureHook(null);
+      resetExactCalls();
       resetAngrFallback();
     } catch (reason) {
       setError(String(reason));
@@ -682,7 +823,7 @@ export default function OllvmUnicornPanel({ report }: Props) {
         <div style={{ marginTop: 10, fontWeight: 600 }}>1. 精确 ELF</div>
         <div style={{ display: "flex", gap: 6, marginTop: 5 }}>
           <button type="button" style={buttonStyle} onClick={selectBinary}>选择 ELF</button>
-          {binaryPath && <button type="button" style={buttonStyle} onClick={() => { setBinaryPath(null); setGenerated(null); setResults(null); setResultsPath(null); setSelectedRecaptureSuggestions([]); setRecaptureHook(null); setCheckpointResultPath(null); setSelectedCheckpointSeedOffsets([]); setCheckpointHook(null); setCheckpointSavedPath(null); resetAngrFallback(); }}>清除</button>}
+          {binaryPath && <button type="button" style={buttonStyle} onClick={() => { setBinaryPath(null); setGenerated(null); setResults(null); setResultsPath(null); setSelectedRecaptureSuggestions([]); setRecaptureHook(null); setCheckpointResultPath(null); setSelectedCheckpointSeedOffsets([]); setCheckpointHook(null); setCheckpointSavedPath(null); resetExactCalls(); resetAngrFallback(); }}>清除</button>}
         </div>
         <div title={binaryPath || ""} style={{ marginTop: 5, color: binaryPath ? "var(--text-secondary)" : "#d29922", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
           {binaryPath || "必须选择与 Frida 捕获相同构建的 AArch64 ELF"}
@@ -691,7 +832,7 @@ export default function OllvmUnicornPanel({ report }: Props) {
         <div style={{ marginTop: 12, fontWeight: 600 }}>2. Frida 精确事件</div>
         <div style={{ display: "flex", gap: 6, marginTop: 5 }}>
           <button type="button" style={buttonStyle} onClick={importCapture}>导入捕获</button>
-          {capture && <button type="button" style={buttonStyle} onClick={() => { setCapture(null); setCapturePath(null); setSelectedEvents([]); setGenerated(null); setResults(null); setResultsPath(null); setSelectedRecaptureSuggestions([]); setRecaptureHook(null); resetAngrFallback(); }}>清除</button>}
+          {capture && <button type="button" style={buttonStyle} onClick={() => { setCapture(null); setCapturePath(null); setSelectedEvents([]); setGenerated(null); setResults(null); setResultsPath(null); setSelectedRecaptureSuggestions([]); setRecaptureHook(null); resetExactCalls(); resetAngrFallback(); }}>清除</button>}
         </div>
         {capturePath && <div title={capturePath} style={{ marginTop: 5, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", color: "var(--text-secondary)" }}>{capturePath.split(/[\\/]/).pop()}</div>}
         {capture && (
@@ -708,6 +849,62 @@ export default function OllvmUnicornPanel({ report }: Props) {
         )}
         {capture && <div style={{ marginTop: 4, color: "var(--text-tertiary)" }}>{selectedEvents.length} selected / 32 maximum</div>}
 
+        <div style={{ marginTop: 12, paddingTop: 10, borderTop: "1px solid var(--border-color)" }}>
+          <div style={{ fontWeight: 600 }}>2.1 Exact-call 记录/授权（可选）</div>
+          <div style={{ marginTop: 4, color: "var(--text-secondary)", lineHeight: 1.5 }}>
+            用 Frida Hook 页的“Exact-call 双阶段记录”捕获真实 enter/leave，再为某个精确 call-site 生成摘要。默认不允许 Unicorn 跨调用；只有 call-site、target、return、X0-X7/SP 和输入内存全部匹配时才应用已授权效果。
+          </div>
+          <div style={{ display: "flex", gap: 6, flexWrap: "wrap", marginTop: 6 }}>
+            <button type="button" style={buttonStyle} disabled={busy || !capturePath || !binaryPath} onClick={createExactCallSummary}>生成并保存摘要</button>
+            <button type="button" style={buttonStyle} disabled={busy} onClick={importExactCallAuthorizations}>导入授权 JSON</button>
+            {exactCallAuthorizationPaths.length > 0 && <button type="button" style={buttonStyle} onClick={() => { setExactCallAuthorizationPaths([]); setGenerated(null); }}>清除授权</button>}
+          </div>
+          {exactCallSummaryPath && <div title={exactCallSummaryPath} style={{ marginTop: 5, color: "#58a6ff", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>摘要：{exactCallSummaryPath}</div>}
+          {exactCallSummary && (
+            <div style={{ marginTop: 7, padding: 7, background: "var(--bg-secondary)", borderRadius: 4 }}>
+              <div style={{ color: exactCallSummary.captureReadyCallCount > 0 ? "#3fb950" : "#d29922" }}>
+                paired {exactCallSummary.pairedCallCount} · capture-ready {exactCallSummary.captureReadyCallCount} · incomplete {exactCallSummary.incompleteCallCount}
+              </div>
+              <div style={{ display: "flex", gap: 6, marginTop: 5 }}>
+                <button type="button" style={buttonStyle} onClick={() => setSelectedExactCallIds(exactCallSummary.calls.filter(call => call.completeness.captureReady).map(call => call.callId).slice(0, 64))}>选择 ready calls</button>
+                <button type="button" style={buttonStyle} onClick={() => setSelectedExactCallIds([])}>清空</button>
+              </div>
+              <div style={{ maxHeight: 180, overflow: "auto", marginTop: 6, border: "1px solid var(--border-color)" }}>
+                {exactCallSummary.calls.map(call => (
+                  <label key={call.callId} style={{ display: "grid", gridTemplateColumns: "20px 92px minmax(0,1fr)", gap: 5, padding: "5px", borderBottom: "1px solid var(--border-color)", alignItems: "start" }}>
+                    <input type="checkbox" disabled={!call.completeness.captureReady} checked={selectedExactCallIds.includes(call.callId)} onChange={() => toggleExactCall(call.callId)} />
+                    <code>{call.callSiteOffset}</code>
+                    <span>
+                      {call.functionName} → {call.targetModuleName}@{call.targetOffset} · return {call.returnOffset} · {call.registerEffects.length} reg writes · {call.memoryEffects.length} memory effects
+                      {!call.completeness.captureReady && <div style={{ color: "#d29922" }}>{call.blockers.join("；") || call.status}</div>}
+                    </span>
+                  </label>
+                ))}
+              </div>
+              <div style={{ marginTop: 7, color: "#d29922" }}>授权前必须由你逐项确认以下不可观测副作用假设；Trace UI 不会替你推断。</div>
+              <div style={{ display: "grid", gap: 4, marginTop: 5 }}>
+                {exactCallAssumptionLabels.map(([key, label]) => (
+                  <label key={key} style={{ display: "flex", gap: 5, alignItems: "flex-start" }}>
+                    <input type="checkbox" checked={exactCallAssumptions[key]} onChange={event => { setExactCallAssumptions(current => ({ ...current, [key]: event.target.checked })); setExactCallAuthorization(null); }} />
+                    <span>{label}</span>
+                  </label>
+                ))}
+              </div>
+              <button type="button" style={{ ...buttonStyle, marginTop: 7, background: allExactCallAssumptionsAccepted ? "var(--btn-primary)" : "var(--bg-input)", color: allExactCallAssumptionsAccepted ? "#fff" : "var(--text-secondary)" }} disabled={busy || selectedExactCallIds.length === 0 || !allExactCallAssumptionsAccepted} onClick={authorizeExactCalls}>显式授权并保存</button>
+            </div>
+          )}
+          {exactCallAuthorization && (
+            <div style={{ marginTop: 6, color: exactCallAuthorization.authorizedCount > 0 ? "#3fb950" : "#e5484d" }}>
+              authorization: {exactCallAuthorization.authorizedCount} authorized / {exactCallAuthorization.blockedCount} blocked；verificationGateMet 始终为 {String(exactCallAuthorization.verificationGateMet)}
+            </div>
+          )}
+          {exactCallAuthorizationPaths.map(path => <div key={path} title={path} style={{ marginTop: 4, display: "flex", gap: 5, minWidth: 0 }}>
+            <span style={{ color: "#58a6ff", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{path.split(/[\\/]/).pop()}</span>
+            <button type="button" style={{ ...buttonStyle, height: 20, padding: "0 6px" }} onClick={() => { setExactCallAuthorizationPaths(current => current.filter(value => value !== path)); setGenerated(null); }}>移除</button>
+          </div>)}
+          {exactCallAuthorizationPaths.length > 0 && <div style={{ marginTop: 5, color: "#d29922" }}>已嵌入 {exactCallAuthorizationPaths.length} 个授权 artifact；未知/不匹配调用仍停止，且“调用前停止”保持开启。</div>}
+        </div>
+
         <div style={{ marginTop: 12, fontWeight: 600 }}>3. 有界执行</div>
         <div style={{ display: "grid", gridTemplateColumns: "165px minmax(0,1fr)", gap: 6, alignItems: "center", marginTop: 6 }}>
           <label>最大指令数</label><input style={inputStyle} value={maxInstructions} onChange={event => { setMaxInstructions(event.target.value); setGenerated(null); }} />
@@ -715,7 +912,7 @@ export default function OllvmUnicornPanel({ report }: Props) {
           <label>最大内存写记录</label><input style={inputStyle} value={maxMemoryWrites} onChange={event => { setMaxMemoryWrites(event.target.value); setGenerated(null); }} />
           <label>最大指令偏移记录</label><input style={inputStyle} value={maxRecordedOffsets} onChange={event => { setMaxRecordedOffsets(event.target.value); setGenerated(null); }} />
           <label>循环访问阈值</label><input style={inputStyle} value={loopVisitLimit} onChange={event => { setLoopVisitLimit(event.target.value); setGenerated(null); }} />
-          <label style={{ display: "flex", gap: 5, alignItems: "center" }}><input type="checkbox" checked={stopOnCall} onChange={event => { setStopOnCall(event.target.checked); setGenerated(null); }} />调用前停止</label><span />
+          <label style={{ display: "flex", gap: 5, alignItems: "center" }}><input type="checkbox" checked={exactCallAuthorizationPaths.length > 0 ? true : stopOnCall} disabled={exactCallAuthorizationPaths.length > 0} onChange={event => { setStopOnCall(event.target.checked); setGenerated(null); }} />调用前停止</label><span />
         </div>
 
         <div style={{ display: "flex", gap: 6, flexWrap: "wrap", marginTop: 12 }}>
@@ -750,6 +947,14 @@ export default function OllvmUnicornPanel({ report }: Props) {
               {generatedRecaptureSummary.unsupported > 0 && ` · ${generatedRecaptureSummary.unsupported} 个内存区域无法自动保留`}
               {generatedRecaptureSummary.truncated && " · 已达到窗口上限"}
             </div>
+            {(generated.exactCallAuthorizations || []).length > 0 && (
+              <div style={{ marginTop: 7, paddingTop: 6, borderTop: "1px solid var(--border-color)" }}>
+                <strong>Exact-call replay candidates</strong>
+                {(generated.exactCallAuthorizations || []).map(item => <div key={item.authorizationId} style={{ marginTop: 4, color: "#d29922" }}>
+                  {item.callSiteOffset} → {item.targetModuleName}@{item.targetOffset} → {item.returnOffset} · {item.registerWriteCount} reg writes · {item.memoryEffectCount} memory effects
+                </div>)}
+              </div>
+            )}
           </div>
         )}
         {generated?.warnings.map((warning, index) => <div key={`generated-${index}`} style={{ marginTop: 5, color: "#d29922" }}>{warning}</div>)}
@@ -979,12 +1184,18 @@ export default function OllvmUnicornPanel({ report }: Props) {
                   {run.matchedDispatcherOffset && <span>→ <code>{run.matchedDispatcherOffset}</code></span>}
                 </div>
                 <div style={{ marginTop: 5 }}>state: {stateText(run.sourceStateValues)} → {stateText(run.targetStateValues)}</div>
-                <div style={{ marginTop: 4, color: "var(--text-secondary)" }}>{run.blockOffsets.length} block hits · {run.registerChanges.length} register changes · {run.memoryWrites.length} writes · {run.missingMemory.length} missing reads</div>
+                <div style={{ marginTop: 4, color: "var(--text-secondary)" }}>{run.blockOffsets.length} block hits · {run.registerChanges.length} register changes · {run.memoryWrites.length} writes · {(run.exactCallReplays || []).length} exact-call decisions · {run.missingMemory.length} missing reads</div>
                 {(run.callBoundaries || []).map((boundary, index) => (
                   <div key={`${run.sourceEventIndex}-call-${index}`} style={{ marginTop: 4, color: "#d29922" }}>
                     call {boundary.mnemonic} at <code>{boundary.pcOffset}</code>
                     {boundary.targetOffset ? ` → ${boundary.targetOffset}` : boundary.targetAddress ? ` → ${boundary.targetAddress}` : ""}
                     {boundary.returnOffset ? ` · post-call return checkpoint ${boundary.returnOffset}` : " · legacy result has no return checkpoint offset"}
+                  </div>
+                ))}
+                {(run.exactCallReplays || []).map((replay, index) => (
+                  <div key={`${run.sourceEventIndex}-exact-call-${index}`} style={{ marginTop: 4, color: replay.status === "replayed" ? "#3fb950" : "#e5484d" }}>
+                    exact-call {replay.status} at <code>{replay.callSiteOffset}</code> → {replay.targetOffset || replay.targetAddress || "unknown target"} → <code>{replay.returnOffset}</code>
+                    {" · "}{replay.appliedRegisterCount} reg writes / {replay.appliedMemoryEffectCount} memory effects · {replay.reason}
                   </div>
                 ))}
                 {run.missingMemory.map((missing, index) => (

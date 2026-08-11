@@ -8,6 +8,7 @@ import { useSearchPages } from "../hooks/useSearchPages";
 import { findNearestSeqIndex } from "../utils/binarySearch";
 import type { SearchMatch, SliceResult, CryptoScanResult, HashMatchResult, StringRecordDto } from "../types/trace";
 import MemoryPanel from "./MemoryPanel";
+import MemoryObjectsPanel from "./MemoryObjectsPanel";
 import SearchResultList from "./SearchResultList";
 import SearchBar, { SearchOptions } from "./SearchBar";
 import StringsPanel from "./StringsPanel";
@@ -18,9 +19,9 @@ import TaintResultViews from "./TaintResultViews";
 import { useSelectedSeq } from "../stores/selectedSeqStore";
 import { explainTaintError } from "../utils/taintError";
 
-const TABS = ["Memory", "Accesses", "Taint State", "Search", "Strings", "Crypto", "Analyses", "Function"] as const;
+const TABS = ["Memory", "Objects", "Accesses", "Taint State", "Search", "Strings", "Crypto", "Analyses", "Function"] as const;
 type TabName = typeof TABS[number];
-const TAB_LABELS: Record<TabName, string> = { Memory: "内存", Accesses: "访问记录", "Taint State": "污点状态", Search: "搜索", Strings: "字符串", Crypto: "加密分析", Analyses: "分析历史", Function: "函数" };
+const TAB_LABELS: Record<TabName, string> = { Memory: "内存", Objects: "对象/别名", Accesses: "访问记录", "Taint State": "污点状态", Search: "搜索", Strings: "字符串", Crypto: "加密分析", Analyses: "分析历史", Function: "函数" };
 
 function DepTreeFromSliceButton({ sessionId }: { sessionId: string | null }) {
   const handleClick = useCallback(() => {
@@ -50,6 +51,7 @@ function DepTreeFromSliceButton({ sessionId }: { sessionId: string | null }) {
 
 const TAB_TO_PANEL: Record<string, string> = {
   "Memory": "memory",
+  "Objects": "objects",
   "Accesses": "accesses",
   "Taint State": "taint-state",
   "Search": "search",
@@ -335,6 +337,14 @@ export default function TabPanel({
           sessionId={sessionId}
           resetKey={memResetKey}
           onTraceMemory={onTraceMemory}
+        />
+      </div>
+
+      <div style={tabStyle("Objects")}>
+        <MemoryObjectsPanel
+          sessionId={sessionId}
+          isPhase2Ready={isPhase2Ready}
+          onJumpToSeq={onJumpToSeq}
         />
       </div>
 

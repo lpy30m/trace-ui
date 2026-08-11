@@ -9,6 +9,7 @@ Use `mcp__trace-ui__list_frida_hook_recipes`, `mcp__trace-ui__generate_frida_hoo
 `mcp__trace-ui__generate_frida_runtime_attestation`, `mcp__trace-ui__inspect_runtime_attestation`,
 `mcp__trace-ui__generate_frida_ollvm_dispatcher_hook`, `mcp__trace-ui__inspect_frida_capture`,
 `mcp__trace-ui__search_frida_capture_events`, `mcp__trace-ui__get_frida_capture_event`,
+`mcp__trace-ui__summarize_exact_calls`, `mcp__trace-ui__authorize_exact_call_replay`,
 `mcp__trace-ui__infer_frida_abi`, `mcp__trace-ui__analyze_frida_crypto_materials`, `mcp__trace-ui__analyze_frida_ollvm_dispatcher_capture`, and
 `mcp__trace-ui__generate_angr_state_seed`, `mcp__trace-ui__generate_unicorn_ollvm_script`,
 `mcp__trace-ui__inspect_unicorn_ollvm_results`, and
@@ -22,6 +23,9 @@ strict artifact provenance and counter-evidence. If a later claim asserts absenc
 invariance, exhaustive dispatcher discovery, or complete CFG recovery, use
 `mcp__trace-ui__generate_coverage_reconciliation_script` and
 `mcp__trace-ui__inspect_coverage_reconciliation`; a Frida capture alone cannot support that claim.
+For a bounded AI handoff of load-bearing capture evidence, use
+`mcp__trace-ui__generate_minimal_evidence_slice` and
+`mcp__trace-ui__inspect_minimal_evidence_slice` after the capture and claim are in the same case.
 
 ## Workflow
 
@@ -44,16 +48,30 @@ invariance, exhaustive dispatcher discovery, or complete CFG recovery, use
 8. When crypto roles are requested, run `analyze_frida_crypto_materials`. Treat explicit labels as
    Related unless exact MD5/SHA/HMAC/PBKDF2 recomputation verifies the captured call. Prefer byteArray;
    text re-encoding is weaker evidence.
-9. When angr initialization is requested, run `generate_angr_state_seed` for that event. Keep SP
+9. When a repeated external BL/BLR blocks Unicorn and the user wants a bounded exact-call summary,
+   regenerate the ordinary Hook with `capture_exact_call:true`. This requires register and return
+   capture, reads every configured argument on both enter and leave, and emits caller module/base/size,
+   call-site/target/return offsets, full GPR/NZCV, return, and paired byteArray values under one
+   `hookId+callId`. After the user runs it manually, call `summarize_exact_calls` with the exact caller
+   AArch64 ELF. Select only `captureReady` call IDs. Replay remains blocked until
+   `authorize_exact_call_replay` receives explicit acceptance of all six hidden-effect assumptions:
+   complete captured memory effects, no SIMD/FP, no TLS/errno, no system-register/syscall, no
+   thread/signal/callback effects, and deterministic behavior for exact preconditions. Never infer or
+   pre-check these assumptions for the user. The artifact is sensitive Candidate/Related evidence and
+   `verificationGateMet` remains false. For a multi-artifact conclusion, import the exact ELF and
+   source Frida capture into the same `.traceui-case` before the summary, then import the authorization.
+   Replay Doctor must show the summary bound to that capture + ELF and the authorization bound to that
+   summary + the same ELF; a parent hash or parser failure invalidates the downstream exact-call chain.
+10. When angr initialization is requested, run `generate_angr_state_seed` for that event. Keep SP
    opt-in and explain that heap/stack addresses are process-specific.
-10. For an OLLVM probe, generate the Hook at the reported branch, condition-source, or dispatcher
+11. For an OLLVM probe, generate the Hook at the reported branch, condition-source, or dispatcher
     `startOffset`, select one or more exact `hook-enter`/`ollvm-dispatcher-hit` events, and pass
     `frida_capture_path` plus `frida_event_indices` (legacy `frida_event_index` remains supported) to
     `generate_angr_ollvm_script`. Do not bypass an exact-offset mismatch. Optionally provide the exact
     AArch64 ELF path so the generated manual script embeds a SHA-256 guard. Retain bounded seeded-flow
     for post-branch continuation or next-dispatcher exploration, keep depth/state caps small, and leave
     both Frida and angr execution to the user.
-11. When several ranked dispatchers must be observed together, call
+12. When several ranked dispatchers must be observed together, call
     `generate_frida_ollvm_dispatcher_hook` for the same narrow OLLVM scope. Give the standalone script
     to the user for manual execution, then call `analyze_frida_ollvm_dispatcher_capture` on the saved
     capture. Prefer dedicated `ollvm-dispatcher-hit` events with `captureSessionId`, `flowId`, and
@@ -62,7 +80,7 @@ invariance, exhaustive dispatcher discovery, or complete CFG recovery, use
     If angr or Unicorn needs memory context, set a small explicit X0-X28 pointer register list and byte
     cap. For concrete replay, optionally capture a bounded window starting at SP. Keep both opt-in because
     pointer validity and buffer semantics are unknown; inspect `readError` values.
-12. For concrete OLLVM replay, select one to 32 exact branch/condition-source/dispatcher events and call
+13. For concrete OLLVM replay, select one to 32 exact branch/condition-source/dispatcher events and call
     `generate_unicorn_ollvm_script` with the mandatory exact AArch64 ELF. The user runs the Python
     manually and imports the JSON with `inspect_unicorn_ollvm_results`. Use missing-memory
     `baseRegister`/`displacement` suggestions to refine the next bounded Frida capture. When the
@@ -82,23 +100,29 @@ invariance, exhaustive dispatcher discovery, or complete CFG recovery, use
     replay still lacks state, pass the same capture, exact ELF, and same prior result to
     `generate_angr_ollvm_script.checkpoint_result_path`; inspect the resulting `checkpointProbes` as
     bounded Candidate/Related paths.
-13. When the claim depends on which ELF image was mapped, call `generate_frida_runtime_attestation`
+14. When the claim depends on which ELF image was mapped, call `generate_frida_runtime_attestation`
     with the exact AArch64 ELF, bounded `window_bytes`, and `max_windows`. Let the user run the generated
     Frida 16.x script manually, then call `inspect_runtime_attestation` with the capture and same ELF.
     Only full coverage of all file-backed executable `PT_LOAD` bytes may become scoped
     `runtime-image:*` Verified. Sampling remains Related; mismatches are counter-evidence; writable/BSS/
     heap/JIT, crypto semantics, OLLVM, and simulator reachability remain outside this gate.
-14. When the capture becomes a load-bearing seed or is followed by another Frida/Unicorn/angr round,
+15. When the capture becomes a load-bearing seed or is followed by another Frida/Unicorn/angr round,
     ingest the exact ELF, capture, and each generated result into the same `.traceui-case` with explicit
     parent artifact IDs. Run Replay Doctor and the Claim Ledger audit before reporting a conclusion.
     Bind a runtime-attestation artifact to exactly one static-binary parent and preserve refuted captures.
     Artifact integrity and exact-offset matching alone do not attest the runtime image or make a simulator
     path Verified. For an AI handoff, call `generate_analysis_case_evidence_pack` with explicit token/item
     bounds and preserve its counter-evidence, unknowns, invalid artifacts, and omitted counts.
+    When exact capture payload is load-bearing, select the relevant claim IDs and call
+    `generate_minimal_evidence_slice`. Keep registers, captures, returns, and memory values redacted
+    unless the user explicitly authorizes `include_sensitive_values`; save the slice, run
+    `inspect_minimal_evidence_slice`, and import it with every declared Trace/Frida/ELF/result source as
+    parents. A valid slice proves bounded source/record provenance only, not ABI roles, crypto semantics,
+    runtime-image identity, branch reachability, or simulator completeness.
     Call `plan_analysis_case_capture` after Replay Doctor when the next Hook location or memory window is
     uncertain; follow the highest relevant non-redundant target, remembering that its score is a priority,
     not a probability.
-15. If a conclusion derived from these captures says that AES/code/path/dispatcher is absent, a branch
+16. If a conclusion derived from these captures says that AES/code/path/dispatcher is absent, a branch
     is globally invariant, or the recovered CFG is complete, first produce a strict OLLVM report for the
     matching scope, then generate the manual angr coverage reconciliation from that report and the exact
     ELF. Inspect and import the result with both exact ELF and source parents. Frida hit counts, quiet
@@ -112,7 +136,8 @@ invariance, exhaustive dispatcher discovery, or complete CFG recovery, use
 - `arguments`: X0-X7 entries with `index`, optional `label`, `kind`, `direction`, `length`, `length_arg`, and `length_pointer_arg`.
 - `kind`: `integer`, `pointer`, `utf8String`, `utf16String`, or `byteArray`.
 - `direction`: `input`, `output`, or `inOut`.
-- `capture_registers`, `capture_return`, `capture_backtrace`.
+- `capture_registers`, `capture_return`, `capture_backtrace`, `capture_exact_call`. Exact-call requires
+  register and return capture and duplicates every configured argument capture on enter and leave.
 - `stalker`: `off`, `calls`, `blocks`, or `instructions`.
 - `stalker_duration_ms` and `max_bytes`: keep bounded.
 - Dispatcher capture additionally accepts unique `capture_pointer_registers` X0-X28,
@@ -136,6 +161,10 @@ invariance, exhaustive dispatcher discovery, or complete CFG recovery, use
   preserves NZCV and attempts packed `state.regs.nzcv` first, with an explicit N/Z/C/V fallback.
 - Default Stalker to `off`. Enable `calls` first; use `blocks` or `instructions` only for a narrow function and bounded duration.
 - Treat invalid pointers, unreadable memory, and truncated captures as expected runtime conditions.
+- Exact-call authorization is valid only for the exact caller ELF and selected serialized call IDs.
+  Require exact call-site, target, `PC+4` return, X0-X7/SP, and captured input-memory preconditions in
+  Unicorn. Any mismatch or unknown call must stop; an authorization never proves API semantics,
+  determinism beyond the accepted preconditions, runtime reachability, or completeness of hidden state.
 - Require repeated observations before cross-call ABI claims. A stable pointer or matching byte length is
   a role candidate only; confirm it with instructions, data flow, symbols/API contracts, or controlled
   counterexamples before labeling a type or expanding capture scope.
@@ -166,6 +195,9 @@ invariance, exhaustive dispatcher discovery, or complete CFG recovery, use
 - A Hook that never fires is not evidence that the target, AES, branch outcome, or dispatcher does not
   exist. Check module/build/offset identity and capture completeness, then use the strict coverage gate
   for any absence or completeness wording; coverage still cannot prove crypto semantics.
+- A Minimal Evidence Slice with redacted Frida payload may correctly report partial materialization.
+  Do not enable sensitive values merely to obtain a complete status; opt in only when the exact bytes are
+  required by the question and the user accepts that the saved JSON contains them.
 
 ## Frida 16 boundary
 
@@ -181,4 +213,4 @@ Do not rewrite the output to Frida 17-only APIs. Do not add `frida.attach`, devi
 
 ## Reporting
 
-State that the output is a generated candidate hook, not execution evidence. When the capture is based on a trace lead, cite the module offset, function/node, and observed argument evidence used to configure it.
+State that the output is a generated candidate hook, not execution evidence. When the capture is based on a trace lead, cite the module offset, function/node, and observed argument evidence used to configure it. If an Evidence Slice is used, also report its path, inspection status, source artifact IDs, redaction/truncation state, and that it is not semantic proof.

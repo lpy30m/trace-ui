@@ -8,6 +8,7 @@ mod detection_doctor;
 mod forward_slice;
 mod function_inspect;
 mod hash_match;
+mod memory_object;
 mod ollvm;
 mod query;
 mod search;

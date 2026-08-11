@@ -2,10 +2,12 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 use trace_core::{
     add_trace_case_artifact, create_trace_analysis_case, diagnose_trace_analysis_case,
-    run_accuracy_benchmark_file, save_crypto_semantic_kat_report, upsert_trace_case_claim,
-    AccuracyBenchmarkCase, AccuracyBenchmarkClaimExpectation, AccuracyBenchmarkSuite,
-    CryptoKatAlgorithm, CryptoSemanticKatRequest, TraceCaseClaim, TraceCaseClaimStatus,
-    TraceCaseEvidenceRef, ACCURACY_BENCHMARK_SUITE_SCHEMA, CRYPTO_SEMANTIC_KAT_SCHEMA,
+    generate_minimal_evidence_slice, run_accuracy_benchmark_file, save_crypto_semantic_kat_report,
+    save_minimal_evidence_slice_bundle, upsert_trace_case_claim, AccuracyBenchmarkCase,
+    AccuracyBenchmarkClaimExpectation, AccuracyBenchmarkEvidenceSliceExpectation,
+    AccuracyBenchmarkSuite, CryptoKatAlgorithm, CryptoSemanticKatRequest,
+    MinimalEvidenceSliceRequest, TraceCaseClaim, TraceCaseClaimStatus, TraceCaseEvidenceRef,
+    TraceEngine, ACCURACY_BENCHMARK_SUITE_SCHEMA, CRYPTO_SEMANTIC_KAT_SCHEMA,
 };
 
 fn temp_dir() -> std::path::PathBuf {
@@ -110,6 +112,35 @@ fn accuracy_benchmark_ci_gate_blocks_forged_markers_and_accepts_strict_kat() {
     )
     .unwrap();
 
+    let slice_path = dir.join("strict-sha256-slice.json");
+    let slice_bundle = generate_minimal_evidence_slice(
+        &TraceEngine::new(),
+        &MinimalEvidenceSliceRequest {
+            case_path: case_path.to_string_lossy().into_owned(),
+            trace_session_bindings: Vec::new(),
+            claim_ids: vec!["strict-sha256".to_string()],
+            include_generated_claims: false,
+            include_sensitive_values: true,
+            context_before: 0,
+            context_after: 0,
+            module_bytes_before: 16,
+            module_bytes_after: 32,
+            max_memory_bytes_per_record: 256,
+            max_records: 32,
+            max_total_payload_bytes: 1024 * 1024,
+        },
+    )
+    .unwrap();
+    save_minimal_evidence_slice_bundle(&slice_bundle, slice_path.to_str().unwrap()).unwrap();
+    let slice_imported = add_trace_case_artifact(
+        case_path.to_str().unwrap(),
+        slice_path.to_str().unwrap(),
+        None,
+        None,
+        Vec::new(),
+    )
+    .unwrap();
+
     let diagnosed = diagnose_trace_analysis_case(case_path.to_str().unwrap()).unwrap();
     let generated_kat_claim = diagnosed
         .generated_claims
@@ -161,6 +192,17 @@ fn accuracy_benchmark_ci_gate_blocks_forged_markers_and_accepts_strict_kat() {
                     expected_coverage_max_status: Some(TraceCaseClaimStatus::Verified),
                 },
             ],
+            evidence_slice_expectations: vec![AccuracyBenchmarkEvidenceSliceExpectation {
+                artifact_id: slice_imported.artifact.artifact_id,
+                expected_status: "valid-complete".to_string(),
+                expected_record_count: Some(1),
+                maximum_unresolved_reference_count: Some(0),
+                maximum_truncated_record_count: Some(0),
+                expected_claim_bindings_matched: Some(true),
+                expected_generated_claim_bindings_revalidated: Some(true),
+                expected_record_content_matched: Some(true),
+                expected_provenance_graph_valid: Some(true),
+            }],
             require_no_unexpected_verified: true,
         }],
     };

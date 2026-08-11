@@ -24,30 +24,32 @@ use trace_core::{
     generate_frida_unicorn_checkpoint_hook as build_frida_unicorn_checkpoint_hook,
     generate_frida_unicorn_recapture_hook as build_frida_unicorn_recapture_hook,
     generate_ida_ollvm_script,
-    generate_unicorn_ollvm_script_with_checkpoint_result as build_unicorn_ollvm_script,
+    generate_unicorn_ollvm_script_with_checkpoint_and_exact_calls as build_unicorn_ollvm_script,
     get_frida_capture_event as build_frida_capture_event,
     inspect_coverage_reconciliation as build_coverage_reconciliation_inspection,
     inspect_crypto_semantic_kat_report as build_crypto_kat_inspection, inspect_elf_binary,
     inspect_frida_abi_capture as build_frida_abi_inference,
     inspect_runtime_attestation_capture as build_runtime_attestation_inspection,
-    list_frida_hook_recipes as build_frida_hook_recipes, parse_angr_ollvm_result_bundle,
-    parse_frida_capture_bundle, parse_hex_addr, parse_ida_annotation_bundle,
-    parse_unicorn_ollvm_result_bundle, save_crypto_semantic_kat_report as save_crypto_kat,
-    score_evidence, search_frida_capture_events as build_frida_capture_event_search,
-    summarize_dependency_graph, AnalysisEvidence, AngrOllvmFlowConfig, BuildOptions,
-    CoverageReconciliationScriptRequest, CoverageScriptScopeKind, CryptoFunctionsOptions,
-    CryptoKatAlgorithm, CryptoKatDirection, CryptoMaterialKind, CryptoMaterialMultiTraceRequest,
-    CryptoMaterialOptions, CryptoMaterialTraceCase, CryptoSemanticKatRequest, DepTreeOptions,
-    EvidenceScoreSignal, ForwardSliceOptions, FridaAbiInferenceOptions, FridaArgumentKind,
-    FridaArgumentSpec, FridaCaptureDirection, FridaCaptureSearchOptions, FridaHookRequest,
+    list_frida_hook_recipes as build_frida_hook_recipes, load_authorized_exact_calls,
+    parse_angr_ollvm_result_bundle, parse_frida_capture_bundle, parse_hex_addr,
+    parse_ida_annotation_bundle, parse_unicorn_ollvm_result_bundle,
+    save_crypto_semantic_kat_report as save_crypto_kat, score_evidence,
+    search_frida_capture_events as build_frida_capture_event_search, summarize_dependency_graph,
+    AnalysisEvidence, AngrOllvmFlowConfig, BuildOptions, CoverageReconciliationScriptRequest,
+    CoverageScriptScopeKind, CryptoFunctionsOptions, CryptoKatAlgorithm, CryptoKatDirection,
+    CryptoMaterialKind, CryptoMaterialMultiTraceRequest, CryptoMaterialOptions,
+    CryptoMaterialTraceCase, CryptoSemanticKatRequest, DepTreeOptions, EvidenceScoreSignal,
+    ExactCallReplayAssumptions, ExactCallReplayAuthorizationRequest, ExactCallSummaryRequest,
+    ForwardSliceOptions, FridaAbiInferenceOptions, FridaArgumentKind, FridaArgumentSpec,
+    FridaCaptureDirection, FridaCaptureSearchOptions, FridaHookRequest,
     FridaOllvmDispatcherAtlasOptions, FridaOllvmDispatcherHookOptions,
     FridaRuntimeAttestationRequest, FridaStalkerMode, FridaUnicornCheckpointHookOptions,
     FridaUnicornRecaptureHookOptions, HashAlgorithm, HashMatchRequest, HashTransformOptions,
-    OllvmAnalysisOptions, OllvmMultiTraceRequest, OllvmTraceCase, OllvmVersionMapRequest,
-    OllvmVersionTraceCase, SearchOptions, SliceOptions, StringQueryOptions, TraceDiffOptions,
-    TraceEngine, UnicornOllvmConfig, UnicornOllvmRoundInput, ValueEndian, ValueSearchKind,
-    ValueSearchRequest, WhiteBoxMultiTraceRequest, WhiteBoxOptions, WhiteBoxTraceCaseRequest,
-    CRYPTO_SEMANTIC_KAT_SCHEMA,
+    MemoryObjectOptions, OllvmAnalysisOptions, OllvmMultiTraceRequest, OllvmTraceCase,
+    OllvmVersionMapRequest, OllvmVersionTraceCase, SearchOptions, SliceOptions, StringQueryOptions,
+    TraceDiffOptions, TraceEngine, UnicornOllvmConfig, UnicornOllvmRoundInput, ValueEndian,
+    ValueSearchKind, ValueSearchRequest, WhiteBoxMultiTraceRequest, WhiteBoxOptions,
+    WhiteBoxTraceCaseRequest, CRYPTO_SEMANTIC_KAT_SCHEMA,
 };
 
 fn decode_hex_bytes(value: &str) -> Result<Vec<u8>, String> {
@@ -2119,6 +2121,8 @@ impl TraceToolHandler {
                 "analysis_scoped_pagination".to_string(),
                 "structured_tool_output".to_string(),
                 "unified_value_search".to_string(),
+                "memory_object_lifetime".to_string(),
+                "memory_pointer_explanation".to_string(),
                 "crypto_material_index".to_string(),
                 "frida_hook_generation".to_string(),
                 "frida_abi_inference".to_string(),
@@ -2126,10 +2130,13 @@ impl TraceToolHandler {
                 "dynamic_cfg_ollvm_analysis".to_string(),
                 "idapython_bridge_generation".to_string(),
                 "unicorn_exact_seed_concrete_replay".to_string(),
+                "exact_call_summary".to_string(),
+                "exact_call_replay_authorization".to_string(),
                 "analysis_case_workspace".to_string(),
                 "replay_doctor".to_string(),
                 "coverage_aware_claim_gate".to_string(),
                 "ai_evidence_pack".to_string(),
+                "minimal_evidence_slice".to_string(),
                 "information_gain_capture_planning".to_string(),
                 "accuracy_benchmark_gate".to_string(),
                 "claim_counter_evidence_gate".to_string(),
@@ -2281,6 +2288,123 @@ impl TraceToolHandler {
     }
 
     // ━━━━━━━━━━━━━━━━━━━━━━ 搜索与分析 ━━━━━━━━━━━━━━━━━━━━━━
+
+    #[tool(
+        name = "reconstruct_memory_objects",
+        description = "Reconstruct trace-ui/memory-object-graph-v1 candidates from observed malloc/calloc/realloc/free, mmap/munmap, memory accesses, call arguments, address generations, and optional call-tree/SP stack frames. Returns object bounds, base+offset aliases, field windows, release/reuse state, unattributed runtime pages, and Candidate use-after-lifetime/out-of-bounds leads plus an analysis_id. Missing lifecycle calls and truncated state remain explicit unknowns; this tool never proves a memory-safety defect or upgrades simulator/OLLVM evidence to Verified."
+    )]
+    async fn reconstruct_memory_objects(
+        &self,
+        Parameters(req): Parameters<ReconstructMemoryObjectsRequest>,
+    ) -> Result<String, String> {
+        let sid = self.resolve_session(req.session_id.clone())?;
+        let request_record = serde_json::to_value(&req).map_err(|error| error.to_string())?;
+        let options = MemoryObjectOptions {
+            start_seq: req.start_seq,
+            end_seq: req.end_seq,
+            include_stack_frames: req.include_stack_frames,
+            include_runtime_clusters: req.include_runtime_clusters,
+            max_objects: req.max_objects.clamp(1, 5_000),
+            max_aliases_per_object: req.max_aliases_per_object.clamp(1, 256),
+            max_field_windows_per_object: req.max_field_windows_per_object.clamp(1, 256),
+            max_access_samples_per_object: req.max_access_samples_per_object.clamp(1, 64),
+            max_anomalies: req.max_anomalies.clamp(1, 1_000),
+            max_runtime_clusters: req.max_runtime_clusters.clamp(1, 1_000),
+            max_accesses: req.max_accesses.clamp(1, 20_000_000),
+            max_stack_distance: req.max_stack_distance.clamp(0x1000, 16 * 1024 * 1024),
+        };
+        let engine = self.engine.clone();
+        blocking(move || {
+            let report = engine
+                .reconstruct_memory_objects(&sid, options)
+                .map_err(|error| error.to_string())?;
+            let mut functions = report
+                .objects
+                .iter()
+                .flat_map(|object| {
+                    [
+                        object.allocator.clone(),
+                        object.release_function.clone(),
+                        object.function_name.clone(),
+                    ]
+                })
+                .flatten()
+                .collect::<Vec<_>>();
+            functions.sort();
+            functions.dedup();
+            let mut addresses = report
+                .objects
+                .iter()
+                .map(|object| object.base_address.clone())
+                .chain(
+                    report
+                        .anomalies
+                        .iter()
+                        .filter_map(|anomaly| anomaly.address.clone()),
+                )
+                .collect::<Vec<_>>();
+            addresses.sort();
+            addresses.dedup();
+            addresses.truncate(512);
+            let evidence = AnalysisEvidence {
+                functions,
+                addresses,
+                operations: vec![
+                    "memory-object-lifetime".to_string(),
+                    "pointer-alias".to_string(),
+                    "address-generation".to_string(),
+                ],
+                warnings: report.limitations.clone(),
+                ..AnalysisEvidence::default()
+            };
+            let result_value = serde_json::to_value(&report).map_err(|error| error.to_string())?;
+            let record = engine
+                .save_analysis(
+                    &sid,
+                    "memory_object_graph",
+                    "Memory object / alias / lifetime reconstruction",
+                    request_record,
+                    result_value,
+                    evidence,
+                )
+                .map_err(|error| error.to_string())?;
+            Ok(json(&serde_json::json!({
+                "analysis_id": record.analysis_id,
+                "report": report,
+            })))
+        })
+        .await
+    }
+
+    #[tool(
+        name = "explain_memory_pointer",
+        description = "Explain one runtime pointer at an exact 0-based trace sequence using reconstructed allocation generations, live/released state, interior offset, X0-X30/SP aliases, call-argument aliases, and nearby accesses. A released-only match is reported as a stale/use-after-lifetime Candidate with counter-evidence requirements; equality or API position never proves ownership or type."
+    )]
+    async fn explain_memory_pointer(
+        &self,
+        Parameters(req): Parameters<ExplainMemoryPointerRequest>,
+    ) -> Result<String, String> {
+        let sid = self.resolve_session(req.session_id)?;
+        let address = parse_hex_addr(&req.address)?;
+        let seq = match req.seq {
+            Some(seq) => seq,
+            None => self
+                .engine
+                .get_session_info(&sid)
+                .map_err(|error| error.to_string())?
+                .total_lines
+                .saturating_sub(1),
+        };
+        let include_stack_frames = req.include_stack_frames;
+        let engine = self.engine.clone();
+        blocking(move || {
+            engine
+                .explain_memory_pointer(&sid, address, seq, include_stack_frames)
+                .map(|result| json(&result))
+                .map_err(|error| error.to_string())
+        })
+        .await
+    }
 
     #[tool(
         name = "search_instructions",
@@ -3631,6 +3755,76 @@ impl TraceToolHandler {
     }
 
     #[tool(
+        name = "generate_minimal_evidence_slice",
+        description = "Materialize a bounded trace-ui/minimal-evidence-slice-v1 for selected .traceui-case claims. It binds exact source artifact SHA-256/size/parent lineage and claim/reference fingerprints, then stores only locator-focused Trace lines, known-mask memory bytes with byte provenance, one Frida event, exact ELF PT_LOAD bytes, or bounded JSON fragments plus a typed provenance graph. Sensitive runtime/register/memory values are excluded unless include_sensitive_values=true. The slice is an auditable AI handoff, never semantic proof and never a reason to upgrade OLLVM/IDA/angr/Unicorn evidence above Candidate/Related."
+    )]
+    async fn generate_minimal_evidence_slice(
+        &self,
+        Parameters(req): Parameters<GenerateMinimalEvidenceSliceRequest>,
+    ) -> Result<String, String> {
+        let engine = self.engine.clone();
+        blocking(move || {
+            let request = trace_core::MinimalEvidenceSliceRequest {
+                case_path: req.case_path,
+                trace_session_bindings: req
+                    .trace_session_bindings
+                    .into_iter()
+                    .map(|binding| trace_core::EvidenceSliceTraceSessionBinding {
+                        artifact_id: binding.artifact_id,
+                        session_id: binding.session_id,
+                    })
+                    .collect(),
+                claim_ids: req.claim_ids,
+                include_generated_claims: req.include_generated_claims,
+                include_sensitive_values: req.include_sensitive_values,
+                context_before: req.context_before,
+                context_after: req.context_after,
+                module_bytes_before: req.module_bytes_before,
+                module_bytes_after: req.module_bytes_after,
+                max_memory_bytes_per_record: req.max_memory_bytes_per_record,
+                max_records: req.max_records,
+                max_total_payload_bytes: req.max_total_payload_bytes,
+            };
+            let bundle = trace_core::generate_minimal_evidence_slice(&engine, &request)
+                .map_err(|error| error.to_string())?;
+            if let Some(output_path) = req.output_path {
+                trace_core::save_minimal_evidence_slice_bundle(&bundle, &output_path)
+                    .map_err(|error| error.to_string())?;
+                Ok(json(&serde_json::json!({
+                    "schema": bundle.schema,
+                    "sliceId": bundle.slice_id,
+                    "contentSha256": bundle.content_sha256,
+                    "savedPath": output_path,
+                    "summary": bundle.content.summary,
+                    "sourceArtifactIds": bundle.content.source_artifacts.iter().map(|source| source.artifact_id.clone()).collect::<Vec<_>>(),
+                    "warnings": bundle.content.warnings,
+                    "limitations": bundle.content.limitations,
+                })))
+            } else {
+                Ok(json(&bundle))
+            }
+        })
+        .await
+    }
+
+    #[tool(
+        name = "inspect_minimal_evidence_slice",
+        description = "Strictly inspect trace-ui/minimal-evidence-slice-v1 against its bound .traceui-case. Re-hashes every source file, checks exact artifact metadata and parents, revalidates current persisted/generated claim fingerprints, reopens Trace sources, reparses Frida/ELF/JSON sources, recomputes every evidence record/content hash, reconstructs the typed provenance graph, and reports stale, unresolved, truncated, or mismatched items. A valid slice proves bounded byte/record provenance only; it never proves AES semantics, OLLVM structure, reachability, or simulator completeness."
+    )]
+    async fn inspect_minimal_evidence_slice(
+        &self,
+        Parameters(req): Parameters<InspectMinimalEvidenceSliceRequest>,
+    ) -> Result<String, String> {
+        blocking(move || {
+            let report =
+                trace_core::inspect_minimal_evidence_slice(&req.case_path, &req.artifact_path)
+                    .map_err(|error| error.to_string())?;
+            Ok(json(&report))
+        })
+        .await
+    }
+
+    #[tool(
         name = "audit_analysis_case_claims",
         description = "Run the .traceui-case claim-ledger contradiction and evidence gate. It revalidates artifact integrity, separates supporting from counter evidence, auto-classifies negative-existence/completeness/global-invariance/complete-CFG wording, applies exact-scope coverage as a maximum-level cap, blocks Verified when only structural/SHA/coverage evidence exists, and returns a recommended maximum without asserting that any statement is true. OLLVM, Unicorn, angr, IDA, and coverage evidence alone remains Candidate/Related or Observed. Nothing is executed or mutated."
     )]
@@ -4501,6 +4695,7 @@ impl TraceToolHandler {
             capture_registers: req.capture_registers,
             capture_return: req.capture_return,
             capture_backtrace: req.capture_backtrace,
+            capture_exact_call: req.capture_exact_call,
             stalker: match req.stalker {
                 FridaStalkerModeRequest::Off => FridaStalkerMode::Off,
                 FridaStalkerModeRequest::Calls => FridaStalkerMode::Calls,
@@ -4617,6 +4812,80 @@ impl TraceToolHandler {
             let bytes = std::fs::read(&req.file_path)
                 .map_err(|error| format!("failed to read Frida capture: {error}"))?;
             Ok(json(&parse_frida_capture_bundle(&bytes)?))
+        })
+        .await
+    }
+
+    #[tool(
+        name = "summarize_exact_calls",
+        description = "Strictly pair user-captured Frida hook-enter/hook-leave events by hookId+callId and reconstruct exact caller BL/BLR call-site, target, PC+4 return, full GPR/NZCV differences, return value, and paired byteArray memory mutations. The exact AArch64 caller ELF SHA-256 is bound, but hidden memory, SIMD/FP, TLS/errno, syscalls, callbacks, signals, and thread effects remain explicit unknowns. capture-ready is only Related evidence and never replay authorization or semantic proof."
+    )]
+    async fn summarize_exact_calls(
+        &self,
+        Parameters(req): Parameters<SummarizeExactCallsRequest>,
+    ) -> Result<String, String> {
+        blocking(move || {
+            let request = ExactCallSummaryRequest {
+                caller_module_name: req.caller_module_name,
+                static_binary_path: req.static_binary_path,
+                max_calls: req.max_calls,
+                max_memory_bytes_per_call: req.max_memory_bytes_per_call,
+            };
+            let summary = match req.output_path.as_deref() {
+                Some(path) => {
+                    trace_core::save_exact_call_summary(path, &req.capture_path, &request)?
+                }
+                None => trace_core::summarize_exact_calls(&req.capture_path, &request)?,
+            };
+            Ok(json(&serde_json::json!({
+                "summary": summary,
+                "savedPath": req.output_path,
+                "containsSensitiveMaterial": true,
+            })))
+        })
+        .await
+    }
+
+    #[tool(
+        name = "authorize_exact_call_replay",
+        description = "Reopen and recompute a trace-ui/exact-call-summary-v1 artifact, bind it to the same exact AArch64 caller ELF, and evaluate one to 64 explicit callIds for bounded Unicorn replay. Authorization defaults to blocked: every hidden-memory, SIMD/FP, TLS/errno, system/syscall, thread/signal/callback, and deterministic-precondition assumption must be explicitly accepted, while intrinsic capture gaps still cannot be overridden. The output remains Candidate/Related, verificationGateMet is always false, and unknown or mismatched calls must stop."
+    )]
+    async fn authorize_exact_call_replay(
+        &self,
+        Parameters(req): Parameters<AuthorizeExactCallReplayRequest>,
+    ) -> Result<String, String> {
+        blocking(move || {
+            let request = ExactCallReplayAuthorizationRequest {
+                call_ids: req.call_ids,
+                assumptions: ExactCallReplayAssumptions {
+                    captured_memory_effects_complete: req.captured_memory_effects_complete,
+                    no_simd_fp_side_effects: req.no_simd_fp_side_effects,
+                    no_tls_side_effects: req.no_tls_side_effects,
+                    no_system_register_or_syscall_effects: req
+                        .no_system_register_or_syscall_effects,
+                    no_thread_signal_or_callback_effects: req.no_thread_signal_or_callback_effects,
+                    deterministic_for_exact_preconditions: req
+                        .deterministic_for_exact_preconditions,
+                },
+            };
+            let authorization = match req.output_path.as_deref() {
+                Some(path) => trace_core::save_exact_call_replay_authorization(
+                    path,
+                    &req.summary_path,
+                    &req.static_binary_path,
+                    &request,
+                )?,
+                None => trace_core::authorize_exact_call_replay(
+                    &req.summary_path,
+                    &req.static_binary_path,
+                    &request,
+                )?,
+            };
+            Ok(json(&serde_json::json!({
+                "authorization": authorization,
+                "savedPath": req.output_path,
+                "containsSensitiveMaterial": true,
+            })))
         })
         .await
     }
@@ -5374,6 +5643,11 @@ impl TraceToolHandler {
                     parse_unicorn_ollvm_result_bundle(&bytes)
                 })
                 .transpose()?;
+            let exact_call_authorizations = load_authorized_exact_calls(
+                &req.exact_call_authorization_paths,
+                binary_path,
+                &report.scope.module_name,
+            )?;
             Ok(json(&build_unicorn_ollvm_script(
                 &report,
                 seeds.iter().collect(),
@@ -5387,6 +5661,7 @@ impl TraceToolHandler {
                 },
                 &identity,
                 checkpoint_result.as_ref(),
+                &exact_call_authorizations,
             )?))
         })
         .await
@@ -5917,6 +6192,9 @@ impl ServerHandler for TraceToolHandler {
              23. Regression gate: run_accuracy_benchmark on reviewed positive/negative .traceui-case fixtures before accepting confidence-level changes\n\n\
              24. Bounded AI handoff: generate_analysis_case_evidence_pack in JSON or Markdown; preserve counter-evidence, unknowns, and invalid artifacts instead of sending an unbounded case dump\n\n\
              25. Coverage-aware claims: generate_coverage_reconciliation_script from the exact ELF + OLLVM report, run angr manually, inspect_coverage_reconciliation, then import the JSON with exact ELF/source parents before making negative or completeness claims\n\n\
+             26. Exact AI evidence: generate_minimal_evidence_slice for selected claims, explicitly opt in before including sensitive runtime values, save/import it with exact source parents, then inspect_minimal_evidence_slice before reuse; slice validity never proves semantics\n\n\
+             27. Pointer accuracy: reconstruct_memory_objects to separate heap/mmap/stack generations and aliases, then explain_memory_pointer at the exact seq; UAF/OOB, ownership, and type remain Candidate\n\n\
+             28. Exact-call boundary: generate_frida_hook with capture_exact_call=true, let the user run it manually, summarize_exact_calls with the exact caller ELF, then authorize_exact_call_replay only after all six hidden-effect assumptions are explicitly accepted; pass saved authorization paths to generate_unicorn_ollvm_script and keep every result Candidate/Related\n\n\
              Tips:\n\
              - session_id is optional when only one trace is open\n\
              - Use data_only=true in forward_taint_analysis and taint_analysis to reduce noise\n\
@@ -5966,7 +6244,7 @@ mod tests {
         let router = TraceToolHandler::tool_router();
         assert_eq!(
             router.map.len(),
-            80,
+            86,
             "MCP tool count changed; update docs and this registry check"
         );
         for name in [
@@ -5986,6 +6264,12 @@ mod tests {
             "inspect_crypto_semantic_kat",
             "infer_frida_abi",
             "generate_analysis_case_evidence_pack",
+            "generate_minimal_evidence_slice",
+            "inspect_minimal_evidence_slice",
+            "reconstruct_memory_objects",
+            "explain_memory_pointer",
+            "summarize_exact_calls",
+            "authorize_exact_call_replay",
         ] {
             assert!(router.has_route(name), "missing MCP accuracy tool {name}");
         }
@@ -6071,6 +6355,50 @@ mod tests {
             .unwrap_or_default();
         assert!(evidence_pack_description.contains("counter-evidence"));
         assert!(evidence_pack_description.contains("never new proof"));
+        let evidence_slice_generate_description = router.map["generate_minimal_evidence_slice"]
+            .attr
+            .description
+            .as_deref()
+            .unwrap_or_default();
+        assert!(evidence_slice_generate_description.contains("typed provenance graph"));
+        assert!(evidence_slice_generate_description.contains("never semantic proof"));
+        let evidence_slice_inspect_description = router.map["inspect_minimal_evidence_slice"]
+            .attr
+            .description
+            .as_deref()
+            .unwrap_or_default();
+        assert!(evidence_slice_inspect_description.contains("recomputes every evidence record"));
+        assert!(evidence_slice_inspect_description.contains("never proves AES semantics"));
+        let memory_object_description = router.map["reconstruct_memory_objects"]
+            .attr
+            .description
+            .as_deref()
+            .unwrap_or_default();
+        assert!(memory_object_description.contains("Candidate"));
+        assert!(memory_object_description.contains("never proves a memory-safety defect"));
+        let pointer_description = router.map["explain_memory_pointer"]
+            .attr
+            .description
+            .as_deref()
+            .unwrap_or_default();
+        assert!(pointer_description.contains("exact 0-based trace sequence"));
+        assert!(pointer_description.contains("never proves ownership"));
+        let exact_call_summary_description = router.map["summarize_exact_calls"]
+            .attr
+            .description
+            .as_deref()
+            .unwrap_or_default();
+        assert!(exact_call_summary_description.contains("hookId+callId"));
+        assert!(exact_call_summary_description.contains("never replay authorization"));
+        let exact_call_authorization_description = router.map["authorize_exact_call_replay"]
+            .attr
+            .description
+            .as_deref()
+            .unwrap_or_default();
+        assert!(exact_call_authorization_description.contains("defaults to blocked"));
+        assert!(
+            exact_call_authorization_description.contains("verificationGateMet is always false")
+        );
 
         let handler = TraceToolHandler::new(Arc::new(TraceEngine::new()));
         let Json(health) = handler.health(Parameters(HealthRequest {})).unwrap();
@@ -6085,6 +6413,11 @@ mod tests {
             "accuracy_benchmark_gate",
             "ai_evidence_pack",
             "coverage_aware_claim_gate",
+            "minimal_evidence_slice",
+            "memory_object_lifetime",
+            "memory_pointer_explanation",
+            "exact_call_summary",
+            "exact_call_replay_authorization",
         ] {
             assert!(health.capabilities.iter().any(|value| value == capability));
         }
@@ -6131,6 +6464,348 @@ mod tests {
         assert!(value.get("counterEvidence").is_some());
         assert!(value.get("unknowns").is_some());
         assert!(value.get("invalidArtifacts").is_some());
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[tokio::test]
+    async fn memory_object_tools_execute_end_to_end_through_mcp_handlers() {
+        let dir = std::env::temp_dir().join(format!(
+            "trace-ui-mcp-memory-object-{}",
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        let trace_path = dir.join("memory.log");
+        std::fs::write(
+            &trace_path,
+            concat!(
+                "[libtarget.so] 0x1000!0x0 bl #0x2000\n",
+                "call func: malloc(0x20)\n",
+                "ret: 0x5000\n",
+                "[libtarget.so] 0x1004!0x4 str x1, [x0]; x0=0x5000 x1=0x41 mem_w=0x5000\n",
+                "[libtarget.so] 0x1008!0x8 bl #0x3000\n",
+                "call func: free(0x5000)\n",
+                "ret: 0x0\n",
+                "[libtarget.so] 0x100c!0xc ldr x2, [x0]; x0=0x5000 mem_r=0x5000 -> x2=0x41\n",
+                "[libtarget.so] 0x1010!0x10 ret\n",
+            ),
+        )
+        .unwrap();
+
+        let engine = Arc::new(TraceEngine::new());
+        let session = engine.create_session(trace_path.to_str().unwrap()).unwrap();
+        engine
+            .build_index(
+                &session.session_id,
+                BuildOptions {
+                    force_rebuild: true,
+                    skip_strings: true,
+                },
+                None,
+            )
+            .unwrap();
+        let handler = TraceToolHandler::new(engine.clone());
+        let output = handler
+            .reconstruct_memory_objects(Parameters(ReconstructMemoryObjectsRequest {
+                session_id: Some(session.session_id.clone()),
+                start_seq: None,
+                end_seq: None,
+                include_stack_frames: false,
+                include_runtime_clusters: true,
+                max_objects: 100,
+                max_aliases_per_object: 32,
+                max_field_windows_per_object: 32,
+                max_access_samples_per_object: 16,
+                max_anomalies: 32,
+                max_runtime_clusters: 16,
+                max_accesses: 10_000,
+                max_stack_distance: 1024 * 1024,
+            }))
+            .await
+            .unwrap();
+        let parsed: serde_json::Value = serde_json::from_str(&output).unwrap();
+        assert!(parsed["analysis_id"].as_str().is_some());
+        assert_eq!(
+            parsed["report"]["schemaVersion"],
+            "trace-ui/memory-object-graph-v1"
+        );
+        assert_eq!(parsed["report"]["objects"][0]["baseAddress"], "0x5000");
+        assert_eq!(parsed["report"]["verificationGateMet"], false);
+        assert!(parsed["report"]["anomalies"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|item| item["kind"] == "access-after-lifetime" && item["status"] == "candidate"));
+
+        let pointer = handler
+            .explain_memory_pointer(Parameters(ExplainMemoryPointerRequest {
+                session_id: Some(session.session_id.clone()),
+                address: "0x5000".to_string(),
+                seq: Some(7),
+                include_stack_frames: false,
+            }))
+            .await
+            .unwrap();
+        let pointer: serde_json::Value = serde_json::from_str(&pointer).unwrap();
+        assert_eq!(
+            pointer["schemaVersion"],
+            "trace-ui/memory-pointer-explanation-v1"
+        );
+        assert_eq!(pointer["assessment"], "released-generation-candidate");
+        assert_eq!(pointer["verificationGateMet"], false);
+
+        let _ = engine.close_session(&session.session_id);
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[tokio::test]
+    async fn exact_call_tools_execute_end_to_end_through_mcp_handlers() {
+        let dir = std::env::temp_dir().join(format!(
+            "trace-ui-mcp-exact-call-{}",
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        let capture_path = dir.join("capture.json");
+        let elf_path = dir.join("libtarget.so");
+        let summary_path = dir.join("summary.json");
+        let authorization_path = dir.join("authorization.json");
+        std::fs::write(&elf_path, coverage_smoke_elf()).unwrap();
+
+        let registers = |pc: u64, lr: u64, x0: u64| {
+            let mut values = serde_json::Map::new();
+            for index in 0..=28 {
+                values.insert(
+                    format!("x{index}"),
+                    serde_json::Value::String(format!(
+                        "0x{:x}",
+                        if index == 0 { x0 } else { index }
+                    )),
+                );
+            }
+            values.insert("fp".to_string(), serde_json::json!("0x1d"));
+            values.insert("lr".to_string(), serde_json::json!(format!("0x{lr:x}")));
+            values.insert("sp".to_string(), serde_json::json!("0x90000000"));
+            values.insert("pc".to_string(), serde_json::json!(format!("0x{pc:x}")));
+            values.insert("nzcv".to_string(), serde_json::json!("0x60000000"));
+            serde_json::Value::Object(values)
+        };
+        let common = serde_json::json!({
+            "protocol": "trace-ui/frida-hook-v1",
+            "hookId": "callee",
+            "functionName": "callee",
+            "threadId": 7,
+            "callId": "callee:7:1",
+            "moduleName": "libtarget.so",
+            "moduleBase": "0x70000000",
+            "moduleSize": 0x2000,
+            "target": "0x70000180",
+            "targetOffset": "0x180",
+            "callerModuleName": "libtarget.so",
+            "callerModuleBase": "0x70000000",
+            "callerModuleSize": 0x2000,
+            "callSite": "0x70000100",
+            "callSiteOffset": "0x100",
+            "returnAddress": "0x70000104",
+            "returnOffset": "0x104",
+            "exactCallRecord": true
+        });
+        let mut enter = common.clone();
+        let enter_object = enter.as_object_mut().unwrap();
+        enter_object.insert("event".to_string(), serde_json::json!("hook-enter"));
+        enter_object.insert("timestampMs".to_string(), serde_json::json!(10));
+        enter_object.insert(
+            "registers".to_string(),
+            registers(0x70000180, 0x70000104, 0x90000100),
+        );
+        enter_object.insert(
+            "captures".to_string(),
+            serde_json::json!([{
+                "index": 0,
+                "label": "buffer",
+                "kind": "byteArray",
+                "direction": "inOut",
+                "phase": "enter",
+                "pointer": "0x90000100",
+                "value": "00112233",
+                "byteLength": 4,
+                "requestedLength": 4
+            }]),
+        );
+        let mut leave = common;
+        let leave_object = leave.as_object_mut().unwrap();
+        leave_object.insert("event".to_string(), serde_json::json!("hook-leave"));
+        leave_object.insert("timestampMs".to_string(), serde_json::json!(12));
+        leave_object.insert(
+            "registers".to_string(),
+            registers(0x70000104, 0x70000104, 1),
+        );
+        leave_object.insert("returnValue".to_string(), serde_json::json!("0x1"));
+        leave_object.insert(
+            "captures".to_string(),
+            serde_json::json!([{
+                "index": 0,
+                "label": "buffer",
+                "kind": "byteArray",
+                "direction": "inOut",
+                "phase": "leave",
+                "pointer": "0x90000100",
+                "value": "0011aabb",
+                "byteLength": 4,
+                "requestedLength": 4
+            }]),
+        );
+        std::fs::write(
+            &capture_path,
+            serde_json::to_vec(&vec![enter, leave]).unwrap(),
+        )
+        .unwrap();
+
+        let handler = TraceToolHandler::new(Arc::new(TraceEngine::new()));
+        let summary_output = handler
+            .summarize_exact_calls(Parameters(SummarizeExactCallsRequest {
+                capture_path: capture_path.to_string_lossy().into_owned(),
+                caller_module_name: "libtarget.so".to_string(),
+                static_binary_path: elf_path.to_string_lossy().into_owned(),
+                max_calls: 16,
+                max_memory_bytes_per_call: 1024,
+                output_path: Some(summary_path.to_string_lossy().into_owned()),
+            }))
+            .await
+            .unwrap();
+        let summary: serde_json::Value = serde_json::from_str(&summary_output).unwrap();
+        assert_eq!(summary["summary"]["captureReadyCallCount"], 1);
+        assert_eq!(summary["summary"]["verificationGateMet"], false);
+        assert!(summary_path.is_file());
+
+        let authorization_output = handler
+            .authorize_exact_call_replay(Parameters(AuthorizeExactCallReplayRequest {
+                summary_path: summary_path.to_string_lossy().into_owned(),
+                static_binary_path: elf_path.to_string_lossy().into_owned(),
+                call_ids: vec!["callee:7:1".to_string()],
+                captured_memory_effects_complete: true,
+                no_simd_fp_side_effects: true,
+                no_tls_side_effects: true,
+                no_system_register_or_syscall_effects: true,
+                no_thread_signal_or_callback_effects: true,
+                deterministic_for_exact_preconditions: true,
+                output_path: Some(authorization_path.to_string_lossy().into_owned()),
+            }))
+            .await
+            .unwrap();
+        let authorization: serde_json::Value = serde_json::from_str(&authorization_output).unwrap();
+        assert_eq!(authorization["authorization"]["authorizedCount"], 1);
+        assert_eq!(authorization["authorization"]["verificationGateMet"], false);
+        assert!(authorization_path.is_file());
+
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[tokio::test]
+    async fn minimal_evidence_slice_tools_execute_end_to_end_through_mcp_handlers() {
+        let dir = std::env::temp_dir().join(format!(
+            "trace-ui-mcp-evidence-slice-{}",
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        let trace_path = dir.join("sample.log");
+        let case_path = dir.join("sample.traceui-case");
+        let slice_path = dir.join("slice.json");
+        std::fs::write(
+            &trace_path,
+            b"[libsample.so] 0x1000!0x10 mov x0, #1; x0=0x1\n[libsample.so] 0x1004!0x14 str x0, [x2]; x2=0x2000\n",
+        )
+        .unwrap();
+        let document = trace_core::create_trace_analysis_case(
+            case_path.to_str().unwrap(),
+            "MCP evidence slice",
+            Some(trace_path.to_str().unwrap()),
+            None,
+        )
+        .unwrap();
+        let trace_artifact_id = document.case.primary_trace_artifact_id.unwrap();
+        trace_core::upsert_trace_case_claim(
+            case_path.to_str().unwrap(),
+            trace_core::TraceCaseClaim {
+                claim_id: "observed-line".to_string(),
+                statement: "The selected instruction was observed.".to_string(),
+                scope: "trace:sample".to_string(),
+                status: trace_core::TraceCaseClaimStatus::Observed,
+                coverage_requirement: trace_core::TraceCaseCoverageRequirement::NotRequired,
+                supporting_evidence: vec![trace_core::TraceCaseEvidenceRef {
+                    artifact_id: trace_artifact_id.clone(),
+                    locator: "seq:1".to_string(),
+                    description: "Exact observed trace line".to_string(),
+                }],
+                counter_evidence: Vec::new(),
+                missing_evidence: Vec::new(),
+                limitations: Vec::new(),
+                created_by: "mcp-smoke-test".to_string(),
+                created_at_ms: 1,
+                updated_at_ms: 1,
+            },
+        )
+        .unwrap();
+
+        let engine = Arc::new(TraceEngine::new());
+        let session = engine.create_session(trace_path.to_str().unwrap()).unwrap();
+        engine
+            .build_index(
+                &session.session_id,
+                trace_core::BuildOptions {
+                    force_rebuild: false,
+                    skip_strings: true,
+                },
+                None,
+            )
+            .unwrap();
+        let handler = TraceToolHandler::new(engine.clone());
+        let generated_output = handler
+            .generate_minimal_evidence_slice(Parameters(GenerateMinimalEvidenceSliceRequest {
+                case_path: case_path.to_string_lossy().into_owned(),
+                trace_session_bindings: vec![EvidenceSliceTraceSessionBindingRequest {
+                    artifact_id: trace_artifact_id,
+                    session_id: session.session_id.clone(),
+                }],
+                claim_ids: vec!["observed-line".to_string()],
+                include_generated_claims: false,
+                include_sensitive_values: true,
+                context_before: 0,
+                context_after: 0,
+                module_bytes_before: 16,
+                module_bytes_after: 32,
+                max_memory_bytes_per_record: 256,
+                max_records: 32,
+                max_total_payload_bytes: 1024 * 1024,
+                output_path: Some(slice_path.to_string_lossy().into_owned()),
+            }))
+            .await
+            .unwrap();
+        let generated: serde_json::Value = serde_json::from_str(&generated_output).unwrap();
+        assert_eq!(generated["schema"], "trace-ui/minimal-evidence-slice-v1");
+        assert_eq!(generated["summary"]["materializationComplete"], true);
+        assert!(slice_path.is_file());
+
+        let inspected_output = handler
+            .inspect_minimal_evidence_slice(Parameters(InspectMinimalEvidenceSliceRequest {
+                case_path: case_path.to_string_lossy().into_owned(),
+                artifact_path: slice_path.to_string_lossy().into_owned(),
+            }))
+            .await
+            .unwrap();
+        let inspected: serde_json::Value = serde_json::from_str(&inspected_output).unwrap();
+        assert_eq!(inspected["status"], "valid-complete");
+        assert_eq!(inspected["recordContentMatched"], true);
+        assert_eq!(inspected["provenanceGraphValid"], true);
+
+        engine.close_session(&session.session_id).unwrap();
         let _ = std::fs::remove_dir_all(dir);
     }
 

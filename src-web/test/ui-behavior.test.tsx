@@ -4,9 +4,11 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 import { MaterialRow } from "../src/components/CryptoMaterialsPanel";
 import AnalysisCasePanel from "../src/components/AnalysisCasePanel";
 import AnalysisHistoryPanel from "../src/components/AnalysisHistoryPanel";
+import MemoryObjectsPanel from "../src/components/MemoryObjectsPanel";
 import OllvmUnicornPanel from "../src/components/OllvmUnicornPanel";
 import { filterFridaCaptureEvents } from "../src/utils/fridaCaptureFilter";
-import type { AngrOllvmScript, CryptoDetectionDoctorReport, CryptoMaterial, FridaCaptureBundle, FridaCaptureEvent, OllvmReport, ReplayDoctorReport, TraceAnalysisCaseDocument, UnicornOllvmResultBundle } from "../src/types/trace";
+import type { AngrOllvmScript, CryptoDetectionDoctorReport, CryptoMaterial, FridaCaptureBundle, FridaCaptureEvent, MinimalEvidenceSliceBundle, MinimalEvidenceSliceInspectionReport, OllvmReport, ReplayDoctorReport, TraceAnalysisCaseDocument, UnicornOllvmResultBundle } from "../src/types/trace";
+import type { MemoryObjectGraphReport, MemoryPointerExplanation } from "../src/types/trace";
 
 const mocks = vi.hoisted(() => ({
   invoke: vi.fn(),
@@ -175,6 +177,129 @@ describe("OLLVM Unicorn concrete replay", () => {
     expect(mocks.invoke).toHaveBeenCalledWith("generate_unicorn_ollvm_script", expect.objectContaining({
       staticBinaryPath: "C:\\samples\\libtarget.so",
       fridaEventIndices: [7],
+      stopOnCall: true,
+    }));
+  });
+
+  it("requires explicit exact-call assumptions before embedding replay authorization", async () => {
+    const user = userEvent.setup();
+    const event = makeEvent({
+      index: 7,
+      event: "hook-enter",
+      exactCallRecord: true,
+      targetOffset: "0x900",
+      callerModuleName: "libtarget.so",
+      callSiteOffset: "0x180",
+      returnOffset: "0x184",
+      registers: { x0: "0x1", sp: "0x50000000", nzcv: "0x0" },
+    });
+    const capture: FridaCaptureBundle = {
+      schema: "trace-ui/frida-hook-v1",
+      sourceFormat: "ndjson",
+      events: [event],
+      hookIds: [event.hookId],
+      enterEventCount: 1,
+      leaveEventCount: 1,
+      stalkerEventCount: 0,
+      warnings: [],
+    };
+    const summary = {
+      schema: "trace-ui/exact-call-summary-v1",
+      request: { callerModuleName: "libtarget.so", staticBinaryPath: "C:\\samples\\libtarget.so", maxCalls: 1024, maxMemoryBytesPerCall: 1048576 },
+      sourceCapturePath: "C:\\samples\\capture.ndjson",
+      sourceCaptureSha256: "b".repeat(64),
+      exactBinaryIdentity: { binaryPath: "C:\\samples\\libtarget.so", binarySha256: "a".repeat(64), fileSize: 8192, format: "ELF64", architecture: "AArch64", elfMachine: 183, buildId: null },
+      calls: [{
+        callId: "call-1",
+        hookId: "hook-1",
+        functionName: "external_helper",
+        callSiteOffset: "0x180",
+        targetModuleName: "libhelper.so",
+        targetOffset: "0x900",
+        returnOffset: "0x184",
+        registerEffects: [{ register: "x0", before: "0x1", after: "0x2" }],
+        memoryEffects: [],
+        completeness: { captureReady: true },
+        blockers: [],
+      }],
+      pairedCallCount: 1,
+      captureReadyCallCount: 1,
+      incompleteCallCount: 0,
+      unpairedEnterEventIndices: [],
+      unpairedLeaveEventIndices: [],
+      callsTruncated: false,
+      verificationGateMet: false,
+      warnings: [],
+      limitations: [],
+    } as unknown as import("../src/types/trace").ExactCallSummaryBundle;
+    const authorization = {
+      schema: "trace-ui/exact-call-replay-authorization-v1",
+      authorizations: [{ authorizationId: "auth-1", callId: "call-1", authorized: true, status: "authorized-candidate" }],
+      authorizedCount: 1,
+      blockedCount: 0,
+      verificationGateMet: false,
+      warnings: [],
+      limitations: [],
+    } as unknown as import("../src/types/trace").ExactCallReplayAuthorizationBundle;
+    mocks.open
+      .mockResolvedValueOnce("C:\\samples\\libtarget.so")
+      .mockResolvedValueOnce("C:\\samples\\capture.ndjson");
+    mocks.save
+      .mockResolvedValueOnce("C:\\samples\\exact-call-summary.json")
+      .mockResolvedValueOnce("C:\\samples\\exact-call-authorization.json");
+    mocks.invoke.mockImplementation(async (command: string) => {
+      if (command === "load_frida_capture") return capture;
+      if (command === "summarize_exact_calls") return summary;
+      if (command === "authorize_exact_call_replay") return authorization;
+      if (command === "generate_unicorn_ollvm_script") return {
+        fileName: "target-trace-ui-unicorn.py",
+        script: "print('replay')",
+        schemaVersion: "trace-ui/unicorn-ollvm-v1",
+        seeds: [],
+        seedQualities: [],
+        seedRecapturePlans: [],
+        expectedBinaryIdentity: summary.exactBinaryIdentity,
+        exactCallAuthorizations: [{
+          authorizationId: "auth-1",
+          callId: "call-1",
+          callSiteOffset: "0x180",
+          returnOffset: "0x184",
+          targetModuleName: "libhelper.so",
+          targetOffset: "0x900",
+          preconditionRegisterCount: 9,
+          registerWriteCount: 1,
+          memoryEffectCount: 0,
+        }],
+        config: {},
+        warnings: [],
+      };
+      throw new Error(`unexpected command ${command}`);
+    });
+    const report = { scope: { moduleName: "libtarget.so" } } as OllvmReport;
+    const view = render(<OllvmUnicornPanel report={report} />);
+    const panel = within(view.container);
+
+    await user.click(panel.getByRole("button", { name: "选择 ELF" }));
+    await user.click(panel.getByRole("button", { name: "导入捕获" }));
+    await user.click(panel.getByRole("button", { name: "生成并保存摘要" }));
+    expect(await panel.findByText(/capture-ready 1/)).toBeInTheDocument();
+    expect(panel.getByRole("button", { name: "显式授权并保存" })).toBeDisabled();
+    for (const label of [
+      "已捕获全部内存副作用",
+      "没有 SIMD/FP 副作用",
+      "没有 TLS/errno 副作用",
+      "没有系统寄存器或 syscall 副作用",
+      "没有线程、信号或 callback 副作用",
+      "对这些精确前置状态确定性一致",
+    ]) {
+      await user.click(panel.getByRole("checkbox", { name: label }));
+    }
+    await user.click(panel.getByRole("button", { name: "显式授权并保存" }));
+    expect(await panel.findByText(/1 authorized/)).toBeInTheDocument();
+    await user.click(panel.getByRole("button", { name: "生成 Unicorn Python" }));
+    expect(await panel.findByText("Exact-call replay candidates")).toBeInTheDocument();
+    expect(mocks.invoke).toHaveBeenCalledWith("generate_unicorn_ollvm_script", expect.objectContaining({
+      exactCallAuthorizationPaths: ["C:\\samples\\exact-call-authorization.json"],
       stopOnCall: true,
     }));
   });
@@ -566,8 +691,39 @@ describe("案件工作区准确率门禁", () => {
       limitations: [],
     },
     runtimeAttestations: [],
+    exactCallSummaries: [{
+      artifactId: "exact-summary-1",
+      exactBinaryArtifactId: "elf-1",
+      sourceCaptureArtifactId: "frida-1",
+      callerModuleName: "libtarget.so",
+      sourceCaptureSha256: "a".repeat(64),
+      binarySha256: "b".repeat(64),
+      pairedCallCount: 1,
+      captureReadyCallCount: 1,
+      incompleteCallCount: 0,
+      captureReadyCallIds: ["callee:7:1"],
+      verificationGateMet: false,
+      warnings: [],
+      limitations: ["Candidate/Related only."],
+    }],
+    exactCallAuthorizations: [{
+      artifactId: "exact-auth-1",
+      exactBinaryArtifactId: "elf-1",
+      summaryArtifactId: "exact-summary-1",
+      sourceCaptureArtifactId: "frida-1",
+      summarySha256: "c".repeat(64),
+      binarySha256: "b".repeat(64),
+      authorizedCount: 1,
+      blockedCount: 0,
+      authorizedCallIds: ["callee:7:1"],
+      blockedCallIds: [],
+      verificationGateMet: false,
+      warnings: [],
+      limitations: ["Candidate/Related only."],
+    }],
     cryptoKats: [],
     coverageReconciliations: [],
+    evidenceSlices: [],
     warnings: [],
     limitations: [],
   };
@@ -632,6 +788,8 @@ describe("案件工作区准确率门禁", () => {
     expect(panel.getByText("Claim 反证门禁")).toBeInTheDocument();
     expect(panel.getByText("受控实验矩阵")).toBeInTheDocument();
     expect(panel.getByText("Verified requires semantic evidence.")).toBeInTheDocument();
+    expect(panel.getByText("Exact-call provenance reports")).toBeInTheDocument();
+    expect(panel.getByText("Exact-call replay authorizations")).toBeInTheDocument();
 
     await user.click(panel.getByRole("button", { name: "运行诊断" }));
     expect(await panel.findByText("Semantic verification")).toBeInTheDocument();
@@ -936,5 +1094,326 @@ describe("案件工作区准确率门禁", () => {
     expect(mocks.invoke.mock.calls.map(call => call[0])).not.toEqual(expect.arrayContaining([
       "run_angr", "install_angr", "execute_target",
     ]));
+  });
+
+  it("选择 claim、自动绑定当前 Trace、保存检查并导入 Minimal Evidence Slice", async () => {
+    const user = userEvent.setup();
+    const traceArtifactId = "trace-slice-1";
+    const sliceCase: TraceAnalysisCaseDocument = {
+      ...caseDocument,
+      case: {
+        ...caseDocument.case,
+        primaryTraceArtifactId: traceArtifactId,
+        artifacts: [{
+          artifactId: traceArtifactId,
+          kind: "trace",
+          label: "Primary trace",
+          path: "sample.log",
+          sha256: "a".repeat(64),
+          fileSize: 128,
+          importedAtMs: 1,
+          parentArtifactIds: [],
+          summary: {
+            schema: "trace-file",
+            captureOffsets: [],
+            eventCount: 0,
+            runCount: 0,
+            warningCount: 0,
+            stopReasonCounts: {},
+            notes: [],
+          },
+        }],
+        claims: [{
+          claimId: "claim-slice-1",
+          statement: "Observed instruction",
+          scope: "trace:sample",
+          status: "observed",
+          coverageRequirement: "not-required",
+          supportingEvidence: [{
+            artifactId: traceArtifactId,
+            locator: "seq:1",
+            description: "Exact line",
+          }],
+          counterEvidence: [],
+          missingEvidence: [],
+          limitations: [],
+          createdBy: "test",
+          createdAtMs: 1,
+          updatedAtMs: 1,
+        }],
+      },
+    };
+    const summary = {
+      selectedClaimCount: 1,
+      selectedReferenceCount: 1,
+      materializedReferenceCount: 1,
+      unresolvedReferenceCount: 0,
+      sourceArtifactCount: 1,
+      recordCount: 1,
+      truncatedRecordCount: 0,
+      traceLineRecordCount: 1,
+      memoryRecordCount: 0,
+      fridaEventRecordCount: 0,
+      moduleBytesRecordCount: 0,
+      jsonFragmentRecordCount: 0,
+      containsSensitiveValues: false,
+      payloadBytes: 2048,
+      materializationComplete: true,
+    };
+    const bundle: MinimalEvidenceSliceBundle = {
+      schema: "trace-ui/minimal-evidence-slice-v1",
+      sliceId: "slice-1234567890abcdef",
+      generatedAtMs: 2,
+      contentSha256: "b".repeat(64),
+      content: {
+        caseId: "case-1",
+        caseTitle: "AES / OLLVM case",
+        config: {
+          includeGeneratedClaims: true,
+          includeSensitiveValues: false,
+          contextBefore: 2,
+          contextAfter: 2,
+          moduleBytesBefore: 16,
+          moduleBytesAfter: 32,
+          maxMemoryBytesPerRecord: 4096,
+          maxRecords: 256,
+          maxTotalPayloadBytes: 8 * 1024 * 1024,
+        },
+        selectedClaimIds: ["claim-slice-1"],
+        sourceArtifacts: [{
+          artifactId: traceArtifactId,
+          kind: "trace",
+          label: "Primary trace",
+          storedPath: "sample.log",
+          sha256: "a".repeat(64),
+          fileSize: 128,
+          parentArtifactIds: [],
+          role: "primary-trace",
+        }],
+        references: [],
+        records: [],
+        provenance: { nodes: [], edges: [] },
+        summary,
+        warnings: [],
+        limitations: ["Not semantic proof."],
+      },
+    };
+    const inspection: MinimalEvidenceSliceInspectionReport = {
+      schema: "trace-ui/minimal-evidence-slice-inspection-v1",
+      sliceId: bundle.sliceId,
+      status: "valid-complete",
+      contentSha256Matched: true,
+      sourceArtifactsMatched: true,
+      claimBindingsMatched: true,
+      generatedClaimBindingsRevalidated: true,
+      recordContentMatched: true,
+      provenanceGraphValid: true,
+      summaryRecomputed: summary,
+      sourceArtifactIds: [traceArtifactId],
+      staleClaimIds: [],
+      unrevalidatedGeneratedClaimIds: [],
+      mismatchedRecordIds: [],
+      blockers: [],
+      warnings: [],
+      limitations: ["Not semantic proof."],
+    };
+
+    localStorage.setItem("trace-ui-analysis-case:session-case", sliceCase.casePath);
+    mocks.invoke.mockImplementation(async (command: string) => {
+      if (command === "load_analysis_case") return sliceCase;
+      if (command === "generate_minimal_evidence_slice") return bundle;
+      if (command === "inspect_minimal_evidence_slice") return inspection;
+      if (command === "add_analysis_case_artifact") return { case: sliceCase.case };
+      throw new Error(`unexpected command ${command}`);
+    });
+    mocks.save.mockResolvedValueOnce("C:\\cases\\evidence-slice.json");
+    const view = render(<AnalysisCasePanel sessionId="session-case" />);
+    const panel = within(view.container);
+    expect((await panel.findAllByText("Observed instruction")).length).toBeGreaterThan(0);
+    await user.click(panel.getByRole("button", { name: "生成并保存" }));
+    expect(mocks.invoke).toHaveBeenCalledWith("generate_minimal_evidence_slice", {
+      request: expect.objectContaining({
+        casePath: sliceCase.casePath,
+        claimIds: ["claim-slice-1"],
+        traceSessionBindings: [{ artifactId: traceArtifactId, sessionId: "session-case" }],
+        includeSensitiveValues: false,
+      }),
+      outputPath: "C:\\cases\\evidence-slice.json",
+    });
+    expect((await panel.findAllByText("valid-complete")).length).toBeGreaterThan(0);
+    await user.click(panel.getByRole("button", { name: "导入案件并绑定源 parents" }));
+    expect(mocks.invoke).toHaveBeenCalledWith("add_analysis_case_artifact", expect.objectContaining({
+      artifactPath: "C:\\cases\\evidence-slice.json",
+      kindHint: "evidence-slice",
+      parentArtifactIds: [traceArtifactId],
+    }));
+    expect(mocks.invoke.mock.calls.map(call => call[0])).not.toEqual(expect.arrayContaining([
+      "execute_target", "run_angr", "run_unicorn", "attach_frida",
+    ]));
+  });
+});
+
+describe("Memory object / alias / lifetime UI", () => {
+  beforeEach(() => {
+    mocks.invoke.mockReset();
+  });
+
+  it("reconstructs bounded candidates and explains one pointer without claiming proof", async () => {
+    const user = userEvent.setup();
+    const report: MemoryObjectGraphReport = {
+      schemaVersion: "trace-ui/memory-object-graph-v1",
+      scope: { startSeq: 0, endSeq: 40 },
+      objects: [{
+        objectId: "heap:0x1000:g1",
+        kind: "heap",
+        generation: 1,
+        baseAddress: "0x1000",
+        endAddress: "0x1040",
+        size: 64,
+        startSeq: 2,
+        endSeq: 20,
+        allocationCallSeq: 1,
+        releaseCallSeq: 19,
+        allocator: "malloc",
+        releaseFunction: "free",
+        releaseReason: "released-by-free",
+        callNodeId: null,
+        parentCallNodeId: null,
+        functionName: null,
+        entrySp: null,
+        exitSp: null,
+        lifecycleState: "released",
+        evidenceLevel: "related",
+        accessSummary: {
+          readCount: 3,
+          writeCount: 2,
+          firstAccessSeq: 3,
+          lastAccessSeq: 25,
+          firstReadSeq: 4,
+          lastReadSeq: 25,
+          firstWriteSeq: 3,
+          lastWriteSeq: 6,
+        },
+        accessSamples: [],
+        accessSamplesTruncated: false,
+        aliases: [{
+          seq: 2,
+          sourceKind: "allocator-return",
+          source: "malloc",
+          pointer: "0x1000",
+          offset: "0x0",
+          relation: "base-pointer",
+          lifetimeState: "live",
+          evidenceLevel: "related",
+        }],
+        aliasesTruncated: false,
+        fieldWindows: [{
+          offset: "0x10",
+          endOffset: "0x20",
+          readCount: 3,
+          writeCount: 2,
+          firstSeq: 3,
+          lastSeq: 25,
+          sampleAddresses: ["0x1010"],
+        }],
+        fieldWindowsTruncated: false,
+        warnings: ["Candidate only."],
+      }],
+      runtimeClusters: [],
+      anomalies: [{
+        kind: "access-after-lifetime",
+        status: "candidate",
+        seq: 25,
+        address: "0x1010",
+        objectId: "heap:0x1000:g1",
+        functionName: null,
+        accessKind: "read",
+        accessSize: 4,
+        instructionAddress: "0x4000",
+        occurrenceCount: 1,
+        reason: "No newer live generation covers this access.",
+        counterEvidence: ["An omitted allocation may exist."],
+        requiredEvidence: ["Capture and replay the exact call."],
+      }],
+      statistics: {
+        totalObjects: 1,
+        heapObjects: 1,
+        mmapObjects: 0,
+        stackFrameObjects: 0,
+        activeAtScopeEnd: 0,
+        releasedOrEnded: 1,
+        reusedAddressCount: 0,
+        failedAllocationCount: 0,
+        lifecycleUnknownCount: 0,
+        processedAccessCount: 5,
+        attributedAccessCount: 5,
+        unattributedAccessCount: 0,
+        aliasCount: 1,
+        anomalyCount: 1,
+      },
+      objectsTruncated: false,
+      runtimeClustersTruncated: false,
+      anomaliesTruncated: false,
+      accessesTruncated: false,
+      verificationGateMet: false,
+      limitations: ["This is not a proof."],
+      nextSteps: ["Capture exact allocator state."],
+    };
+    const explanation: MemoryPointerExplanation = {
+      schemaVersion: "trace-ui/memory-pointer-explanation-v1",
+      address: "0x1010",
+      seq: 40,
+      objectMatches: [{
+        objectId: "heap:0x1000:g1",
+        kind: "heap",
+        generation: 1,
+        baseAddress: "0x1000",
+        size: 64,
+        offset: "0x10",
+        lifetimeStateAtSeq: "released",
+        evidenceLevel: "related",
+        rationale: "The query is after the reconstructed lifetime.",
+      }],
+      registerAliases: [{
+        register: "X0",
+        value: "0x1010",
+        relation: "exact-pointer",
+        displacement: "0x0",
+        objectId: "heap:0x1000:g1",
+        evidenceLevel: "observed",
+      }],
+      callAliases: [],
+      nearbyAccesses: [],
+      assessment: "released-generation-candidate",
+      risks: ["Stale pointer remains Candidate."],
+      unknowns: ["An omitted allocation may exist."],
+      nextSteps: ["Capture exact state."],
+      verificationGateMet: false,
+    };
+    mocks.invoke.mockImplementation(async (command: string) => {
+      if (command === "reconstruct_memory_objects") return report;
+      if (command === "explain_memory_pointer") return explanation;
+      throw new Error(`unexpected command ${command}`);
+    });
+
+    render(<MemoryObjectsPanel sessionId="memory-session" isPhase2Ready onJumpToSeq={() => undefined} />);
+    await user.click(screen.getByRole("button", { name: "Reconstruct objects" }));
+    expect(mocks.invoke).toHaveBeenCalledWith("reconstruct_memory_objects", expect.objectContaining({
+      sessionId: "memory-session",
+      options: expect.objectContaining({ includeStackFrames: true, maxObjects: 1000 }),
+    }));
+    expect((await screen.findAllByText(/malloc/)).length).toBeGreaterThan(0);
+    expect(screen.getByText(/access-after-lifetime/)).toBeInTheDocument();
+
+    await user.type(screen.getByLabelText("Pointer address"), "0x1010");
+    await user.click(screen.getByRole("button", { name: "Explain @ end" }));
+    expect(mocks.invoke).toHaveBeenCalledWith("explain_memory_pointer", {
+      sessionId: "memory-session",
+      address: "0x1010",
+      seq: null,
+      includeStackFrames: true,
+    });
+    expect(await screen.findByText(/released-generation-candidate/)).toBeInTheDocument();
+    expect(screen.getByText(/Candidate: Stale pointer remains Candidate/)).toBeInTheDocument();
   });
 });

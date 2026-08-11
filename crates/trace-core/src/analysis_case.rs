@@ -10,6 +10,10 @@ use sha2::{Digest, Sha256};
 
 use crate::analysis::AnalysisRecord;
 use crate::error::{Result, TraceError};
+use crate::evidence_slice::{
+    inspect_minimal_evidence_slice_bundle_for_replay, parse_minimal_evidence_slice_bundle,
+    MinimalEvidenceSliceBundle, MinimalEvidenceSliceInspectionReport,
+};
 use crate::query::angr::{parse_angr_ollvm_result_bundle, AngrOllvmResultBundle};
 use crate::query::coverage::{
     inspect_coverage_reconciliation_bundle, parse_coverage_reconciliation_bundle,
@@ -21,6 +25,11 @@ use crate::query::crypto_kat::{
     CRYPTO_SEMANTIC_KAT_VERIFICATION_SCHEMA,
 };
 use crate::query::elf_identity::{inspect_elf_binary, ElfBinaryIdentity};
+use crate::query::exact_call::{
+    inspect_exact_call_replay_authorization_with_sources, inspect_exact_call_summary_with_sources,
+    parse_exact_call_replay_authorization_bundle, parse_exact_call_summary_bundle,
+    ExactCallReplayAuthorizationBundle, ExactCallSummaryBundle,
+};
 use crate::query::frida_capture::{
     parse_frida_capture_bundle, FridaCaptureBundle, FridaCaptureEvent,
 };
@@ -64,11 +73,14 @@ pub enum TraceCaseArtifactKind {
     StaticBinary,
     RuntimeAttestation,
     FridaCapture,
+    ExactCallSummary,
+    ExactCallAuthorization,
     UnicornResult,
     AngrResult,
     IdaAnnotations,
     OllvmReport,
     CoverageReport,
+    EvidenceSlice,
     AnalysisReport,
     CryptoKat,
     CryptoReport,
@@ -82,11 +94,14 @@ impl TraceCaseArtifactKind {
             Self::StaticBinary => "static-binary",
             Self::RuntimeAttestation => "runtime-attestation",
             Self::FridaCapture => "frida-capture",
+            Self::ExactCallSummary => "exact-call-summary",
+            Self::ExactCallAuthorization => "exact-call-authorization",
             Self::UnicornResult => "unicorn-result",
             Self::AngrResult => "angr-result",
             Self::IdaAnnotations => "ida-annotations",
             Self::OllvmReport => "ollvm-report",
             Self::CoverageReport => "coverage-report",
+            Self::EvidenceSlice => "evidence-slice",
             Self::AnalysisReport => "analysis-report",
             Self::CryptoKat => "crypto-kat",
             Self::CryptoReport => "crypto-report",
@@ -100,11 +115,16 @@ impl TraceCaseArtifactKind {
             "static-binary" | "binary" | "elf" | "so" => Ok(Self::StaticBinary),
             "runtime-attestation" | "attestation" | "runtime-image" => Ok(Self::RuntimeAttestation),
             "frida-capture" | "frida" => Ok(Self::FridaCapture),
+            "exact-call-summary" | "call-summary" => Ok(Self::ExactCallSummary),
+            "exact-call-authorization" | "call-authorization" | "exact-call-replay" => {
+                Ok(Self::ExactCallAuthorization)
+            }
             "unicorn-result" | "unicorn" => Ok(Self::UnicornResult),
             "angr-result" | "angr" => Ok(Self::AngrResult),
             "ida-annotations" | "ida" => Ok(Self::IdaAnnotations),
             "ollvm-report" | "ollvm" => Ok(Self::OllvmReport),
             "coverage-report" | "coverage" | "coverage-reconciliation" => Ok(Self::CoverageReport),
+            "evidence-slice" | "minimal-evidence-slice" | "slice" => Ok(Self::EvidenceSlice),
             "analysis-report" | "analysis" => Ok(Self::AnalysisReport),
             "crypto-kat" | "kat" | "crypto-semantic-kat" => Ok(Self::CryptoKat),
             "crypto-report" | "crypto" => Ok(Self::CryptoReport),
@@ -157,6 +177,30 @@ pub struct TraceCaseArtifactSummary {
     pub coverage_uncovered_counts: Option<CoverageCounts>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub coverage_basis_points: Option<CoverageBasisPoints>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub evidence_slice_status: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub evidence_slice_materialization_complete: Option<bool>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub evidence_slice_claim_count: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub evidence_slice_reference_count: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub evidence_slice_record_count: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub evidence_slice_unresolved_reference_count: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub evidence_slice_truncated_record_count: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub evidence_slice_contains_sensitive_values: Option<bool>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub exact_call_capture_ready_count: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub exact_call_incomplete_count: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub exact_call_authorized_count: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub exact_call_blocked_count: Option<u64>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub complete_executable_coverage: Option<bool>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -546,8 +590,11 @@ pub struct ReplayDoctorReport {
     pub experiment_matrix: TraceCaseExperimentMatrixReport,
     pub capture_plan: InformationGainCapturePlan,
     pub runtime_attestations: Vec<TraceCaseRuntimeAttestationReport>,
+    pub exact_call_summaries: Vec<TraceCaseExactCallSummaryReport>,
+    pub exact_call_authorizations: Vec<TraceCaseExactCallAuthorizationReport>,
     pub crypto_kats: Vec<TraceCaseCryptoKatReport>,
     pub coverage_reconciliations: Vec<TraceCaseCoverageReport>,
+    pub evidence_slices: Vec<TraceCaseEvidenceSliceReport>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub unicorn_round_comparison: Option<UnicornOllvmRoundComparisonReport>,
     pub warnings: Vec<String>,
@@ -560,6 +607,42 @@ pub struct TraceCaseRuntimeAttestationReport {
     pub artifact_id: String,
     pub exact_binary_artifact_id: String,
     pub report: RuntimeAttestationInspectionReport,
+}
+
+#[derive(Clone, Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct TraceCaseExactCallSummaryReport {
+    pub artifact_id: String,
+    pub exact_binary_artifact_id: String,
+    pub source_capture_artifact_id: String,
+    pub caller_module_name: String,
+    pub source_capture_sha256: String,
+    pub binary_sha256: String,
+    pub paired_call_count: u64,
+    pub capture_ready_call_count: u64,
+    pub incomplete_call_count: u64,
+    pub capture_ready_call_ids: Vec<String>,
+    pub verification_gate_met: bool,
+    pub warnings: Vec<String>,
+    pub limitations: Vec<String>,
+}
+
+#[derive(Clone, Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct TraceCaseExactCallAuthorizationReport {
+    pub artifact_id: String,
+    pub exact_binary_artifact_id: String,
+    pub summary_artifact_id: String,
+    pub source_capture_artifact_id: String,
+    pub summary_sha256: String,
+    pub binary_sha256: String,
+    pub authorized_count: u64,
+    pub blocked_count: u64,
+    pub authorized_call_ids: Vec<String>,
+    pub blocked_call_ids: Vec<String>,
+    pub verification_gate_met: bool,
+    pub warnings: Vec<String>,
+    pub limitations: Vec<String>,
 }
 
 #[derive(Clone, Debug, Serialize)]
@@ -578,16 +661,28 @@ pub struct TraceCaseCoverageReport {
     pub report: CoverageReconciliationInspectionReport,
 }
 
+#[derive(Clone, Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct TraceCaseEvidenceSliceReport {
+    pub artifact_id: String,
+    pub selected_claim_ids: Vec<String>,
+    pub source_artifact_ids: Vec<String>,
+    pub report: MinimalEvidenceSliceInspectionReport,
+}
+
 enum ParsedCaseArtifact {
     Trace,
     StaticBinary(ElfBinaryIdentity),
     RuntimeAttestation(RuntimeAttestationCaptureBundle),
     Frida(FridaCaptureBundle),
+    ExactCallSummary(ExactCallSummaryBundle),
+    ExactCallAuthorization(ExactCallReplayAuthorizationBundle),
     Unicorn(UnicornOllvmResultBundle),
     Angr(AngrOllvmResultBundle),
     Ida(IdaAnnotationBundle),
     Ollvm(OllvmReport),
     Coverage(CoverageReconciliationBundle),
+    EvidenceSlice(MinimalEvidenceSliceBundle),
     Analysis(AnalysisRecord),
     CryptoKat(CryptoSemanticKatReport),
     Crypto(Value),
@@ -807,6 +902,32 @@ fn apply_coverage_report_summary(
     ));
 }
 
+fn apply_evidence_slice_report_summary(
+    summary: &mut TraceCaseArtifactSummary,
+    report: &MinimalEvidenceSliceInspectionReport,
+) {
+    summary.evidence_slice_status = Some(report.status.clone());
+    summary.evidence_slice_materialization_complete =
+        Some(report.summary_recomputed.materialization_complete);
+    summary.evidence_slice_claim_count = Some(report.summary_recomputed.selected_claim_count);
+    summary.evidence_slice_reference_count =
+        Some(report.summary_recomputed.selected_reference_count);
+    summary.evidence_slice_record_count = Some(report.summary_recomputed.record_count);
+    summary.evidence_slice_unresolved_reference_count =
+        Some(report.summary_recomputed.unresolved_reference_count);
+    summary.evidence_slice_truncated_record_count =
+        Some(report.summary_recomputed.truncated_record_count);
+    summary.evidence_slice_contains_sensitive_values =
+        Some(report.summary_recomputed.contains_sensitive_values);
+    summary.event_count = report.summary_recomputed.record_count;
+    summary.run_count = report.summary_recomputed.source_artifact_count;
+    summary.warning_count = report.warnings.len() as u64 + report.blockers.len() as u64;
+    summary.notes.push(format!(
+        "Strict minimal-evidence-slice inspection status: {}.",
+        report.status
+    ));
+}
+
 fn inspect_with_kind(path: &Path, kind: TraceCaseArtifactKind) -> Result<ArtifactInspection> {
     match kind {
         TraceCaseArtifactKind::Trace => Ok(ArtifactInspection {
@@ -883,6 +1004,86 @@ fn inspect_with_kind(path: &Path, kind: TraceCaseArtifactKind) -> Result<Artifac
                     ..Default::default()
                 },
                 parsed: ParsedCaseArtifact::Frida(bundle),
+            })
+        }
+        TraceCaseArtifactKind::ExactCallSummary => {
+            let bytes = read_bounded(path, MAX_ARTIFACT_IMPORT_BYTES, "exact-call summary")?;
+            let bundle =
+                parse_exact_call_summary_bundle(&bytes).map_err(TraceError::InvalidArgument)?;
+            Ok(ArtifactInspection {
+                kind,
+                summary: TraceCaseArtifactSummary {
+                    schema: Some(bundle.schema.clone()),
+                    module_name: Some(bundle.request.caller_module_name.clone()),
+                    architecture: Some(bundle.exact_binary_identity.architecture.clone()),
+                    binary_sha256: Some(bundle.exact_binary_identity.binary_sha256.clone()),
+                    expected_binary_sha256: Some(
+                        bundle.exact_binary_identity.binary_sha256.clone(),
+                    ),
+                    exact_identity_matched: Some(true),
+                    exact_call_capture_ready_count: Some(bundle.capture_ready_call_count),
+                    exact_call_incomplete_count: Some(bundle.incomplete_call_count),
+                    capture_offsets: normalize_offsets(
+                        bundle.calls.iter().map(|call| call.call_site_offset.clone()),
+                    ),
+                    event_count: bundle.paired_call_count,
+                    run_count: bundle.capture_ready_call_count,
+                    warning_count: bundle.warnings.len() as u64
+                        + bundle
+                            .calls
+                            .iter()
+                            .map(|call| call.warnings.len() as u64 + call.blockers.len() as u64)
+                            .sum::<u64>(),
+                    notes: vec![
+                        "Exact-call summary was recomputed from its bound source capture and exact caller ELF. It contains sensitive runtime state and is not replay authorization or semantic proof."
+                            .to_string(),
+                    ],
+                    ..Default::default()
+                },
+                parsed: ParsedCaseArtifact::ExactCallSummary(bundle),
+            })
+        }
+        TraceCaseArtifactKind::ExactCallAuthorization => {
+            let bytes = read_bounded(path, MAX_ARTIFACT_IMPORT_BYTES, "exact-call authorization")?;
+            let bundle = parse_exact_call_replay_authorization_bundle(&bytes)
+                .map_err(TraceError::InvalidArgument)?;
+            Ok(ArtifactInspection {
+                kind,
+                summary: TraceCaseArtifactSummary {
+                    schema: Some(bundle.schema.clone()),
+                    module_name: bundle
+                        .authorizations
+                        .first()
+                        .map(|authorization| authorization.caller_module_name.clone()),
+                    architecture: Some(bundle.exact_binary_identity.architecture.clone()),
+                    binary_sha256: Some(bundle.exact_binary_identity.binary_sha256.clone()),
+                    expected_binary_sha256: Some(
+                        bundle.exact_binary_identity.binary_sha256.clone(),
+                    ),
+                    exact_identity_matched: Some(true),
+                    exact_call_authorized_count: Some(bundle.authorized_count),
+                    exact_call_blocked_count: Some(bundle.blocked_count),
+                    capture_offsets: normalize_offsets(
+                        bundle
+                            .authorizations
+                            .iter()
+                            .map(|authorization| authorization.call_site_offset.clone()),
+                    ),
+                    event_count: bundle.authorizations.len() as u64,
+                    run_count: bundle.authorized_count,
+                    warning_count: bundle.warnings.len() as u64
+                        + bundle
+                            .authorizations
+                            .iter()
+                            .map(|authorization| authorization.blockers.len() as u64)
+                            .sum::<u64>(),
+                    notes: vec![
+                        "Exact-call authorization was recomputed from the bound summary and exact caller ELF. It remains Candidate/Related, contains sensitive state, and verificationGateMet is always false."
+                            .to_string(),
+                    ],
+                    ..Default::default()
+                },
+                parsed: ParsedCaseArtifact::ExactCallAuthorization(bundle),
             })
         }
         TraceCaseArtifactKind::UnicornResult => {
@@ -1076,6 +1277,45 @@ fn inspect_with_kind(path: &Path, kind: TraceCaseArtifactKind) -> Result<Artifac
                 parsed: ParsedCaseArtifact::Coverage(bundle),
             })
         }
+        TraceCaseArtifactKind::EvidenceSlice => {
+            let bytes = read_bounded(path, MAX_ARTIFACT_IMPORT_BYTES, "minimal evidence slice")?;
+            let bundle = parse_minimal_evidence_slice_bundle(&bytes)
+                .map_err(TraceError::InvalidArgument)?;
+            let slice_summary = &bundle.content.summary;
+            Ok(ArtifactInspection {
+                kind,
+                summary: TraceCaseArtifactSummary {
+                    schema: Some(bundle.schema.clone()),
+                    evidence_slice_status: Some("unverified-case-bindings".to_string()),
+                    evidence_slice_materialization_complete: Some(
+                        slice_summary.materialization_complete,
+                    ),
+                    evidence_slice_claim_count: Some(slice_summary.selected_claim_count),
+                    evidence_slice_reference_count: Some(slice_summary.selected_reference_count),
+                    evidence_slice_record_count: Some(slice_summary.record_count),
+                    evidence_slice_unresolved_reference_count: Some(
+                        slice_summary.unresolved_reference_count,
+                    ),
+                    evidence_slice_truncated_record_count: Some(
+                        slice_summary.truncated_record_count,
+                    ),
+                    evidence_slice_contains_sensitive_values: Some(
+                        slice_summary.contains_sensitive_values,
+                    ),
+                    event_count: slice_summary.record_count,
+                    run_count: slice_summary.source_artifact_count,
+                    warning_count: bundle.content.warnings.len() as u64,
+                    notes: vec![
+                        "This bounded artifact materializes selected source records and typed provenance for AI review; validity does not prove claim semantics."
+                            .to_string(),
+                        "Generated Replay Doctor claim bindings are revalidated only outside Replay Doctor's own non-recursive artifact pass."
+                            .to_string(),
+                    ],
+                    ..Default::default()
+                },
+                parsed: ParsedCaseArtifact::EvidenceSlice(bundle),
+            })
+        }
         TraceCaseArtifactKind::AnalysisReport => {
             let bytes = read_bounded(path, MAX_ARTIFACT_IMPORT_BYTES, "analysis report")?;
             let record: AnalysisRecord = serde_json::from_slice(&bytes).map_err(|error| {
@@ -1209,6 +1449,15 @@ fn detect_artifact_kind(path: &Path) -> Result<TraceCaseArtifactKind> {
     if parse_runtime_attestation_capture_bundle(&bytes).is_ok() {
         return Ok(TraceCaseArtifactKind::RuntimeAttestation);
     }
+    if parse_minimal_evidence_slice_bundle(&bytes).is_ok() {
+        return Ok(TraceCaseArtifactKind::EvidenceSlice);
+    }
+    if parse_exact_call_summary_bundle(&bytes).is_ok() {
+        return Ok(TraceCaseArtifactKind::ExactCallSummary);
+    }
+    if parse_exact_call_replay_authorization_bundle(&bytes).is_ok() {
+        return Ok(TraceCaseArtifactKind::ExactCallAuthorization);
+    }
     if let Ok(value) = serde_json::from_slice::<Value>(&bytes) {
         if value.get("schema").and_then(Value::as_str)
             == Some(CRYPTO_SEMANTIC_KAT_VERIFICATION_SCHEMA)
@@ -1332,6 +1581,60 @@ fn validate_case(case: &TraceAnalysisCase) -> Result<()> {
             if static_binary_parent_count != 1 {
                 return Err(TraceError::InvalidArgument(format!(
                     "runtime attestation artifact {} must bind exactly one static-binary parent",
+                    artifact.artifact_id
+                )));
+            }
+        }
+        if artifact.kind == TraceCaseArtifactKind::ExactCallSummary {
+            let static_binary_parent_count = artifact
+                .parent_artifact_ids
+                .iter()
+                .filter(|parent| {
+                    artifact_kind_by_id.get(parent.as_str())
+                        == Some(&TraceCaseArtifactKind::StaticBinary)
+                })
+                .count();
+            let frida_capture_parent_count = artifact
+                .parent_artifact_ids
+                .iter()
+                .filter(|parent| {
+                    artifact_kind_by_id.get(parent.as_str())
+                        == Some(&TraceCaseArtifactKind::FridaCapture)
+                })
+                .count();
+            if artifact.parent_artifact_ids.len() != 2
+                || static_binary_parent_count != 1
+                || frida_capture_parent_count != 1
+            {
+                return Err(TraceError::InvalidArgument(format!(
+                    "exact-call summary artifact {} must bind exactly one static-binary parent and exactly one Frida-capture parent",
+                    artifact.artifact_id
+                )));
+            }
+        }
+        if artifact.kind == TraceCaseArtifactKind::ExactCallAuthorization {
+            let static_binary_parent_count = artifact
+                .parent_artifact_ids
+                .iter()
+                .filter(|parent| {
+                    artifact_kind_by_id.get(parent.as_str())
+                        == Some(&TraceCaseArtifactKind::StaticBinary)
+                })
+                .count();
+            let summary_parent_count = artifact
+                .parent_artifact_ids
+                .iter()
+                .filter(|parent| {
+                    artifact_kind_by_id.get(parent.as_str())
+                        == Some(&TraceCaseArtifactKind::ExactCallSummary)
+                })
+                .count();
+            if artifact.parent_artifact_ids.len() != 2
+                || static_binary_parent_count != 1
+                || summary_parent_count != 1
+            {
+                return Err(TraceError::InvalidArgument(format!(
+                    "exact-call authorization artifact {} must bind exactly one static-binary parent and exactly one exact-call-summary parent",
                     artifact.artifact_id
                 )));
             }
@@ -1725,6 +2028,338 @@ pub fn add_trace_case_artifact(
         .map_err(TraceError::InvalidArgument)?;
         apply_runtime_attestation_report_summary(&mut artifact.summary, &report);
     }
+    if artifact.kind == TraceCaseArtifactKind::ExactCallSummary {
+        let ParsedCaseArtifact::ExactCallSummary(bundle) = &parsed else {
+            return Err(TraceError::Internal(
+                "exact-call summary parser returned an unexpected artifact type".to_string(),
+            ));
+        };
+        let mut static_binary_parent_ids = artifact
+            .parent_artifact_ids
+            .iter()
+            .filter(|parent_id| {
+                document.case.artifacts.iter().any(|candidate| {
+                    candidate.artifact_id == **parent_id
+                        && candidate.kind == TraceCaseArtifactKind::StaticBinary
+                })
+            })
+            .cloned()
+            .collect::<Vec<_>>();
+        if static_binary_parent_ids.is_empty() {
+            let selected = document
+                .case
+                .exact_binary_artifact_id
+                .as_ref()
+                .and_then(|artifact_id| {
+                    document.case.artifacts.iter().find(|candidate| {
+                        candidate.artifact_id == *artifact_id
+                            && candidate.kind == TraceCaseArtifactKind::StaticBinary
+                            && candidate
+                                .summary
+                                .binary_sha256
+                                .as_deref()
+                                .is_some_and(|sha256| {
+                                    sha256.eq_ignore_ascii_case(
+                                        &bundle.exact_binary_identity.binary_sha256,
+                                    )
+                                })
+                    })
+                })
+                .or_else(|| {
+                    document.case.artifacts.iter().find(|candidate| {
+                        candidate.kind == TraceCaseArtifactKind::StaticBinary
+                            && candidate
+                                .summary
+                                .binary_sha256
+                                .as_deref()
+                                .is_some_and(|sha256| {
+                                    sha256.eq_ignore_ascii_case(
+                                        &bundle.exact_binary_identity.binary_sha256,
+                                    )
+                                })
+                    })
+                })
+                .ok_or_else(|| {
+                    TraceError::InvalidArgument(format!(
+                        "exact-call summary requires exact AArch64 ELF SHA-256 {}; import that ELF first or pass its static-binary artifact ID as a parent",
+                        bundle.exact_binary_identity.binary_sha256
+                    ))
+                })?;
+            artifact
+                .parent_artifact_ids
+                .push(selected.artifact_id.clone());
+            static_binary_parent_ids.push(selected.artifact_id.clone());
+        }
+        let mut capture_parent_ids = artifact
+            .parent_artifact_ids
+            .iter()
+            .filter(|parent_id| {
+                document.case.artifacts.iter().any(|candidate| {
+                    candidate.artifact_id == **parent_id
+                        && candidate.kind == TraceCaseArtifactKind::FridaCapture
+                })
+            })
+            .cloned()
+            .collect::<Vec<_>>();
+        if capture_parent_ids.is_empty() {
+            let selected = document
+                .case
+                .artifacts
+                .iter()
+                .find(|candidate| {
+                    candidate.kind == TraceCaseArtifactKind::FridaCapture
+                        && candidate
+                            .sha256
+                            .eq_ignore_ascii_case(&bundle.source_capture_sha256)
+                })
+                .ok_or_else(|| {
+                    TraceError::InvalidArgument(format!(
+                        "exact-call summary requires Frida capture SHA-256 {}; import that exact capture first or pass its artifact ID as a parent",
+                        bundle.source_capture_sha256
+                    ))
+                })?;
+            artifact
+                .parent_artifact_ids
+                .push(selected.artifact_id.clone());
+            capture_parent_ids.push(selected.artifact_id.clone());
+        }
+        artifact.parent_artifact_ids.sort();
+        artifact.parent_artifact_ids.dedup();
+        static_binary_parent_ids.sort();
+        static_binary_parent_ids.dedup();
+        capture_parent_ids.sort();
+        capture_parent_ids.dedup();
+        if artifact.parent_artifact_ids.len() != 2
+            || static_binary_parent_ids.len() != 1
+            || capture_parent_ids.len() != 1
+        {
+            return Err(TraceError::InvalidArgument(
+                "an exact-call summary must bind exactly one static-binary parent and exactly one Frida-capture parent"
+                    .to_string(),
+            ));
+        }
+        let exact_binary = document
+            .case
+            .artifacts
+            .iter()
+            .find(|candidate| candidate.artifact_id == static_binary_parent_ids[0])
+            .ok_or_else(|| {
+                TraceError::InvalidArgument(
+                    "exact-call summary static-binary parent was not found".to_string(),
+                )
+            })?;
+        let source_capture = document
+            .case
+            .artifacts
+            .iter()
+            .find(|candidate| candidate.artifact_id == capture_parent_ids[0])
+            .ok_or_else(|| {
+                TraceError::InvalidArgument(
+                    "exact-call summary Frida-capture parent was not found".to_string(),
+                )
+            })?;
+        if !source_capture
+            .sha256
+            .eq_ignore_ascii_case(&bundle.source_capture_sha256)
+        {
+            return Err(TraceError::InvalidArgument(
+                "exact-call summary source-capture SHA-256 does not match its Frida parent"
+                    .to_string(),
+            ));
+        }
+        let summary_path = resolve_trace_case_artifact_path(case_path, &artifact.path)?;
+        let capture_path = resolve_trace_case_artifact_path(case_path, &source_capture.path)?;
+        let exact_binary_path = resolve_trace_case_artifact_path(case_path, &exact_binary.path)?;
+        inspect_exact_call_summary_with_sources(
+            &summary_path.to_string_lossy(),
+            &capture_path.to_string_lossy(),
+            &exact_binary_path.to_string_lossy(),
+        )
+        .map_err(TraceError::InvalidArgument)?;
+    }
+    if artifact.kind == TraceCaseArtifactKind::ExactCallAuthorization {
+        let ParsedCaseArtifact::ExactCallAuthorization(bundle) = &parsed else {
+            return Err(TraceError::Internal(
+                "exact-call authorization parser returned an unexpected artifact type".to_string(),
+            ));
+        };
+        let mut static_binary_parent_ids = artifact
+            .parent_artifact_ids
+            .iter()
+            .filter(|parent_id| {
+                document.case.artifacts.iter().any(|candidate| {
+                    candidate.artifact_id == **parent_id
+                        && candidate.kind == TraceCaseArtifactKind::StaticBinary
+                })
+            })
+            .cloned()
+            .collect::<Vec<_>>();
+        if static_binary_parent_ids.is_empty() {
+            let selected = document
+                .case
+                .exact_binary_artifact_id
+                .as_ref()
+                .and_then(|artifact_id| {
+                    document.case.artifacts.iter().find(|candidate| {
+                        candidate.artifact_id == *artifact_id
+                            && candidate.kind == TraceCaseArtifactKind::StaticBinary
+                            && candidate
+                                .summary
+                                .binary_sha256
+                                .as_deref()
+                                .is_some_and(|sha256| {
+                                    sha256.eq_ignore_ascii_case(
+                                        &bundle.exact_binary_identity.binary_sha256,
+                                    )
+                                })
+                    })
+                })
+                .or_else(|| {
+                    document.case.artifacts.iter().find(|candidate| {
+                        candidate.kind == TraceCaseArtifactKind::StaticBinary
+                            && candidate
+                                .summary
+                                .binary_sha256
+                                .as_deref()
+                                .is_some_and(|sha256| {
+                                    sha256.eq_ignore_ascii_case(
+                                        &bundle.exact_binary_identity.binary_sha256,
+                                    )
+                                })
+                    })
+                })
+                .ok_or_else(|| {
+                    TraceError::InvalidArgument(format!(
+                        "exact-call authorization requires exact AArch64 ELF SHA-256 {}; import that ELF first or pass its static-binary artifact ID as a parent",
+                        bundle.exact_binary_identity.binary_sha256
+                    ))
+                })?;
+            artifact
+                .parent_artifact_ids
+                .push(selected.artifact_id.clone());
+            static_binary_parent_ids.push(selected.artifact_id.clone());
+        }
+        let mut summary_parent_ids = artifact
+            .parent_artifact_ids
+            .iter()
+            .filter(|parent_id| {
+                document.case.artifacts.iter().any(|candidate| {
+                    candidate.artifact_id == **parent_id
+                        && candidate.kind == TraceCaseArtifactKind::ExactCallSummary
+                })
+            })
+            .cloned()
+            .collect::<Vec<_>>();
+        if summary_parent_ids.is_empty() {
+            let selected = document
+                .case
+                .artifacts
+                .iter()
+                .find(|candidate| {
+                    candidate.kind == TraceCaseArtifactKind::ExactCallSummary
+                        && candidate.sha256.eq_ignore_ascii_case(&bundle.summary_sha256)
+                })
+                .ok_or_else(|| {
+                    TraceError::InvalidArgument(format!(
+                        "exact-call authorization requires summary SHA-256 {}; import that exact summary first or pass its artifact ID as a parent",
+                        bundle.summary_sha256
+                    ))
+                })?;
+            artifact
+                .parent_artifact_ids
+                .push(selected.artifact_id.clone());
+            summary_parent_ids.push(selected.artifact_id.clone());
+        }
+        artifact.parent_artifact_ids.sort();
+        artifact.parent_artifact_ids.dedup();
+        static_binary_parent_ids.sort();
+        static_binary_parent_ids.dedup();
+        summary_parent_ids.sort();
+        summary_parent_ids.dedup();
+        if artifact.parent_artifact_ids.len() != 2
+            || static_binary_parent_ids.len() != 1
+            || summary_parent_ids.len() != 1
+        {
+            return Err(TraceError::InvalidArgument(
+                "an exact-call authorization must bind exactly one static-binary parent and exactly one exact-call-summary parent"
+                    .to_string(),
+            ));
+        }
+        let exact_binary = document
+            .case
+            .artifacts
+            .iter()
+            .find(|candidate| candidate.artifact_id == static_binary_parent_ids[0])
+            .ok_or_else(|| {
+                TraceError::InvalidArgument(
+                    "exact-call authorization static-binary parent was not found".to_string(),
+                )
+            })?;
+        let summary_artifact = document
+            .case
+            .artifacts
+            .iter()
+            .find(|candidate| candidate.artifact_id == summary_parent_ids[0])
+            .ok_or_else(|| {
+                TraceError::InvalidArgument(
+                    "exact-call authorization summary parent was not found".to_string(),
+                )
+            })?;
+        if !summary_artifact
+            .sha256
+            .eq_ignore_ascii_case(&bundle.summary_sha256)
+        {
+            return Err(TraceError::InvalidArgument(
+                "exact-call authorization summary SHA-256 does not match its summary parent"
+                    .to_string(),
+            ));
+        }
+        if !summary_artifact
+            .parent_artifact_ids
+            .iter()
+            .any(|parent_id| parent_id == &exact_binary.artifact_id)
+        {
+            return Err(TraceError::InvalidArgument(
+                "exact-call authorization and its summary must bind the same exact ELF artifact"
+                    .to_string(),
+            ));
+        }
+        let source_capture = summary_artifact
+            .parent_artifact_ids
+            .iter()
+            .find_map(|parent_id| {
+                document.case.artifacts.iter().find(|candidate| {
+                    candidate.artifact_id == *parent_id
+                        && candidate.kind == TraceCaseArtifactKind::FridaCapture
+                })
+            })
+            .ok_or_else(|| {
+                TraceError::InvalidArgument(
+                    "exact-call authorization summary has no bound Frida-capture parent"
+                        .to_string(),
+                )
+            })?;
+        if !source_capture
+            .sha256
+            .eq_ignore_ascii_case(&bundle.source_capture_sha256)
+        {
+            return Err(TraceError::InvalidArgument(
+                "exact-call authorization source-capture SHA-256 does not match the summary provenance"
+                    .to_string(),
+            ));
+        }
+        let authorization_path = resolve_trace_case_artifact_path(case_path, &artifact.path)?;
+        let summary_path = resolve_trace_case_artifact_path(case_path, &summary_artifact.path)?;
+        let capture_path = resolve_trace_case_artifact_path(case_path, &source_capture.path)?;
+        let exact_binary_path = resolve_trace_case_artifact_path(case_path, &exact_binary.path)?;
+        inspect_exact_call_replay_authorization_with_sources(
+            &authorization_path.to_string_lossy(),
+            &summary_path.to_string_lossy(),
+            &capture_path.to_string_lossy(),
+            &exact_binary_path.to_string_lossy(),
+        )
+        .map_err(TraceError::InvalidArgument)?;
+    }
     if artifact.kind == TraceCaseArtifactKind::CoverageReport {
         let ParsedCaseArtifact::Coverage(bundle) = &parsed else {
             return Err(TraceError::Internal(
@@ -1859,6 +2494,51 @@ pub fn add_trace_case_artifact(
         .map_err(TraceError::InvalidArgument)?;
         apply_coverage_report_summary(&mut artifact.summary, &report);
     }
+    if artifact.kind == TraceCaseArtifactKind::EvidenceSlice {
+        let ParsedCaseArtifact::EvidenceSlice(bundle) = &parsed else {
+            return Err(TraceError::Internal(
+                "minimal evidence slice parser returned an unexpected artifact type".to_string(),
+            ));
+        };
+        let mut required_parent_ids = bundle
+            .content
+            .source_artifacts
+            .iter()
+            .map(|source| source.artifact_id.clone())
+            .collect::<Vec<_>>();
+        required_parent_ids.sort();
+        required_parent_ids.dedup();
+        let mut supplied_parent_ids = artifact.parent_artifact_ids.clone();
+        supplied_parent_ids.sort();
+        supplied_parent_ids.dedup();
+        if !supplied_parent_ids.is_empty() && supplied_parent_ids != required_parent_ids {
+            return Err(TraceError::InvalidArgument(
+                "a minimal evidence slice must bind exactly the source artifact IDs serialized in its content"
+                    .to_string(),
+            ));
+        }
+        for source_id in &required_parent_ids {
+            if !document
+                .case
+                .artifacts
+                .iter()
+                .any(|candidate| candidate.artifact_id == *source_id)
+            {
+                return Err(TraceError::InvalidArgument(format!(
+                    "minimal evidence slice source artifact is not present in this case: {source_id}"
+                )));
+            }
+        }
+        artifact.parent_artifact_ids = required_parent_ids;
+        let report = inspect_minimal_evidence_slice_bundle_for_replay(case_path, bundle)?;
+        if report.status == "invalid" {
+            return Err(TraceError::InvalidArgument(format!(
+                "minimal evidence slice failed strict source/record/provenance inspection: {}",
+                report.blockers.join("; ")
+            )));
+        }
+        apply_evidence_slice_report_summary(&mut artifact.summary, &report);
+    }
     if let Some(existing) = document
         .case
         .artifacts
@@ -1869,7 +2549,10 @@ pub fn add_trace_case_artifact(
                 && (!matches!(
                     artifact.kind,
                     TraceCaseArtifactKind::RuntimeAttestation
+                        | TraceCaseArtifactKind::ExactCallSummary
+                        | TraceCaseArtifactKind::ExactCallAuthorization
                         | TraceCaseArtifactKind::CoverageReport
+                        | TraceCaseArtifactKind::EvidenceSlice
                 ) || existing.parent_artifact_ids == artifact.parent_artifact_ids)
         })
         .cloned()
@@ -2090,6 +2773,18 @@ fn timeline_summary(artifact: &TraceCaseArtifact) -> String {
     if artifact.summary.run_count > 0 {
         parts.push(format!("{} runs/probes", artifact.summary.run_count));
     }
+    if let Some(count) = artifact.summary.exact_call_capture_ready_count {
+        parts.push(format!("{count} capture-ready exact calls"));
+    }
+    if let Some(count) = artifact.summary.exact_call_incomplete_count {
+        parts.push(format!("{count} incomplete exact calls"));
+    }
+    if let Some(count) = artifact.summary.exact_call_authorized_count {
+        parts.push(format!("{count} authorized exact calls"));
+    }
+    if let Some(count) = artifact.summary.exact_call_blocked_count {
+        parts.push(format!("{count} blocked exact calls"));
+    }
     if !artifact.summary.stop_reason_counts.is_empty() {
         parts.push(
             artifact
@@ -2106,6 +2801,31 @@ fn timeline_summary(artifact: &TraceCaseArtifact) -> String {
     } else {
         parts.join(" · ")
     }
+}
+
+fn invalidate_replay_artifact(
+    health: &mut [TraceCaseArtifactHealth],
+    timeline: &mut [ReplayDoctorTimelineEntry],
+    warnings: &mut Vec<String>,
+    artifact: &TraceCaseArtifact,
+    message: String,
+) {
+    if let Some(item) = health
+        .iter_mut()
+        .find(|item| item.artifact_id == artifact.artifact_id)
+    {
+        item.status = "invalid".to_string();
+        item.parser_valid = false;
+        item.error = Some(message.clone());
+    }
+    if let Some(entry) = timeline
+        .iter_mut()
+        .find(|entry| entry.artifact_id == artifact.artifact_id)
+    {
+        entry.status = "invalid".to_string();
+        entry.summary = message.clone();
+    }
+    warnings.push(format!("{}: {message}", artifact.label));
 }
 
 fn normalized_claim_key(claim: &TraceCaseClaim) -> String {
@@ -4029,8 +4749,12 @@ pub fn diagnose_trace_analysis_case(case_path: &str) -> Result<ReplayDoctorRepor
     let mut valid_frida = Vec::<(TraceCaseArtifact, FridaCaptureBundle)>::new();
     let mut valid_runtime_attestations =
         Vec::<(TraceCaseArtifact, RuntimeAttestationCaptureBundle)>::new();
+    let mut valid_exact_call_summaries = Vec::<(TraceCaseArtifact, ExactCallSummaryBundle)>::new();
+    let mut valid_exact_call_authorizations =
+        Vec::<(TraceCaseArtifact, ExactCallReplayAuthorizationBundle)>::new();
     let mut valid_crypto_kats = Vec::<(TraceCaseArtifact, CryptoSemanticKatReport)>::new();
     let mut valid_coverage = Vec::<(TraceCaseArtifact, CoverageReconciliationBundle)>::new();
+    let mut evidence_slices = Vec::<TraceCaseEvidenceSliceReport>::new();
     let mut valid_angr = Vec::<(TraceCaseArtifact, AngrOllvmResultBundle)>::new();
     let mut valid_binaries = Vec::<(TraceCaseArtifact, ElfBinaryIdentity)>::new();
     let mut generated_claims = Vec::new();
@@ -4080,6 +4804,12 @@ pub fn diagnose_trace_analysis_case(case_path: &str) -> Result<ReplayDoctorRepor
                     ParsedCaseArtifact::Frida(bundle) => {
                         valid_frida.push((artifact.clone(), bundle));
                     }
+                    ParsedCaseArtifact::ExactCallSummary(bundle) => {
+                        valid_exact_call_summaries.push((artifact.clone(), bundle));
+                    }
+                    ParsedCaseArtifact::ExactCallAuthorization(bundle) => {
+                        valid_exact_call_authorizations.push((artifact.clone(), bundle));
+                    }
                     ParsedCaseArtifact::Unicorn(bundle) => {
                         valid_unicorn.push((artifact.clone(), bundle));
                     }
@@ -4094,6 +4824,75 @@ pub fn diagnose_trace_analysis_case(case_path: &str) -> Result<ReplayDoctorRepor
                     }
                     ParsedCaseArtifact::Coverage(bundle) => {
                         valid_coverage.push((artifact.clone(), bundle));
+                    }
+                    ParsedCaseArtifact::EvidenceSlice(bundle) => {
+                        match inspect_minimal_evidence_slice_bundle_for_replay(case_path, &bundle) {
+                            Ok(report) if report.status != "invalid" => {
+                                let mut expected_parents = report.source_artifact_ids.clone();
+                                expected_parents.sort();
+                                expected_parents.dedup();
+                                let mut actual_parents = artifact.parent_artifact_ids.clone();
+                                actual_parents.sort();
+                                actual_parents.dedup();
+                                if actual_parents != expected_parents {
+                                    item.status = "invalid".to_string();
+                                    item.parser_valid = false;
+                                    let message = "minimal evidence slice parent bindings do not exactly match its serialized source artifact IDs".to_string();
+                                    item.error = Some(message.clone());
+                                    warnings.push(format!("{}: {message}", artifact.label));
+                                    if let Some(entry) = timeline
+                                        .iter_mut()
+                                        .rev()
+                                        .find(|entry| entry.artifact_id == artifact.artifact_id)
+                                    {
+                                        entry.status = "invalid".to_string();
+                                        entry.summary = message;
+                                    }
+                                } else {
+                                    evidence_slices.push(TraceCaseEvidenceSliceReport {
+                                        artifact_id: artifact.artifact_id.clone(),
+                                        selected_claim_ids: bundle
+                                            .content
+                                            .selected_claim_ids
+                                            .clone(),
+                                        source_artifact_ids: report.source_artifact_ids.clone(),
+                                        report,
+                                    });
+                                }
+                            }
+                            Ok(report) => {
+                                item.status = "invalid".to_string();
+                                item.parser_valid = false;
+                                let message = format!(
+                                    "minimal evidence slice failed strict source/record/provenance inspection: {}",
+                                    report.blockers.join("; ")
+                                );
+                                item.error = Some(message.clone());
+                                warnings.push(format!("{}: {message}", artifact.label));
+                                if let Some(entry) = timeline
+                                    .iter_mut()
+                                    .rev()
+                                    .find(|entry| entry.artifact_id == artifact.artifact_id)
+                                {
+                                    entry.status = "invalid".to_string();
+                                    entry.summary = message;
+                                }
+                            }
+                            Err(error) => {
+                                item.status = "invalid".to_string();
+                                item.parser_valid = false;
+                                item.error = Some(error.to_string());
+                                warnings.push(format!("{}: {error}", artifact.label));
+                                if let Some(entry) = timeline
+                                    .iter_mut()
+                                    .rev()
+                                    .find(|entry| entry.artifact_id == artifact.artifact_id)
+                                {
+                                    entry.status = "invalid".to_string();
+                                    entry.summary = error.to_string();
+                                }
+                            }
+                        }
                     }
                     ParsedCaseArtifact::Analysis(record) => {
                         let _ = record.analysis_id;
@@ -4135,6 +4934,8 @@ pub fn diagnose_trace_analysis_case(case_path: &str) -> Result<ReplayDoctorRepor
     valid_unicorn.sort_by_key(|(artifact, _)| artifact.imported_at_ms);
     valid_frida.sort_by_key(|(artifact, _)| artifact.imported_at_ms);
     valid_runtime_attestations.sort_by_key(|(artifact, _)| artifact.imported_at_ms);
+    valid_exact_call_summaries.sort_by_key(|(artifact, _)| artifact.imported_at_ms);
+    valid_exact_call_authorizations.sort_by_key(|(artifact, _)| artifact.imported_at_ms);
     valid_crypto_kats.sort_by_key(|(artifact, _)| artifact.imported_at_ms);
     valid_coverage.sort_by_key(|(artifact, _)| artifact.imported_at_ms);
     valid_angr.sort_by_key(|(artifact, _)| artifact.imported_at_ms);
@@ -4142,8 +4943,321 @@ pub fn diagnose_trace_analysis_case(case_path: &str) -> Result<ReplayDoctorRepor
 
     let mut next_actions = Vec::new();
     let mut runtime_attestations = Vec::<TraceCaseRuntimeAttestationReport>::new();
+    let mut exact_call_summaries = Vec::<TraceCaseExactCallSummaryReport>::new();
+    let mut exact_call_authorizations = Vec::<TraceCaseExactCallAuthorizationReport>::new();
     let mut crypto_kats = Vec::<TraceCaseCryptoKatReport>::new();
     let mut coverage_reconciliations = Vec::<TraceCaseCoverageReport>::new();
+
+    for (summary_artifact, _) in &valid_exact_call_summaries {
+        let exact_binary_parent_id = summary_artifact
+            .parent_artifact_ids
+            .iter()
+            .find(|parent_id| {
+                document.case.artifacts.iter().any(|candidate| {
+                    candidate.artifact_id == **parent_id
+                        && candidate.kind == TraceCaseArtifactKind::StaticBinary
+                })
+            })
+            .cloned();
+        let source_capture_parent_id = summary_artifact
+            .parent_artifact_ids
+            .iter()
+            .find(|parent_id| {
+                document.case.artifacts.iter().any(|candidate| {
+                    candidate.artifact_id == **parent_id
+                        && candidate.kind == TraceCaseArtifactKind::FridaCapture
+                })
+            })
+            .cloned();
+        let (Some(exact_binary_parent_id), Some(source_capture_parent_id)) =
+            (exact_binary_parent_id, source_capture_parent_id)
+        else {
+            invalidate_replay_artifact(
+                &mut health,
+                &mut timeline,
+                &mut warnings,
+                summary_artifact,
+                "exact-call summary must bind one exact ELF and one Frida capture parent"
+                    .to_string(),
+            );
+            continue;
+        };
+        let Some((binary_artifact, _)) = valid_binaries
+            .iter()
+            .find(|(artifact, _)| artifact.artifact_id == exact_binary_parent_id)
+        else {
+            invalidate_replay_artifact(
+                &mut health,
+                &mut timeline,
+                &mut warnings,
+                summary_artifact,
+                "exact-call summary cannot be recomputed until its exact ELF parent passes integrity and parser checks"
+                    .to_string(),
+            );
+            continue;
+        };
+        let Some((capture_artifact, _)) = valid_frida
+            .iter()
+            .find(|(artifact, _)| artifact.artifact_id == source_capture_parent_id)
+        else {
+            invalidate_replay_artifact(
+                &mut health,
+                &mut timeline,
+                &mut warnings,
+                summary_artifact,
+                "exact-call summary cannot be recomputed until its Frida-capture parent passes integrity and parser checks"
+                    .to_string(),
+            );
+            continue;
+        };
+        let summary_path = resolve_trace_case_artifact_path(case_path, &summary_artifact.path)?;
+        let capture_path = resolve_trace_case_artifact_path(case_path, &capture_artifact.path)?;
+        let binary_path = resolve_trace_case_artifact_path(case_path, &binary_artifact.path)?;
+        match inspect_exact_call_summary_with_sources(
+            &summary_path.to_string_lossy(),
+            &capture_path.to_string_lossy(),
+            &binary_path.to_string_lossy(),
+        ) {
+            Ok(bundle) => {
+                exact_call_summaries.push(TraceCaseExactCallSummaryReport {
+                    artifact_id: summary_artifact.artifact_id.clone(),
+                    exact_binary_artifact_id: binary_artifact.artifact_id.clone(),
+                    source_capture_artifact_id: capture_artifact.artifact_id.clone(),
+                    caller_module_name: bundle.request.caller_module_name.clone(),
+                    source_capture_sha256: bundle.source_capture_sha256.clone(),
+                    binary_sha256: bundle.exact_binary_identity.binary_sha256.clone(),
+                    paired_call_count: bundle.paired_call_count,
+                    capture_ready_call_count: bundle.capture_ready_call_count,
+                    incomplete_call_count: bundle.incomplete_call_count,
+                    capture_ready_call_ids: bundle
+                        .calls
+                        .iter()
+                        .filter(|call| call.completeness.capture_ready)
+                        .map(|call| call.call_id.clone())
+                        .collect(),
+                    verification_gate_met: bundle.verification_gate_met,
+                    warnings: bundle.warnings.clone(),
+                    limitations: bundle.limitations.clone(),
+                });
+            }
+            Err(error) => invalidate_replay_artifact(
+                &mut health,
+                &mut timeline,
+                &mut warnings,
+                summary_artifact,
+                format!("exact-call summary provenance recomputation failed: {error}"),
+            ),
+        }
+    }
+
+    for (authorization_artifact, _) in &valid_exact_call_authorizations {
+        let exact_binary_parent_id = authorization_artifact
+            .parent_artifact_ids
+            .iter()
+            .find(|parent_id| {
+                document.case.artifacts.iter().any(|candidate| {
+                    candidate.artifact_id == **parent_id
+                        && candidate.kind == TraceCaseArtifactKind::StaticBinary
+                })
+            })
+            .cloned();
+        let summary_parent_id = authorization_artifact
+            .parent_artifact_ids
+            .iter()
+            .find(|parent_id| {
+                document.case.artifacts.iter().any(|candidate| {
+                    candidate.artifact_id == **parent_id
+                        && candidate.kind == TraceCaseArtifactKind::ExactCallSummary
+                })
+            })
+            .cloned();
+        let (Some(exact_binary_parent_id), Some(summary_parent_id)) =
+            (exact_binary_parent_id, summary_parent_id)
+        else {
+            invalidate_replay_artifact(
+                &mut health,
+                &mut timeline,
+                &mut warnings,
+                authorization_artifact,
+                "exact-call authorization must bind one exact ELF and one exact-call summary parent"
+                    .to_string(),
+            );
+            continue;
+        };
+        let Some(summary_report) = exact_call_summaries
+            .iter()
+            .find(|report| report.artifact_id == summary_parent_id)
+        else {
+            invalidate_replay_artifact(
+                &mut health,
+                &mut timeline,
+                &mut warnings,
+                authorization_artifact,
+                "exact-call authorization cannot be recomputed until its summary parent passes strict provenance checks"
+                    .to_string(),
+            );
+            continue;
+        };
+        if summary_report.exact_binary_artifact_id != exact_binary_parent_id {
+            invalidate_replay_artifact(
+                &mut health,
+                &mut timeline,
+                &mut warnings,
+                authorization_artifact,
+                "exact-call authorization and summary are bound to different exact ELF artifacts"
+                    .to_string(),
+            );
+            continue;
+        }
+        let Some((binary_artifact, _)) = valid_binaries
+            .iter()
+            .find(|(artifact, _)| artifact.artifact_id == exact_binary_parent_id)
+        else {
+            invalidate_replay_artifact(
+                &mut health,
+                &mut timeline,
+                &mut warnings,
+                authorization_artifact,
+                "exact-call authorization cannot be recomputed until its exact ELF parent passes integrity and parser checks"
+                    .to_string(),
+            );
+            continue;
+        };
+        let Some((summary_artifact, _)) = valid_exact_call_summaries
+            .iter()
+            .find(|(artifact, _)| artifact.artifact_id == summary_parent_id)
+        else {
+            invalidate_replay_artifact(
+                &mut health,
+                &mut timeline,
+                &mut warnings,
+                authorization_artifact,
+                "exact-call authorization summary parent is missing or invalid".to_string(),
+            );
+            continue;
+        };
+        let Some((capture_artifact, _)) = valid_frida.iter().find(|(artifact, _)| {
+            artifact.artifact_id == summary_report.source_capture_artifact_id
+        }) else {
+            invalidate_replay_artifact(
+                &mut health,
+                &mut timeline,
+                &mut warnings,
+                authorization_artifact,
+                "exact-call authorization cannot resolve the summary's Frida-capture provenance"
+                    .to_string(),
+            );
+            continue;
+        };
+        let authorization_path =
+            resolve_trace_case_artifact_path(case_path, &authorization_artifact.path)?;
+        let summary_path = resolve_trace_case_artifact_path(case_path, &summary_artifact.path)?;
+        let capture_path = resolve_trace_case_artifact_path(case_path, &capture_artifact.path)?;
+        let binary_path = resolve_trace_case_artifact_path(case_path, &binary_artifact.path)?;
+        match inspect_exact_call_replay_authorization_with_sources(
+            &authorization_path.to_string_lossy(),
+            &summary_path.to_string_lossy(),
+            &capture_path.to_string_lossy(),
+            &binary_path.to_string_lossy(),
+        ) {
+            Ok(bundle) => {
+                exact_call_authorizations.push(TraceCaseExactCallAuthorizationReport {
+                    artifact_id: authorization_artifact.artifact_id.clone(),
+                    exact_binary_artifact_id: binary_artifact.artifact_id.clone(),
+                    summary_artifact_id: summary_artifact.artifact_id.clone(),
+                    source_capture_artifact_id: capture_artifact.artifact_id.clone(),
+                    summary_sha256: bundle.summary_sha256.clone(),
+                    binary_sha256: bundle.exact_binary_identity.binary_sha256.clone(),
+                    authorized_count: bundle.authorized_count,
+                    blocked_count: bundle.blocked_count,
+                    authorized_call_ids: bundle
+                        .authorizations
+                        .iter()
+                        .filter(|authorization| authorization.authorized)
+                        .map(|authorization| authorization.call_id.clone())
+                        .collect(),
+                    blocked_call_ids: bundle
+                        .authorizations
+                        .iter()
+                        .filter(|authorization| !authorization.authorized)
+                        .map(|authorization| authorization.call_id.clone())
+                        .collect(),
+                    verification_gate_met: bundle.verification_gate_met,
+                    warnings: bundle.warnings.clone(),
+                    limitations: bundle.limitations.clone(),
+                });
+            }
+            Err(error) => invalidate_replay_artifact(
+                &mut health,
+                &mut timeline,
+                &mut warnings,
+                authorization_artifact,
+                format!("exact-call authorization provenance recomputation failed: {error}"),
+            ),
+        }
+    }
+
+    for summary in &exact_call_summaries {
+        if summary.capture_ready_call_count == 0 {
+            next_actions.push(next_action(
+                90,
+                "recapture-exact-call-state",
+                Some("generate_frida_hook"),
+                vec![
+                    summary.artifact_id.clone(),
+                    summary.source_capture_artifact_id.clone(),
+                    summary.exact_binary_artifact_id.clone(),
+                ],
+                Vec::new(),
+                "No paired exact call passed the intrinsic capture-ready checks.",
+                "Regenerate an Exact-call two-phase Frida hook for the same caller build, capture full GPR/NZCV, return value, and bounded byteArray inputs/outputs, then import the new capture and summary.",
+                true,
+            ));
+        } else if !exact_call_authorizations
+            .iter()
+            .any(|authorization| authorization.summary_artifact_id == summary.artifact_id)
+        {
+            next_actions.push(next_action(
+                88,
+                "authorize-exact-call-replay",
+                Some("authorize_exact_call_replay"),
+                vec![
+                    summary.artifact_id.clone(),
+                    summary.source_capture_artifact_id.clone(),
+                    summary.exact_binary_artifact_id.clone(),
+                ],
+                Vec::new(),
+                format!(
+                    "{} exact call(s) are capture-ready but no authorization artifact is bound to this summary.",
+                    summary.capture_ready_call_count
+                ),
+                "Review and explicitly accept all six hidden-side-effect assumptions for selected call IDs. The resulting authorization remains Candidate/Related and never opens a verification gate.",
+                false,
+            ));
+        }
+    }
+    for authorization in &exact_call_authorizations {
+        if authorization.blocked_count > 0 {
+            next_actions.push(next_action(
+                87,
+                "review-exact-call-assumptions",
+                Some("authorize_exact_call_replay"),
+                vec![
+                    authorization.artifact_id.clone(),
+                    authorization.summary_artifact_id.clone(),
+                    authorization.exact_binary_artifact_id.clone(),
+                ],
+                Vec::new(),
+                format!(
+                    "{} selected exact call(s) remain blocked by incomplete capture checks or unaccepted side-effect assumptions.",
+                    authorization.blocked_count
+                ),
+                "Inspect the blocked call IDs and their blockers. Recapture missing state or explicitly accept only assumptions you can justify; do not edit the authorization JSON manually.",
+                false,
+            ));
+        }
+    }
+
     let broken_ids = health
         .iter()
         .filter(|item| item.status != "valid")
@@ -4651,6 +5765,61 @@ pub fn diagnose_trace_analysis_case(case_path: &str) -> Result<ReplayDoctorRepor
         }
     }
 
+    for slice in &evidence_slices {
+        if slice.report.summary_recomputed.contains_sensitive_values {
+            warnings.push(format!(
+                "Evidence slice {} contains explicitly included runtime/register/memory values; treat exports and AI handoffs as sensitive.",
+                slice.artifact_id
+            ));
+        }
+        if !slice.report.claim_bindings_matched {
+            next_actions.push(next_action(
+                90,
+                "regenerate-stale-minimal-evidence-slice",
+                Some("generate_minimal_evidence_slice"),
+                vec![slice.artifact_id.clone()],
+                Vec::new(),
+                format!(
+                    "The slice has {} stale persisted claim binding(s).",
+                    slice.report.stale_claim_ids.len()
+                ),
+                "Regenerate the bounded slice from the current claim ledger so statement, scope, status, evidence references, source hashes, and typed provenance are bound together again.",
+                false,
+            ));
+        }
+        if !slice.report.summary_recomputed.materialization_complete {
+            next_actions.push(next_action(
+                89,
+                "complete-minimal-evidence-slice",
+                Some("generate_minimal_evidence_slice"),
+                vec![slice.artifact_id.clone()],
+                Vec::new(),
+                format!(
+                    "The slice has {} unresolved reference(s) and {} truncated record(s).",
+                    slice.report.summary_recomputed.unresolved_reference_count,
+                    slice.report.summary_recomputed.truncated_record_count
+                ),
+                "Open or bind the exact trace session when needed, narrow the selected claims, raise only the bounded record/byte budget required by the active question, and regenerate the slice. Do not fill missing bytes with zeros.",
+                false,
+            ));
+        }
+        if !slice.report.generated_claim_bindings_revalidated {
+            next_actions.push(next_action(
+                72,
+                "revalidate-generated-evidence-slice-bindings",
+                Some("inspect_minimal_evidence_slice"),
+                vec![slice.artifact_id.clone()],
+                Vec::new(),
+                format!(
+                    "Replay Doctor deliberately skipped recursive regeneration of {} generated claim binding(s) while validating this artifact.",
+                    slice.report.unrevalidated_generated_claim_ids.len()
+                ),
+                "Run the standalone minimal-evidence-slice inspector after Replay Doctor completes. It may regenerate current Replay Doctor claims once, while the nested artifact pass remains persisted-only and non-recursive.",
+                false,
+            ));
+        }
+    }
+
     let latest_unicorn = valid_unicorn.last();
     let mut round_comparison = None;
     if let Some((latest_artifact, latest_bundle)) = latest_unicorn {
@@ -5067,8 +6236,11 @@ pub fn diagnose_trace_analysis_case(case_path: &str) -> Result<ReplayDoctorRepor
         experiment_matrix,
         capture_plan,
         runtime_attestations,
+        exact_call_summaries,
+        exact_call_authorizations,
         crypto_kats,
         coverage_reconciliations,
+        evidence_slices,
         unicorn_round_comparison: round_comparison,
         warnings,
         limitations: vec![
@@ -5139,6 +6311,97 @@ mod tests {
             *byte = (index % 251) as u8;
         }
         elf
+    }
+
+    fn exact_call_registers(pc: u64, lr: u64, x0: u64) -> serde_json::Value {
+        let mut registers = serde_json::Map::new();
+        for index in 0..=28 {
+            registers.insert(
+                format!("x{index}"),
+                serde_json::Value::String(format!("0x{:x}", if index == 0 { x0 } else { index })),
+            );
+        }
+        registers.insert("fp".to_string(), serde_json::json!("0x1d"));
+        registers.insert("lr".to_string(), serde_json::json!(format!("0x{lr:x}")));
+        registers.insert("sp".to_string(), serde_json::json!("0x90000000"));
+        registers.insert("pc".to_string(), serde_json::json!(format!("0x{pc:x}")));
+        registers.insert("nzcv".to_string(), serde_json::json!("0x60000000"));
+        serde_json::Value::Object(registers)
+    }
+
+    fn exact_call_capture_bytes() -> Vec<u8> {
+        let enter = serde_json::json!({
+            "protocol": "trace-ui/frida-hook-v1",
+            "eventId": "call:event:1",
+            "hookId": "callee",
+            "event": "hook-enter",
+            "functionName": "callee",
+            "timestampMs": 10,
+            "threadId": 7,
+            "callId": "callee:7:1",
+            "moduleName": "libtarget.so",
+            "moduleBase": "0x70000000",
+            "moduleSize": 0x2000,
+            "target": "0x70000180",
+            "targetOffset": "0x180",
+            "callerModuleName": "libtarget.so",
+            "callerModuleBase": "0x70000000",
+            "callerModuleSize": 0x2000,
+            "callSite": "0x70000100",
+            "callSiteOffset": "0x100",
+            "returnAddress": "0x70000104",
+            "returnOffset": "0x104",
+            "exactCallRecord": true,
+            "registers": exact_call_registers(0x70000180, 0x70000104, 0x90000100),
+            "captures": [{
+                "index": 0,
+                "label": "buffer",
+                "kind": "byteArray",
+                "direction": "inOut",
+                "phase": "enter",
+                "pointer": "0x90000100",
+                "value": "00112233",
+                "byteLength": 4,
+                "requestedLength": 4
+            }]
+        });
+        let leave = serde_json::json!({
+            "protocol": "trace-ui/frida-hook-v1",
+            "eventId": "call:event:2",
+            "hookId": "callee",
+            "event": "hook-leave",
+            "functionName": "callee",
+            "timestampMs": 12,
+            "threadId": 7,
+            "callId": "callee:7:1",
+            "moduleName": "libtarget.so",
+            "moduleBase": "0x70000000",
+            "moduleSize": 0x2000,
+            "target": "0x70000180",
+            "targetOffset": "0x180",
+            "callerModuleName": "libtarget.so",
+            "callerModuleBase": "0x70000000",
+            "callerModuleSize": 0x2000,
+            "callSite": "0x70000100",
+            "callSiteOffset": "0x100",
+            "returnAddress": "0x70000104",
+            "returnOffset": "0x104",
+            "exactCallRecord": true,
+            "registers": exact_call_registers(0x70000104, 0x70000104, 1),
+            "returnValue": "0x1",
+            "captures": [{
+                "index": 0,
+                "label": "buffer",
+                "kind": "byteArray",
+                "direction": "inOut",
+                "phase": "leave",
+                "pointer": "0x90000100",
+                "value": "0011aabb",
+                "byteLength": 4,
+                "requestedLength": 4
+            }]
+        });
+        serde_json::to_vec(&vec![enter, leave]).unwrap()
     }
 
     fn matching_runtime_attestation_record(
@@ -5403,6 +6666,7 @@ mod tests {
                 memory_writes: Vec::new(),
                 memory_writes_truncated: false,
                 call_boundaries: call_boundary.into_iter().collect(),
+                exact_call_replays: Vec::new(),
                 missing_memory: missing_memory.into_iter().collect(),
                 warnings: vec![round_label.to_string()],
                 error: None,
@@ -5520,6 +6784,214 @@ mod tests {
         assert_eq!(report.status, "invalid-artifacts");
         assert_eq!(report.artifact_health[0].status, "integrity-mismatch");
         assert_eq!(report.next_actions[0].action, "fix-artifact-integrity");
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn exact_call_case_auto_binds_capture_summary_and_exact_elf_provenance() {
+        use crate::query::exact_call::{
+            save_exact_call_replay_authorization, save_exact_call_summary,
+            ExactCallReplayAssumptions, ExactCallReplayAuthorizationRequest,
+            ExactCallSummaryRequest,
+        };
+
+        let dir = temp_path("exact-call-case");
+        std::fs::create_dir_all(&dir).unwrap();
+        let case_path = dir.join("sample.traceui-case");
+        let elf_path = dir.join("libtarget.so");
+        let capture_path = dir.join("exact-call-capture.json");
+        let summary_path = dir.join("exact-call-summary.json");
+        let authorization_path = dir.join("exact-call-authorization.json");
+        std::fs::write(&elf_path, runtime_attestable_elf()).unwrap();
+        std::fs::write(&capture_path, exact_call_capture_bytes()).unwrap();
+        let document = create_trace_analysis_case(
+            case_path.to_str().unwrap(),
+            "exact call provenance",
+            None,
+            Some(elf_path.to_str().unwrap()),
+        )
+        .unwrap();
+        let exact_binary_artifact_id = document.case.exact_binary_artifact_id.unwrap();
+        let capture_import = add_trace_case_artifact(
+            case_path.to_str().unwrap(),
+            capture_path.to_str().unwrap(),
+            Some("frida-capture"),
+            None,
+            Vec::new(),
+        )
+        .unwrap();
+        let capture_artifact_id = capture_import.artifact.artifact_id.clone();
+
+        let summary = save_exact_call_summary(
+            summary_path.to_str().unwrap(),
+            capture_path.to_str().unwrap(),
+            &ExactCallSummaryRequest {
+                caller_module_name: "libtarget.so".to_string(),
+                static_binary_path: elf_path.to_string_lossy().into_owned(),
+                max_calls: 16,
+                max_memory_bytes_per_call: 1024,
+            },
+        )
+        .unwrap();
+        assert_eq!(summary.capture_ready_call_count, 1);
+        let summary_import = add_trace_case_artifact(
+            case_path.to_str().unwrap(),
+            summary_path.to_str().unwrap(),
+            None,
+            None,
+            Vec::new(),
+        )
+        .unwrap();
+        assert_eq!(
+            summary_import.artifact.kind,
+            TraceCaseArtifactKind::ExactCallSummary
+        );
+        assert_eq!(
+            summary_import
+                .artifact
+                .parent_artifact_ids
+                .iter()
+                .cloned()
+                .collect::<BTreeSet<_>>(),
+            BTreeSet::from([
+                exact_binary_artifact_id.clone(),
+                capture_artifact_id.clone(),
+            ])
+        );
+        let summary_artifact_id = summary_import.artifact.artifact_id.clone();
+
+        save_exact_call_replay_authorization(
+            authorization_path.to_str().unwrap(),
+            summary_path.to_str().unwrap(),
+            elf_path.to_str().unwrap(),
+            &ExactCallReplayAuthorizationRequest {
+                call_ids: vec!["callee:7:1".to_string()],
+                assumptions: ExactCallReplayAssumptions {
+                    captured_memory_effects_complete: true,
+                    no_simd_fp_side_effects: true,
+                    no_tls_side_effects: true,
+                    no_system_register_or_syscall_effects: true,
+                    no_thread_signal_or_callback_effects: true,
+                    deterministic_for_exact_preconditions: true,
+                },
+            },
+        )
+        .unwrap();
+        let authorization_import = add_trace_case_artifact(
+            case_path.to_str().unwrap(),
+            authorization_path.to_str().unwrap(),
+            None,
+            None,
+            Vec::new(),
+        )
+        .unwrap();
+        assert_eq!(
+            authorization_import.artifact.kind,
+            TraceCaseArtifactKind::ExactCallAuthorization
+        );
+        assert_eq!(
+            authorization_import
+                .artifact
+                .parent_artifact_ids
+                .iter()
+                .cloned()
+                .collect::<BTreeSet<_>>(),
+            BTreeSet::from([
+                exact_binary_artifact_id.clone(),
+                summary_artifact_id.clone(),
+            ])
+        );
+        let authorization_artifact_id = authorization_import.artifact.artifact_id.clone();
+
+        let report = diagnose_trace_analysis_case(case_path.to_str().unwrap()).unwrap();
+        assert_eq!(report.exact_call_summaries.len(), 1);
+        assert_eq!(report.exact_call_authorizations.len(), 1);
+        assert_eq!(report.exact_call_summaries[0].capture_ready_call_count, 1);
+        assert_eq!(report.exact_call_authorizations[0].authorized_count, 1);
+        assert!(!report.exact_call_summaries[0].verification_gate_met);
+        assert!(!report.exact_call_authorizations[0].verification_gate_met);
+        assert!(!report
+            .next_actions
+            .iter()
+            .any(|action| action.action == "authorize-exact-call-replay"));
+
+        let duplicate = add_trace_case_artifact(
+            case_path.to_str().unwrap(),
+            authorization_path.to_str().unwrap(),
+            None,
+            None,
+            Vec::new(),
+        )
+        .unwrap();
+        assert!(duplicate.already_present);
+        assert_eq!(duplicate.artifact.artifact_id, authorization_artifact_id);
+
+        let mut changed_capture = exact_call_capture_bytes();
+        changed_capture.push(b'\n');
+        std::fs::write(&capture_path, changed_capture).unwrap();
+        let invalid = diagnose_trace_analysis_case(case_path.to_str().unwrap()).unwrap();
+        for artifact_id in [
+            capture_artifact_id,
+            summary_artifact_id,
+            authorization_artifact_id,
+        ] {
+            assert_ne!(
+                invalid
+                    .artifact_health
+                    .iter()
+                    .find(|health| health.artifact_id == artifact_id)
+                    .unwrap()
+                    .status,
+                "valid"
+            );
+        }
+        assert!(invalid.exact_call_summaries.is_empty());
+        assert!(invalid.exact_call_authorizations.is_empty());
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn exact_call_summary_rejects_a_missing_source_capture_parent() {
+        use crate::query::exact_call::{save_exact_call_summary, ExactCallSummaryRequest};
+
+        let dir = temp_path("exact-call-missing-capture");
+        std::fs::create_dir_all(&dir).unwrap();
+        let case_path = dir.join("sample.traceui-case");
+        let elf_path = dir.join("libtarget.so");
+        let capture_path = dir.join("capture.json");
+        let summary_path = dir.join("summary.json");
+        std::fs::write(&elf_path, runtime_attestable_elf()).unwrap();
+        std::fs::write(&capture_path, exact_call_capture_bytes()).unwrap();
+        create_trace_analysis_case(
+            case_path.to_str().unwrap(),
+            "missing capture parent",
+            None,
+            Some(elf_path.to_str().unwrap()),
+        )
+        .unwrap();
+        save_exact_call_summary(
+            summary_path.to_str().unwrap(),
+            capture_path.to_str().unwrap(),
+            &ExactCallSummaryRequest {
+                caller_module_name: "libtarget.so".to_string(),
+                static_binary_path: elf_path.to_string_lossy().into_owned(),
+                max_calls: 16,
+                max_memory_bytes_per_call: 1024,
+            },
+        )
+        .unwrap();
+
+        let error = add_trace_case_artifact(
+            case_path.to_str().unwrap(),
+            summary_path.to_str().unwrap(),
+            None,
+            None,
+            Vec::new(),
+        )
+        .unwrap_err();
+        assert!(error
+            .to_string()
+            .contains("import that exact capture first"));
         let _ = std::fs::remove_dir_all(dir);
     }
 
@@ -5896,6 +7368,10 @@ mod tests {
 
     #[test]
     fn crypto_verified_claim_requires_strict_matching_kat_not_forged_text() {
+        use crate::evidence_slice::{
+            generate_minimal_evidence_slice, inspect_minimal_evidence_slice,
+            save_minimal_evidence_slice_bundle, MinimalEvidenceSliceRequest,
+        };
         use crate::query::crypto_kat::{
             save_crypto_semantic_kat_report, CryptoKatAlgorithm, CryptoSemanticKatRequest,
             CRYPTO_SEMANTIC_KAT_SCHEMA,
@@ -5990,9 +7466,67 @@ mod tests {
         assert!(audit.verification_gate_passed);
         assert_eq!(audit.gate_status, "passed");
         assert_eq!(passed.crypto_kats.len(), 1);
-        assert!(passed.generated_claims.iter().any(|claim| {
-            claim.scope == kat_report.claim_scope && claim.status == TraceCaseClaimStatus::Verified
-        }));
+        let generated_claim = passed
+            .generated_claims
+            .iter()
+            .find(|claim| {
+                claim.scope == kat_report.claim_scope
+                    && claim.status == TraceCaseClaimStatus::Verified
+            })
+            .cloned()
+            .unwrap();
+        let slice_bundle = generate_minimal_evidence_slice(
+            &crate::TraceEngine::new(),
+            &MinimalEvidenceSliceRequest {
+                case_path: case_path.to_string_lossy().into_owned(),
+                trace_session_bindings: Vec::new(),
+                claim_ids: vec![generated_claim.claim_id],
+                include_generated_claims: true,
+                include_sensitive_values: true,
+                context_before: 0,
+                context_after: 0,
+                module_bytes_before: 16,
+                module_bytes_after: 32,
+                max_memory_bytes_per_record: 256,
+                max_records: 32,
+                max_total_payload_bytes: 1024 * 1024,
+            },
+        )
+        .unwrap();
+        assert!(slice_bundle.content.summary.materialization_complete);
+        assert_eq!(slice_bundle.content.summary.json_fragment_record_count, 1);
+        let slice_path = dir.join("generated-claim-slice.json");
+        save_minimal_evidence_slice_bundle(&slice_bundle, slice_path.to_str().unwrap()).unwrap();
+        let imported_slice = add_trace_case_artifact(
+            case_path.to_str().unwrap(),
+            slice_path.to_str().unwrap(),
+            None,
+            None,
+            Vec::new(),
+        )
+        .unwrap();
+        assert_eq!(
+            imported_slice.artifact.kind,
+            TraceCaseArtifactKind::EvidenceSlice
+        );
+        let nested = diagnose_trace_analysis_case(case_path.to_str().unwrap()).unwrap();
+        assert_eq!(nested.evidence_slices.len(), 1);
+        assert_eq!(
+            nested.evidence_slices[0].report.status,
+            "valid-generated-bindings-not-revalidated"
+        );
+        assert!(
+            !nested.evidence_slices[0]
+                .report
+                .generated_claim_bindings_revalidated
+        );
+        let standalone = inspect_minimal_evidence_slice(
+            case_path.to_str().unwrap(),
+            slice_path.to_str().unwrap(),
+        )
+        .unwrap();
+        assert_eq!(standalone.status, "valid-complete");
+        assert!(standalone.generated_claim_bindings_revalidated);
         let _ = std::fs::remove_dir_all(dir);
     }
 
@@ -6273,6 +7807,159 @@ mod tests {
             .recommendations
             .iter()
             .any(|recommendation| recommendation.action == "vary-only-key"));
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn evidence_slice_import_is_source_bound_and_cannot_open_verified_gate() {
+        use crate::api_types::BuildOptions;
+        use crate::evidence_slice::{
+            generate_minimal_evidence_slice, save_minimal_evidence_slice_bundle,
+            EvidenceSliceTraceSessionBinding, MinimalEvidenceSliceRequest,
+        };
+        use crate::TraceEngine;
+
+        let dir = temp_path("evidence-slice-import");
+        std::fs::create_dir_all(&dir).unwrap();
+        let trace_path = dir.join("sample.log");
+        std::fs::write(
+            &trace_path,
+            b"[libsample.so] 0x1000!0x10 mov x0, #1; x0=0x1\n[libsample.so] 0x1004!0x14 str x0, [x2]; x2=0x2000\n",
+        )
+        .unwrap();
+        let case_path = dir.join("sample.traceui-case");
+        let mut document = create_trace_analysis_case(
+            case_path.to_str().unwrap(),
+            "evidence slice",
+            Some(trace_path.to_str().unwrap()),
+            None,
+        )
+        .unwrap();
+        let trace_artifact_id = document.case.primary_trace_artifact_id.clone().unwrap();
+        document.case.claims.push(TraceCaseClaim {
+            claim_id: "observed-line".to_string(),
+            statement: "The selected instruction was observed.".to_string(),
+            scope: "trace:sample".to_string(),
+            status: TraceCaseClaimStatus::Observed,
+            coverage_requirement: TraceCaseCoverageRequirement::NotRequired,
+            supporting_evidence: vec![TraceCaseEvidenceRef {
+                artifact_id: trace_artifact_id.clone(),
+                locator: "seq:1".to_string(),
+                description: "Exact observed trace line".to_string(),
+            }],
+            counter_evidence: Vec::new(),
+            missing_evidence: Vec::new(),
+            limitations: Vec::new(),
+            created_by: "test".to_string(),
+            created_at_ms: 1,
+            updated_at_ms: 1,
+        });
+        save_trace_analysis_case(case_path.to_str().unwrap(), &document.case).unwrap();
+
+        let engine = TraceEngine::new();
+        let session = engine.create_session(trace_path.to_str().unwrap()).unwrap();
+        engine
+            .build_index(
+                &session.session_id,
+                BuildOptions {
+                    force_rebuild: false,
+                    skip_strings: true,
+                },
+                None,
+            )
+            .unwrap();
+        let bundle = generate_minimal_evidence_slice(
+            &engine,
+            &MinimalEvidenceSliceRequest {
+                case_path: case_path.to_string_lossy().into_owned(),
+                trace_session_bindings: vec![EvidenceSliceTraceSessionBinding {
+                    artifact_id: trace_artifact_id.clone(),
+                    session_id: session.session_id,
+                }],
+                claim_ids: vec!["observed-line".to_string()],
+                include_generated_claims: false,
+                include_sensitive_values: true,
+                context_before: 0,
+                context_after: 0,
+                module_bytes_before: 16,
+                module_bytes_after: 32,
+                max_memory_bytes_per_record: 256,
+                max_records: 32,
+                max_total_payload_bytes: 1024 * 1024,
+            },
+        )
+        .unwrap();
+        let slice_path = dir.join("slice.json");
+        save_minimal_evidence_slice_bundle(&bundle, slice_path.to_str().unwrap()).unwrap();
+        let imported = add_trace_case_artifact(
+            case_path.to_str().unwrap(),
+            slice_path.to_str().unwrap(),
+            None,
+            Some("Bound evidence slice"),
+            Vec::new(),
+        )
+        .unwrap();
+        assert_eq!(imported.artifact.kind, TraceCaseArtifactKind::EvidenceSlice);
+        assert_eq!(
+            imported.artifact.parent_artifact_ids,
+            vec![trace_artifact_id]
+        );
+        assert_eq!(
+            imported.artifact.summary.evidence_slice_status.as_deref(),
+            Some("valid-complete")
+        );
+
+        upsert_trace_case_claim(
+            case_path.to_str().unwrap(),
+            TraceCaseClaim {
+                claim_id: "slice-does-not-prove-ollvm".to_string(),
+                statement: "The complete OLLVM control-flow graph was recovered.".to_string(),
+                scope: "ollvm:libsample.so".to_string(),
+                status: TraceCaseClaimStatus::Verified,
+                coverage_requirement: TraceCaseCoverageRequirement::NotRequired,
+                supporting_evidence: vec![TraceCaseEvidenceRef {
+                    artifact_id: imported.artifact.artifact_id.clone(),
+                    locator: "record:all".to_string(),
+                    description: "The slice is hash-valid and source-bound.".to_string(),
+                }],
+                counter_evidence: Vec::new(),
+                missing_evidence: Vec::new(),
+                limitations: Vec::new(),
+                created_by: "test".to_string(),
+                created_at_ms: 1,
+                updated_at_ms: 1,
+            },
+        )
+        .unwrap();
+        let report = diagnose_trace_analysis_case(case_path.to_str().unwrap()).unwrap();
+        assert_eq!(report.evidence_slices.len(), 1);
+        assert_eq!(report.evidence_slices[0].report.status, "valid-complete");
+        assert!(
+            report.evidence_slices[0]
+                .report
+                .generated_claim_bindings_revalidated
+        );
+        let audit = report
+            .claim_ledger_audit
+            .claims
+            .iter()
+            .find(|claim| claim.claim_id == "slice-does-not-prove-ollvm")
+            .unwrap();
+        assert!(!audit.verification_gate_passed);
+        assert_eq!(audit.recommended_status, TraceCaseClaimStatus::Related);
+        let pack = crate::evidence_pack::build_analysis_case_evidence_pack(
+            &crate::evidence_pack::AnalysisCaseEvidencePackRequest {
+                case_path: case_path.to_string_lossy().into_owned(),
+                max_tokens: 16_000,
+                max_items: 256,
+                include_generated_claims: true,
+            },
+        )
+        .unwrap();
+        assert_eq!(pack.evidence_slices.len(), 1);
+        assert_eq!(pack.evidence_slices[0].record_count, 1);
+        assert!(pack.evidence_slices[0].record_content_matched);
+        assert!(pack.evidence_slices[0].provenance_graph_valid);
         let _ = std::fs::remove_dir_all(dir);
     }
 }

@@ -66,6 +66,7 @@ const initialRequest: FridaHookRequest = {
   arguments: [],
   captureRegisters: true,
   captureReturn: true,
+  captureExactCall: false,
   captureBacktrace: false,
   stalker: "off",
   stalkerDurationMs: 10_000,
@@ -453,11 +454,11 @@ export default function FridaHookPanel({ seed }: Props) {
         <div style={{ padding: 10, borderBottom: "1px solid var(--border-color)", fontSize: 11 }}>
           <div style={{ display: "grid", gridTemplateColumns: "repeat(3, minmax(0, 1fr))", gap: 8, alignItems: "center" }}>
             <label style={{ display: "flex", alignItems: "center", gap: 5 }}>
-              <input type="checkbox" checked={request.captureRegisters} onChange={event => setRequest(previous => ({ ...previous, captureRegisters: event.target.checked }))} />
+              <input type="checkbox" checked={request.captureRegisters} disabled={request.captureExactCall} onChange={event => setRequest(previous => ({ ...previous, captureRegisters: event.target.checked }))} />
               X0-X7 / SP / LR / PC
             </label>
             <label style={{ display: "flex", alignItems: "center", gap: 5 }}>
-              <input type="checkbox" checked={request.captureReturn} onChange={event => setRequest(previous => ({ ...previous, captureReturn: event.target.checked }))} />
+              <input type="checkbox" checked={request.captureReturn} disabled={request.captureExactCall} onChange={event => setRequest(previous => ({ ...previous, captureReturn: event.target.checked }))} />
               返回值
             </label>
             <label style={{ display: "flex", alignItems: "center", gap: 5 }}>
@@ -465,6 +466,22 @@ export default function FridaHookPanel({ seed }: Props) {
               回溯
             </label>
           </div>
+          <label style={{ display: "flex", alignItems: "flex-start", gap: 6, marginTop: 9, color: request.captureExactCall ? "#d29922" : "var(--text-secondary)" }}>
+            <input
+              aria-label="Exact-call 双阶段记录"
+              type="checkbox"
+              checked={request.captureExactCall}
+              onChange={event => setRequest(previous => ({
+                ...previous,
+                captureExactCall: event.target.checked,
+                captureRegisters: event.target.checked ? true : previous.captureRegisters,
+                captureReturn: event.target.checked ? true : previous.captureReturn,
+              }))}
+            />
+            <span>
+              Exact-call 双阶段记录：enter/leave 都捕获完整 GPR/NZCV 与配置的 byteArray，并记录 caller、BL/BLR call-site、target 和 PC+4 return。捕获包含敏感运行时数据；它只生成候选调用效果，不能自动授权重放。
+            </span>
+          </label>
           <div style={{ display: "grid", gridTemplateColumns: "105px minmax(100px, 1fr) 92px minmax(70px, 1fr)", gap: 7, alignItems: "center", marginTop: 9 }}>
             <label htmlFor="frida-stalker">Stalker 跟踪</label>
             <select id="frida-stalker" style={inputStyle} value={request.stalker} onChange={event => setRequest(previous => ({ ...previous, stalker: event.target.value as FridaStalkerMode }))}>
@@ -623,6 +640,16 @@ export default function FridaHookPanel({ seed }: Props) {
                       <code>{selectedCaptureEvent.target || "unknown target"}</code>
                       <span>{selectedCaptureEvent.callId || "no call id"}</span>
                     </div>
+                    {selectedCaptureEvent.exactCallRecord && (
+                      <div style={{ marginTop: 7, padding: 7, background: "var(--bg-secondary)", borderLeft: "3px solid #d29922", color: "var(--text-secondary)" }}>
+                        <div><strong style={{ color: "#d29922" }}>Exact-call record</strong> · caller {selectedCaptureEvent.callerModuleName || "unknown"}</div>
+                        <div style={{ marginTop: 3 }}>
+                          call-site <code>{selectedCaptureEvent.callSiteOffset || selectedCaptureEvent.callSite || "unknown"}</code>
+                          {" · "}target <code>{selectedCaptureEvent.targetOffset || selectedCaptureEvent.target || "unknown"}</code>
+                          {" · "}return <code>{selectedCaptureEvent.returnOffset || selectedCaptureEvent.returnAddress || "unknown"}</code>
+                        </div>
+                      </div>
+                    )}
                     <div style={{ display: "grid", gridTemplateColumns: "70px minmax(0, 1fr)", gap: 5, marginTop: 9 }}>
                       {Object.entries(selectedCaptureEvent.registers).map(([name, value]) => <React.Fragment key={name}><strong>{name.toUpperCase()}</strong><code>{value}</code></React.Fragment>)}
                     </div>
