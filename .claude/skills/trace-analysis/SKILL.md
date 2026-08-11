@@ -5,7 +5,7 @@ description: >
   Use for native/.so reverse engineering, crypto key/IV/nonce/salt/material identification,
   MD5/SHA/HMAC/PBKDF2 input matching, backward or forward taint, function I/O inspection, cross-run
   diffing, static ELF-to-trace table reconciliation, software/table-driven/obfuscated/white-box crypto
-  classification, Frida 16 hook generation/capture import, angr state seeding, dynamic IDA/angr/Unicorn/OLLVM analysis, missing-memory recapture, closer checkpoint capture, and cross-version dispatcher/state structural mapping. Trigger on requests
+  classification, strict crypto KAT verification, information-gain capture planning, Frida ABI candidate inference, accuracy benchmarking, Frida 16 hook generation/capture import, angr state seeding, dynamic IDA/angr/Unicorn/OLLVM analysis, missing-memory recapture, closer checkpoint capture, and cross-version dispatcher/state structural mapping. Trigger on requests
   such as analyze this trace, reverse this native function, inspect this .so with its trace, find the key
   or algorithm, isolate a salt, generate a Frida hook, inspect OLLVM, map OLLVM across versions, where did this value come from, or
   分析 trace / 逆向 so / 污点 / 加密分析 / Frida hook / OLLVM.
@@ -43,7 +43,25 @@ Trace UI app (embedded MCP on `127.0.0.1:19821`) or register `trace-cli`, then r
    `open_analysis_case`, ingest every user-produced artifact with `ingest_analysis_case_artifact`, and
    run `diagnose_analysis_case` plus `audit_analysis_case_claims` before promoting a load-bearing claim.
    Record controlled build/key/input/environment runs with `upsert_analysis_case_experiment`.
-7. **Close** — `close_trace` when done to free memory (optional; cancels background tasks).
+7. **Build a bounded AI handoff** — call `generate_analysis_case_evidence_pack` instead of dumping the
+   whole case or copying a prose summary. Choose JSON for further tool reasoning or Markdown for review.
+   Preserve all four sections: supporting evidence, counter-evidence, unknowns, and invalid artifacts.
+   Treat artifactId + locator as navigation; the pack itself is never proof.
+8. **Attest runtime identity when it matters** — a disk ELF SHA-256 is only file identity. Call
+   `generate_frida_runtime_attestation`, let the user run the Frida 16.x script manually in the intended
+   process, then call `inspect_runtime_attestation` with that capture and the same exact ELF. Import the
+   capture into the case with the exact ELF artifact as its parent even when it is refuted.
+9. **Use structured crypto proof** — when exact algorithm parameters and observed bytes are known, call
+   `verify_crypto_semantic_kat`, optionally save/import the artifact, then call
+   `inspect_crypto_semantic_kat`. Only an exact matching `crypto:*` claimScope with `verified-full` may
+   pass; prose markers and approximate vectors do not substitute.
+10. **Ask for the next best evidence** — call `plan_analysis_case_capture` after Replay Doctor. Follow
+    the top non-redundant target only when it addresses the active question; its score is a deterministic
+    priority, not a probability. The user still performs every runtime capture or controlled run.
+11. **Regression-check confidence logic** — before accepting gate/status/ranking changes, call
+    `run_accuracy_benchmark` on reviewed positive and negative case fixtures. A passing suite prevents
+    declared drift; it does not establish that fixture labels are ground truth.
+12. **Close** — `close_trace` when done to free memory (optional; cancels background tasks).
 
 ## Playbooks (question → tool sequence)
 
@@ -62,6 +80,23 @@ optional exact-ELF reconciliation. `not-observed` means the current trace did no
 `completed-no-match` means the exact ELF scan completed but found no dynamic/static table match. Neither
 status disproves AES. Only deterministic semantic recomputation can open the Verified gate.
 
+**"Was this exact ELF actually mapped in the process?"**
+→ call `generate_frida_runtime_attestation{module_name,static_binary_path,window_bytes?,max_windows?}`.
+Return/save the generated Frida 16.x script and stop until the user runs it manually and supplies its
+JSON/NDJSON/send/CLI output. Then call `inspect_runtime_attestation{capture_path,exact_binary_path}`.
+`verified-full` is scoped only to captured mapped ELF metadata and every file-backed executable
+`PT_LOAD` byte. `related-sampled` is not Verified; `refuted` is counter-evidence and must be preserved;
+`incomplete` requires recapture. Never use this result to upgrade crypto semantics, OLLVM structure,
+real-entry reachability, or angr/Unicorn completeness.
+
+**"I have exact crypto inputs and output; can this claim be proven without a text marker?"**
+→ call `verify_crypto_semantic_kat` with the exact AES mode/direction/key/input/output/IV/AAD/tag or
+hash/HMAC/PBKDF2 parameters. Save the returned `trace-ui/crypto-semantic-kat-verification-v1` artifact
+when the conclusion is load-bearing, import it as `crypto-kat`, then call
+`inspect_crypto_semantic_kat{file_path}` before reuse. `verified-full` applies only to the exact
+`claimScope`; `refuted` reports the first mismatch range and `invalid` reports malformed/bounded inputs.
+This proves the vector semantics, not function provenance, runtime reachability, or OLLVM structure.
+
 **"Several tools or replay rounds disagree; what should the AI trust?"**
 → use a `.traceui-case`. Create/open it with `open_analysis_case`, import each trace/exact ELF/capture/
 result with `ingest_analysis_case_artifact` and explicit parent artifact IDs, then run
@@ -70,6 +105,11 @@ artifacts, and the recommended maximum claim status. Record controlled runs with
 `upsert_analysis_case_experiment`; prefer single-variable build/key/input/environment pairs and treat
 confounded comparisons as insufficient. Replay Doctor organizes evidence and next actions only; it does
 not execute the target, Frida, Unicorn, angr, or IDA, and it does not turn OLLVM structure into proof.
+Before handing the case to another AI/model, call `generate_analysis_case_evidence_pack` with an explicit
+token/item budget. Do not discard its counter-evidence, unknowns, invalid artifacts, or omitted counts.
+Call `plan_analysis_case_capture` to obtain the highest-information exact offset/register/memory or
+controlled-run request, and use its redundancy key to avoid asking for the same unchanged capture again.
+Run `run_accuracy_benchmark` only against reviewed suites when changing confidence/gate logic.
 
 **"Which function does the encryption / hashing, and what are its inputs/outputs?"**
 → `analyze_crypto_functions`. It aggregates magic-constant hits **and** dedicated ARM64 crypto
@@ -136,6 +176,14 @@ MD5/SHA/HMAC/PBKDF2 calls. Select an exact event index, then call
 `generate_angr_state_seed{file_path,event_index,include_sp?,include_lr?}`. Treat module rebasing as
 build-specific and heap/stack addresses as process-specific. Never claim the seed proves real-entry or
 branch reachability.
+
+**"What are X0-X7 likely to mean across these repeated Frida calls?"**
+→ call `infer_frida_abi{file_path,min_observations?=2}`. Review argument candidates, pointer+length
+pairs, stable context pointers, enter/leave mutations, `baseRegister + displacement` field windows, and
+return-value shapes together with their exact event indices. Hook labels/directions are metadata, not
+proof. Every result is Candidate/Related; runtime pointers are process-specific and must never be reused
+as module offsets or across runs. Confirm important roles with trace instructions, taint, API contracts,
+or controlled counterexamples before configuring a broader Hook.
 
 **"Capture several OLLVM dispatchers and reconstruct the observed transition atlas."**
 → Run `analyze_ollvm` on a narrow scope, then call `generate_frida_ollvm_dispatcher_hook` with bounded
@@ -244,6 +292,10 @@ recomputes to a known digest.
 - **A single magic constant is a lead, not proof.** Trust `analyze_crypto_functions` confidence grades
   over raw constant hits. Report **candidate vs verified** honestly; never upgrade "digest bytes match"
   to "this function produced it" without dependency evidence.
+- A Crypto KAT can verify only its exact serialized vector and claimScope. It does not prove that a
+  traced function produced those bytes or that a simulator path is reachable.
+- Information-gain capture scores are deterministic ordering heuristics, not probabilities or confidence
+  percentages. Re-run the plan after importing new evidence and do not duplicate an unchanged redundancy key.
 - **`data_only:true`** unless you specifically need control-dependency flow (it explodes result size).
 - **Only executed instructions exist** in a trace — dynamic, not static. Unexecuted branches aren't there.
   If a value's origin is "missing", the computation may predate the trace's start; widen the range or
@@ -262,14 +314,14 @@ recomputes to a known digest.
 |---|---|
 | Session | `open_trace`, `close_trace` |
 | Browse / verify | `get_trace_lines`, `get_memory`, `get_strings`, `get_call_tree`, `search_instructions` |
-| Crypto | `analyze_crypto_implementations`, `analyze_crypto_functions`, `analyze_crypto_materials`, `compare_crypto_material_traces`, `analyze_crypto`, `analyze_known_digest`, `investigate_crypto_flow` |
+| Crypto | `analyze_crypto_implementations`, `analyze_crypto_functions`, `analyze_crypto_materials`, `compare_crypto_material_traces`, `analyze_crypto`, `analyze_known_digest`, `investigate_crypto_flow`, `verify_crypto_semantic_kat`, `inspect_crypto_semantic_kat` |
 | Taint | `taint_analysis` (backward), `forward_taint_analysis`, `get_tainted_lines`, `start_forward_taint_analysis` |
 | Functions | `analyze_function` (node_id / name / list) |
 | Diff | `compare_traces`, `start_trace_diff` |
-| Frida | `list_frida_hook_recipes`, `generate_frida_hook`, `generate_frida_ollvm_dispatcher_hook`, `generate_frida_unicorn_recapture_hook`, `generate_frida_unicorn_checkpoint_hook`, `inspect_frida_capture`, `search_frida_capture_events`, `get_frida_capture_event`, `analyze_frida_crypto_materials`, `analyze_frida_ollvm_dispatcher_capture`, `generate_angr_state_seed` (user executes hooks manually) |
+| Frida | `list_frida_hook_recipes`, `generate_frida_hook`, `generate_frida_runtime_attestation`, `inspect_runtime_attestation`, `generate_frida_ollvm_dispatcher_hook`, `generate_frida_unicorn_recapture_hook`, `generate_frida_unicorn_checkpoint_hook`, `inspect_frida_capture`, `search_frida_capture_events`, `get_frida_capture_event`, `infer_frida_abi`, `analyze_frida_crypto_materials`, `analyze_frida_ollvm_dispatcher_capture`, `generate_angr_state_seed` (user executes hooks manually) |
 | IDA / angr / Unicorn / OLLVM | `analyze_ollvm`, `compare_ollvm_traces`, `map_ollvm_versions`, `generate_ida_ollvm_script`, `inspect_ida_annotations`, `generate_angr_ollvm_script`, `inspect_angr_ollvm_results`, `generate_unicorn_ollvm_script`, `inspect_unicorn_ollvm_results`, `compare_unicorn_ollvm_rounds`, `generate_frida_unicorn_checkpoint_hook` |
 | Orchestration | `auto_investigate`, `start_auto_investigation`, `start_crypto_investigation` |
-| Case / evidence gates | `open_analysis_case`, `ingest_analysis_case_artifact`, `diagnose_analysis_case`, `audit_analysis_case_claims`, `upsert_analysis_case_experiment`, `diagnose_crypto_detection` |
+| Case / evidence gates | `open_analysis_case`, `ingest_analysis_case_artifact`, `diagnose_analysis_case`, `plan_analysis_case_capture`, `generate_analysis_case_evidence_pack`, `audit_analysis_case_claims`, `upsert_analysis_case_experiment`, `run_accuracy_benchmark`, `diagnose_crypto_detection` |
 | Evidence store | `list_analyses`, `get_analysis`, `compare_analyses`, `export_analysis_report`, `delete_analysis` |
 | Recipes | `list_analysis_recipes`, `run_analysis_recipe`, `save_analysis_recipe`, `delete_analysis_recipe` |
 | Background tasks | `get_analysis_task`, `list_analysis_tasks`, `cancel_analysis_task` |

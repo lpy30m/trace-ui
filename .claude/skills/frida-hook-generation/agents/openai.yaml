@@ -1,13 +1,13 @@
 interface:
   display_name: "Frida Hook Generation"
-  short_description: "Generate Frida 16 hooks and analyze captures"
-  default_prompt: "Use $frida-hook-generation to generate a manual Frida 16.x hook, or inspect an exact-offset capture for crypto materials and angr/OLLVM state seeds."
+  short_description: "Generate Frida hooks, attest images, infer ABI candidates"
+  default_prompt: "Use $frida-hook-generation to generate a manual Frida 16.x hook or runtime-image attestation, inspect repeated captures for conservative ABI/structure candidates, or hand exact-offset state to crypto/angr/Unicorn/OLLVM workflows."
 
 dependencies:
   tools:
     - type: "mcp"
       value: "trace-ui"
-      description: "Local Trace UI Frida 16 generator, capture crypto analyzer, and exact-offset angr/OLLVM seed bridge"
+      description: "Local Trace UI Frida 16 generator, runtime-image verifier, repeated-call ABI candidate analyzer, capture crypto analyzer, and exact-offset angr/OLLVM seed bridge"
       transport: "streamable_http"
       url: "http://127.0.0.1:19821/mcp"
 

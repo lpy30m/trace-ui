@@ -539,7 +539,7 @@ pub struct IngestAnalysisCaseArtifactRequest {
     #[schemars(description = "Absolute path to the artifact to hash, strictly parse, and add")]
     pub artifact_path: String,
     #[schemars(
-        description = "Optional kind hint: trace, static-binary, frida-capture, unicorn-result, angr-result, ida-annotations, ollvm-report, analysis-report, crypto-report, or other"
+        description = "Optional kind hint: trace, static-binary, runtime-attestation, frida-capture, unicorn-result, angr-result, ida-annotations, ollvm-report, analysis-report, crypto-kat, crypto-report, or other"
     )]
     pub kind_hint: Option<String>,
     #[schemars(description = "Optional human-readable artifact label")]
@@ -558,6 +558,65 @@ pub struct DiagnoseAnalysisCaseRequest {
     )]
     #[serde(default)]
     pub persist_generated_claims: bool,
+}
+
+#[derive(Debug, Deserialize, JsonSchema)]
+pub struct PlanAnalysisCaseCaptureRequest {
+    #[schemars(description = "Absolute path to an existing .traceui-case manifest")]
+    pub case_path: String,
+    #[schemars(description = "Maximum ranked targets to return (default: 12, range: 1-32)")]
+    #[serde(default = "default_capture_plan_targets")]
+    pub max_targets: u32,
+}
+
+#[derive(Debug, Deserialize, JsonSchema)]
+pub struct RunAccuracyBenchmarkRequest {
+    #[schemars(
+        description = "Absolute path to a strict trace-ui/accuracy-benchmark-suite-v1 JSON file; relative case paths resolve from the suite directory"
+    )]
+    pub suite_path: String,
+}
+
+fn default_capture_plan_targets() -> u32 {
+    12
+}
+
+#[derive(Clone, Copy, Debug, Default, Deserialize, JsonSchema)]
+#[serde(rename_all = "lowercase")]
+pub enum AnalysisCaseEvidencePackFormatRequest {
+    #[default]
+    Json,
+    Markdown,
+}
+
+#[derive(Debug, Deserialize, JsonSchema)]
+pub struct GenerateAnalysisCaseEvidencePackRequest {
+    #[schemars(description = "Absolute path to an existing .traceui-case manifest")]
+    pub case_path: String,
+    #[schemars(description = "Output format: json or markdown (default: json)")]
+    #[serde(default)]
+    pub format: AnalysisCaseEvidencePackFormatRequest,
+    #[schemars(
+        description = "Approximate output-token budget (default: 8000; range: 1024-65536). The deterministic estimate is reported in the result."
+    )]
+    #[serde(default = "default_evidence_pack_tokens")]
+    pub max_tokens: u32,
+    #[schemars(
+        description = "Maximum combined claims/evidence/unknown/invalid-artifact entries (default: 256; range: 16-2048)"
+    )]
+    #[serde(default = "default_evidence_pack_items")]
+    pub max_items: u32,
+    #[schemars(description = "Include current Replay Doctor generated claims (default: true)")]
+    #[serde(default = "default_true")]
+    pub include_generated_claims: bool,
+}
+
+fn default_evidence_pack_tokens() -> u32 {
+    8_000
+}
+
+fn default_evidence_pack_items() -> u32 {
+    256
 }
 
 #[derive(Debug, Deserialize, JsonSchema)]
@@ -1031,11 +1090,130 @@ pub struct GenerateFridaHookRequest {
 }
 
 #[derive(Debug, Deserialize, JsonSchema)]
+pub struct GenerateFridaRuntimeAttestationRequest {
+    #[schemars(description = "Loaded module basename, for example libtarget.so")]
+    pub module_name: String,
+    #[schemars(
+        description = "Absolute path to the exact AArch64 ELF whose mapped bytes will be checked"
+    )]
+    pub static_binary_path: String,
+    #[schemars(
+        description = "Power-of-two executable hash window size in bytes (default: 4096; range: 256-65536)"
+    )]
+    #[serde(default = "default_runtime_attestation_window_bytes")]
+    pub window_bytes: u32,
+    #[schemars(
+        description = "Maximum executable windows (default: 1024; max: 4096). Sampling remains Related, never Verified."
+    )]
+    #[serde(default = "default_runtime_attestation_max_windows")]
+    pub max_windows: u32,
+}
+
+#[derive(Debug, Deserialize, JsonSchema)]
+pub struct InspectRuntimeAttestationRequest {
+    #[schemars(
+        description = "Absolute path to user-captured trace-ui/frida-runtime-attestation-v1 JSON, NDJSON, send envelope, or CLI output"
+    )]
+    pub capture_path: String,
+    #[schemars(
+        description = "Absolute path to the exact AArch64 ELF used to regenerate and verify the complete plan"
+    )]
+    pub exact_binary_path: String,
+}
+
+#[derive(Debug, Deserialize, JsonSchema)]
+pub struct VerifyCryptoSemanticKatRequest {
+    #[schemars(
+        description = "Exact algorithm: aes-ecb/cbc/ctr/gcm, md5, sha1/256/384/512, hmac-*, or pbkdf2-hmac-*"
+    )]
+    pub algorithm: String,
+    #[schemars(
+        description = "Required for AES: encrypt or decrypt; omit for hashes, HMAC, and PBKDF2"
+    )]
+    pub direction: Option<String>,
+    #[schemars(
+        description = "Strict hexadecimal AES/HMAC key; no 0x prefix, whitespace, or separators"
+    )]
+    pub key_hex: Option<String>,
+    #[schemars(
+        description = "Strict hexadecimal AES/hash/HMAC input; empty string is valid for hashes and GCM"
+    )]
+    pub input_hex: Option<String>,
+    #[schemars(description = "Strict hexadecimal observed output to compare byte-for-byte")]
+    pub observed_output_hex: String,
+    #[schemars(
+        description = "Strict hexadecimal CBC IV, CTR initial counter, or 12-byte GCM nonce"
+    )]
+    pub iv_hex: Option<String>,
+    #[schemars(description = "Optional strict hexadecimal GCM additional authenticated data")]
+    pub aad_hex: Option<String>,
+    #[schemars(description = "Required strict hexadecimal 16-byte GCM authentication tag")]
+    pub observed_tag_hex: Option<String>,
+    #[schemars(description = "Strict hexadecimal PBKDF2 password bytes")]
+    pub password_hex: Option<String>,
+    #[schemars(description = "Strict hexadecimal PBKDF2 salt bytes")]
+    pub salt_hex: Option<String>,
+    #[schemars(description = "PBKDF2 iteration count, bounded to 1-1000000")]
+    pub iterations: Option<u32>,
+    #[schemars(description = "PBKDF2 derived key length in bytes, bounded to 1-4096")]
+    pub derived_key_length: Option<u32>,
+    #[schemars(
+        description = "Optional absolute output path for a strict trace-ui/crypto-semantic-kat-verification-v1 artifact. The file contains sensitive key/password/input/output material."
+    )]
+    pub output_path: Option<String>,
+}
+
+#[derive(Debug, Deserialize, JsonSchema)]
+pub struct InspectCryptoSemanticKatRequest {
+    #[schemars(
+        description = "Absolute path to a trace-ui/crypto-semantic-kat-verification-v1 report; every field is recomputed before acceptance"
+    )]
+    pub file_path: String,
+}
+
+#[derive(Debug, Deserialize, JsonSchema)]
 pub struct InspectFridaCaptureRequest {
     #[schemars(
         description = "Absolute path to JSON, JSON-array, or NDJSON containing trace-ui/frida-hook-v1 send() messages captured by the user"
     )]
     pub file_path: String,
+}
+
+#[derive(Debug, Deserialize, JsonSchema)]
+pub struct InferFridaAbiRequest {
+    #[schemars(
+        description = "Absolute path to user-captured trace-ui/frida-hook-v1 JSON/NDJSON/CLI output"
+    )]
+    pub file_path: String,
+    #[schemars(
+        description = "Minimum repeated call/field observations before cross-call inference (default: 2, range: 2-64)"
+    )]
+    #[serde(default = "default_abi_min_observations")]
+    pub min_observations: u32,
+    #[schemars(description = "Maximum function groups (default: 64, range: 1-128)")]
+    #[serde(default = "default_abi_max_functions")]
+    pub max_functions: u32,
+    #[schemars(
+        description = "Maximum argument/pair/context/field candidates per function (default: 128, range: 8-512)"
+    )]
+    #[serde(default = "default_abi_max_candidates")]
+    pub max_candidates_per_function: u32,
+    #[schemars(
+        description = "Optional absolute JSON output path. The saved report contains process-specific pointers and captured labels/values summarized from the source."
+    )]
+    pub output_path: Option<String>,
+}
+
+fn default_abi_min_observations() -> u32 {
+    2
+}
+
+fn default_abi_max_functions() -> u32 {
+    64
+}
+
+fn default_abi_max_candidates() -> u32 {
+    128
 }
 
 #[derive(Debug, Deserialize, JsonSchema)]
@@ -1148,6 +1326,14 @@ fn default_frida_materials() -> u32 {
 
 fn default_frida_max_bytes() -> u32 {
     256
+}
+
+fn default_runtime_attestation_window_bytes() -> u32 {
+    4_096
+}
+
+fn default_runtime_attestation_max_windows() -> u32 {
+    1_024
 }
 
 #[derive(Debug, Deserialize, JsonSchema)]
@@ -1871,6 +2057,22 @@ mod tests {
         assert!(matches!(request.stalker, FridaStalkerModeRequest::Off));
         assert_eq!(request.stalker_duration_ms, 10_000);
         assert_eq!(request.max_bytes, 256);
+    }
+
+    #[test]
+    fn analysis_case_evidence_pack_defaults_are_bounded() {
+        let request: GenerateAnalysisCaseEvidencePackRequest =
+            serde_json::from_value(serde_json::json!({
+                "case_path": "sample.traceui-case"
+            }))
+            .unwrap();
+        assert!(matches!(
+            request.format,
+            AnalysisCaseEvidencePackFormatRequest::Json
+        ));
+        assert_eq!(request.max_tokens, 8_000);
+        assert_eq!(request.max_items, 256);
+        assert!(request.include_generated_claims);
     }
 
     #[test]

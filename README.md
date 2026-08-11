@@ -20,6 +20,12 @@
 - **密码算法识别** — 自动扫描 trace 中的密码算法常量模式，覆盖 AES、DES、SM3、MD5、SHA、CRC32、TEA、RC4 等 28 种魔数模式
 - **动态软件 AES 验证** — 在没有 API 注释或硬件 AES 指令时，识别标准 forward/inverse S-box 的地址/值关系和 AES-128 展开密钥，并从内存访问重建 input/output；只有逐 block 精确复算一致才进入 Verified
 - **案件工作区 / Replay Doctor** — 使用严格版本化的 `.traceui-case` 保存 Trace、exact AArch64 ELF、Frida、Unicorn、angr、IDA、OLLVM 和 crypto artifact 的 SHA-256、父子来源、结论与受控实验；Doctor 会重验文件/协议，区分未执行、未捕获、不可读和 hash mismatch，并输出 Claim 反证门禁、模拟状态完整度、跨轮停滞判断和下一步建议
+- **运行时镜像认证** — 从 exact AArch64 ELF 的映射 metadata 与 file-backed executable `PT_LOAD` 字节生成有界 Frida 16.x SHA-256 计划；用户手动运行并回导后重新生成计划逐窗核对。完整可执行字节覆盖可在 `runtime-image:*` 范围内进入 `verified-full`，确定性抽样只能 `related-sampled`，任何 hash/计划/身份冲突会保留为 `refuted` 反证；这不是硬件或远程可信认证，也不会验证密码语义、OLLVM 或模拟可达性
+- **AI Evidence Pack** — 从 `.traceui-case` 生成有 token/条目预算的 `trace-ui/ai-evidence-pack-v1` JSON 或 Markdown；逐 claim 给出 Claim Ledger 推荐最高等级，并严格分开 supporting evidence、counter-evidence、unknown/下一证据需求与 invalid artifacts。每条证据保留 artifact ID、locator，并解析 locator 中显式编码的 trace seq/line、memory range、module offset 和 event index；pack 只是上下文打包，不能把摘要或说明文字变成证明
+- **Crypto 语义 KAT** — 使用 `trace-ui/crypto-semantic-kat-v1` 对 AES ECB/CBC/CTR/GCM、MD5、SHA-1/256/384/512、HMAC 和 PBKDF2-HMAC 做严格 known-answer 复算；报告精确参数、重算输出和首个 mismatch 范围，保存后再次导入会完整重算。只有 exact `claimScope` 的 `verified-full` KAT 能打开对应 `crypto:*` Verified 门禁
+- **信息增益补采样计划** — Replay Doctor 输出 `trace-ui/information-gain-capture-plan-v1`，按当前 blocker、反证、缺失 GPR/NZCV/栈/pointer memory、checkpoint、受控变量和重复模拟停滞，排序下一次最值得采集的 exact ELF/offset/register/memory/run；分数是确定性优先级，不是概率，并带去重键避免 AI 重复请求同一证据
+- **Frida ABI/结构候选推断** — 对重复的用户捕获推断 X0-X7 参数角色、pointer+length、稳定 context、enter/leave buffer mutation、`baseRegister + displacement` 字段窗口与返回值形态；所有结果保留 exact event index，始终是 Candidate/Related，运行时 pointer 不会被误当成跨运行地址或 module offset
+- **准确率 Benchmark / CI 门禁** — `trace-ui/accuracy-benchmark-suite-v1` 对经过人工审阅的正例、负例、错 ELF、伪造 marker、缺失证据和 OLLVM/模拟非升级 fixture 检查 gate/status、Verified 误报/漏报和 capture-plan 排序漂移；任何漂移都会令 CI gate 失败，但 benchmark 本身不创造新证据
 - **Crypto Materials 索引** — 统一索引 key、password、salt、IV、nonce、counter、明文/密文、digest/MAC、AAD 和 tag，并对可观察的 AES、MD5/SHA、HMAC、PBKDF2 做确定性复算
 - **Frida 16 Hook 与捕获回导** — 可套用常见 OpenSSL/CommonCrypto 配方，或按导出符号/module-relative offset 生成 ARM64 Interceptor/Stalker 脚本；寄存器快照覆盖 X0-X28、FP/LR/SP/PC 与可用的 NZCV，用户手动执行后可导回 JSON/NDJSON，索引密码材料并生成 angr state seed；应用不会 attach、spawn、load 或执行 Hook
 - **Frida OLLVM Dispatcher Atlas** — 从 OLLVM 报告一次生成最多 64 个 ranked dispatcher `startOffset` 的 Frida 16.x 手动脚本；用户自行运行后导入 `ollvm-dispatcher-hit`，按 capture session、线程、flow 和连续 hit sequence 汇总 dispatcher 节点、状态寄存器分布、相邻 transition 与候选执行路径。legacy 捕获使用 idle-gap 启发式分 flow，所有结果保持 Candidate/Related。
@@ -93,10 +99,10 @@ claude mcp add trace-ui --transport http http://127.0.0.1:19821/mcp
 | 浏览与搜索 | `get_trace_lines`、`get_memory`、`get_strings`、`search_instructions`、`search_value` |
 | 污点分析 | `taint_analysis`、`forward_taint_analysis`、`get_tainted_lines` |
 | 结构与对比 | `get_call_tree`、`analyze_function`、`compare_traces` |
-| 案件与准确率门禁 | `open_analysis_case`、`ingest_analysis_case_artifact`、`diagnose_analysis_case`、`audit_analysis_case_claims`、`upsert_analysis_case_experiment`、`diagnose_crypto_detection` |
-| 密码分析 | `analyze_crypto_functions`、`analyze_crypto_implementations`、`analyze_crypto_materials`、`analyze_known_digest` |
+| 案件与准确率门禁 | `open_analysis_case`、`ingest_analysis_case_artifact`、`diagnose_analysis_case`、`plan_analysis_case_capture`、`generate_analysis_case_evidence_pack`、`audit_analysis_case_claims`、`upsert_analysis_case_experiment`、`run_accuracy_benchmark`、`diagnose_crypto_detection` |
+| 密码分析 | `analyze_crypto_functions`、`analyze_crypto_implementations`、`analyze_crypto_materials`、`analyze_known_digest`、`verify_crypto_semantic_kat`、`inspect_crypto_semantic_kat` |
 | 多 trace 参数隔离 | `compare_crypto_material_traces`、`compare_crypto_table_traces` |
-| Frida 16 脚本与回导 | `list_frida_hook_recipes`、`generate_frida_hook`、`generate_frida_ollvm_dispatcher_hook`、`generate_frida_unicorn_recapture_hook`、`generate_frida_unicorn_checkpoint_hook`、`inspect_frida_capture`、`search_frida_capture_events`、`get_frida_capture_event`、`analyze_frida_crypto_materials`、`analyze_frida_ollvm_dispatcher_capture`、`generate_angr_state_seed`（用户手动执行 Hook） |
+| Frida 16 脚本与回导 | `list_frida_hook_recipes`、`generate_frida_hook`、`generate_frida_runtime_attestation`、`inspect_runtime_attestation`、`generate_frida_ollvm_dispatcher_hook`、`generate_frida_unicorn_recapture_hook`、`generate_frida_unicorn_checkpoint_hook`、`inspect_frida_capture`、`search_frida_capture_events`、`get_frida_capture_event`、`infer_frida_abi`、`analyze_frida_crypto_materials`、`analyze_frida_ollvm_dispatcher_capture`、`generate_angr_state_seed`（用户手动执行 Hook） |
 | IDA / angr / Unicorn / OLLVM | `analyze_ollvm`、`compare_ollvm_traces`、`map_ollvm_versions`、`generate_ida_ollvm_script`、`inspect_ida_annotations`、`generate_angr_ollvm_script`、`inspect_angr_ollvm_results`、`generate_unicorn_ollvm_script`、`inspect_unicorn_ollvm_results`、`compare_unicorn_ollvm_rounds` |
 | 证据与编排 | `list_analyses`、`get_analysis`、`compare_analyses`、`auto_investigate` |
 
@@ -106,11 +112,17 @@ claude mcp add trace-ui --transport http http://127.0.0.1:19821/mcp
 
 在“分析历史 > 案件 / Replay Doctor”中新建或打开 `.traceui-case`，再按时间导入 trace、exact ELF、用户捕获的 Frida JSON/NDJSON、手动执行产生的 Unicorn/angr 结果和 IDA/OLLVM/crypto 报告。每个 artifact 保存流式 SHA-256、严格 parser 摘要和 parent artifact provenance；文件被替换、截断或协议失效后，后续结论会被完整性门禁阻断。
 
-Replay Doctor 同时返回三类面向 AI 的结构化信息：
+Replay Doctor 与 Evidence Pack 提供七类面向 AI 的结构化信息：
 
 - `claimLedgerAudit`：检查 supporting/counter evidence、失效 artifact、矛盾结论和 Verified 语义证据门禁。仅有 ELF SHA、OLLVM 结构、Unicorn 或 angr 候选路径时不能升级为 Verified。
 - `stateReadiness`：分别报告 exact ELF、GPR、NZCV、SIMD/FP、栈、pointer/heap、TLS/system state 和 call-boundary checkpoint；`not-executed`、`not-captured`、`unreadable`、`not-observed` 与 `hash-mismatch` 保持不同语义。
 - `experimentMatrix`：按 build SHA-256、key、input、environment 四个轴寻找真正只改变一个变量的 pair、缺失组合和混杂比较。AES/白盒与 OLLVM 跨版本结论应优先使用 controlled pair。
+- `runtimeAttestations`：对每个绑定唯一 exact ELF parent 的 `trace-ui/frida-runtime-attestation-v1` artifact 重新计算计划，报告 `verified-full`、`related-sampled`、`refuted` 或 `incomplete`，以及 matched/mismatched/unreadable/missing windows 和 executable byte coverage。仅 `runtime-image:*` claim 能使用该结构化门禁，不能用描述字符串或单独 ELF SHA 冒充。
+- `cryptoKats`：对导入的 `trace-ui/crypto-semantic-kat-verification-v1` artifact 完整复算；被修改的 status、claimScope、参数或输出会变成 invalid/counter-evidence。只有 exact scope 的 `verified-full` KAT 能支持对应 `crypto:*` claim。
+- `capturePlan`：输出最多 32 个按信息增益排序的补采样目标，包含 artifact/module/offset、所需寄存器与内存、竞争假设、成功条件和 redundancy key；相同状态下不会鼓励重复捕获。
+- `generate_analysis_case_evidence_pack`：在 `max_tokens`（1024–65536）和 `max_items`（16–2048）内选择高优先级 claim、反证、失效 artifact、支持证据与未知项，输出 JSON 或 Markdown，并报告 deterministic token estimate 与所有 omitted counts。AI 必须保留 counter/unknown/invalid 三节，不能只截取 supporting evidence。
+
+提交置信度规则或门禁逻辑前，可用 `run_accuracy_benchmark` 对 1–128 个审阅 fixture 做回归；`gateMet=false` 表示存在误报、漏报、状态/排序漂移或 fixture 错误。
 
 Frida、Unicorn、angr、IDA 和目标程序仍由用户手动执行。Replay Doctor 只组织证据、验证身份和生成下一步，不会自动 attach/spawn，也不会把 OLLVM/模拟结果描述成自动去混淆。
 
@@ -354,7 +366,7 @@ GUI 快速路径：从 Crypto Functions 的 AES 候选点击生成 Hook，进入
 │  │trace-parser│  │ trace-mcp  │  │  trace-cli   │       │
 │  │格式解析    │  │ MCP Server │  │ 独立 MCP 入口 │       │
 │  │unidbg     │  │ HTTP/SSE   │  │ Stdio 传输    │       │
-│  │GumTrace   │  │ 64 个工具  │  │              │       │
+│  │GumTrace   │  │ 78 个工具  │  │              │       │
 │  └──────────┘  └────────────┘  └──────────────┘       │
 └───────────────────────────────────────────────────────┘
 ```
@@ -365,7 +377,7 @@ GUI 快速路径：从 Crypto Functions 的 AES 候选点击生成 Hook，进入
 |-------|------|
 | `trace-parser` | Trace 日志格式解析（unidbg / GumTrace），自动格式检测 |
 | `trace-core` | 核心分析引擎，包含索引构建、污点切片、调用树、内存追踪、寄存器检查点、字符串提取、密码算法扫描等全部分析能力 |
-| `trace-mcp` | MCP 协议层，将 trace-core 的能力通过 70 个 MCP 工具暴露，支持 HTTP/SSE 和 Stdio 两种传输 |
+| `trace-mcp` | MCP 协议层，将 trace-core 的能力通过 78 个 MCP 工具暴露，支持 HTTP/SSE 和 Stdio 两种传输 |
 | `trace-cli` | 独立 MCP Server 入口，供 AI 客户端直接调用 |
 
 **后端**：通过 mmap 零拷贝映射 trace 文件，一遍扫描生成依赖图、调用树、内存访问索引和寄存器检查点，全部通过 bincode 持久化缓存。污点切片采用 BFS 反向传播算法，在预构建的依赖图上完成。

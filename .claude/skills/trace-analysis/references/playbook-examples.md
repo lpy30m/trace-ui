@@ -174,6 +174,35 @@ open_analysis_case{
 }
 ```
 
+If the investigation depends on proving which build was mapped, create a bounded runtime-image plan:
+
+```
+generate_frida_runtime_attestation{
+  module_name:"libtarget.so",
+  static_binary_path:"C:\\samples\\libtarget.so",
+  window_bytes:4096,
+  max_windows:1024
+}
+```
+
+The user saves and runs the generated Frida 16.x script manually. After they provide the output:
+
+```
+inspect_runtime_attestation{
+  capture_path:"C:\\captures\\runtime-attestation.json",
+  exact_binary_path:"C:\\samples\\libtarget.so"
+}
+ingest_analysis_case_artifact{
+  case_path:"C:\\cases\\target.traceui-case",
+  artifact_path:"C:\\captures\\runtime-attestation.json",
+  kind_hint:"runtime-attestation",
+  parent_artifact_ids:["<elf-artifact-id>"]
+}
+```
+
+Import a `refuted` result too: it is valuable counter-evidence. `related-sampled` is never enough for
+Verified; `verified-full` proves only the scoped runtime-image bytes, not AES or OLLVM semantics.
+
 After each user-run Frida/Unicorn/angr/IDA step, import the produced file with explicit parents:
 
 ```
@@ -189,13 +218,15 @@ diagnose_analysis_case{case_path:"C:\\cases\\target.traceui-case"}
 Read the result in this order:
 
 1. `artifactHealth`: stop if any artifact is missing, changed, malformed, wrong-module, or wrong-hash.
-2. `stateReadiness`: treat `not-executed`, `not-captured`, `unreadable`, `not-observed`, and
+2. `runtimeAttestations`: require exact parent provenance. Full executable-byte coverage can open only
+   the `runtime-image:*` gate; sampled, incomplete, and refuted records must not be promoted.
+3. `stateReadiness`: treat `not-executed`, `not-captured`, `unreadable`, `not-observed`, and
    `hash-mismatch` as different causes. Do not convert any of them to "the state does not matter".
-3. `unicornRoundComparison`: continue concrete recapture only when coverage/dispatcher evidence moves;
+4. `unicornRoundComparison`: continue concrete recapture only when coverage/dispatcher evidence moves;
    repeated stalls should use the authorized closer checkpoint, then bounded angr if still necessary.
-4. `claimLedgerAudit`: run `audit_analysis_case_claims` before saying Verified. OLLVM/Unicorn/angr
+5. `claimLedgerAudit`: run `audit_analysis_case_claims` before saying Verified. OLLVM/Unicorn/angr
    structure is Candidate/Related unless deterministic semantic evidence independently passes.
-5. `experimentMatrix`: record build/key/input/environment for every controlled run. Prefer pairs that
+6. `experimentMatrix`: record build/key/input/environment for every controlled run. Prefer pairs that
    differ on exactly one axis.
 
 Record two AES runs that vary only the key:
@@ -216,3 +247,82 @@ upsert_analysis_case_experiment{
 
 The user still runs the target, Frida, Unicorn, angr, and IDA manually. The case tools validate and
 organize evidence; they do not attach, spawn, execute, or claim automatic deobfuscation.
+
+For a bounded AI/model handoff, do not paste the entire case or write a support-only prose summary:
+
+```
+generate_analysis_case_evidence_pack{
+  case_path:"C:\\cases\\target.traceui-case",
+  format:"markdown",
+  max_tokens:8000,
+  max_items:256,
+  include_generated_claims:true
+}
+```
+
+The recipient must read `recommendedMaxStatus`, counter-evidence, unknowns, invalid artifacts, and all
+omitted counts before concluding. Artifact summaries and the Evidence Pack itself are navigation aids,
+not proof; follow the exact artifact ID and locator for any load-bearing assertion.
+
+---
+
+## Example 8 — "Turn an AI crypto/ABI hypothesis into reproducible evidence"
+
+First replace a prose crypto marker with an exact KAT. This example verifies SHA-256(`hello`):
+
+```
+verify_crypto_semantic_kat{
+  algorithm:"sha256",
+  input_hex:"68656c6c6f",
+  observed_output_hex:"2cf24dba5fb0a30e26e83b2ac5b9e29e1b161e5c1fa7425e73043362938b9824",
+  output_path:"C:\\cases\\sha256-kat.json"
+}
+inspect_crypto_semantic_kat{file_path:"C:\\cases\\sha256-kat.json"}
+ingest_analysis_case_artifact{
+  case_path:"C:\\cases\\target.traceui-case",
+  artifact_path:"C:\\cases\\sha256-kat.json",
+  kind_hint:"crypto-kat"
+}
+```
+
+Only `verified-full` plus the exact returned `claimScope` may support that `crypto:*` claim. The KAT
+does not prove which native function produced the bytes, so retain trace/taint evidence for provenance.
+
+If repeated user-run Frida calls have unclear X0-X7 roles:
+
+```
+infer_frida_abi{
+  file_path:"C:\\captures\\encrypt-calls.ndjson",
+  min_observations:2,
+  max_functions:32,
+  max_candidates_per_function:128,
+  output_path:"C:\\cases\\encrypt-abi-candidates.json"
+}
+```
+
+Use pointer+length, mutation, context, field-window, and return candidates to configure the next narrow
+Hook, but keep every result Candidate/Related. Confirm with exact event indices, trace instructions,
+taint, symbols/API contracts, or a controlled counterexample. Never copy a runtime pointer into another
+run or treat it as a module offset.
+
+After importing the new KAT/capture/result, ask Replay Doctor what evidence has the highest value:
+
+```
+diagnose_analysis_case{case_path:"C:\\cases\\target.traceui-case"}
+plan_analysis_case_capture{
+  case_path:"C:\\cases\\target.traceui-case",
+  max_targets:8
+}
+```
+
+Follow the highest target relevant to the active question and record its `redundancyKey`. The score is
+an ordering heuristic, not a probability. Re-run the plan after importing new evidence.
+
+Finally, before changing claim gates or confidence rankings, run a reviewed regression suite:
+
+```
+run_accuracy_benchmark{suite_path:"C:\\cases\\accuracy-suite.json"}
+```
+
+Require `gateMet:true` and inspect FP/FN, unexpected Verified, fixture errors, and ranking drift. Passing
+means the declared fixtures did not regress; it does not turn fixture labels into proof.

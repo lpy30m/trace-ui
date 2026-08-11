@@ -544,6 +544,16 @@ describe("案件工作区准确率门禁", () => {
       warnings: [],
       limitations: [],
     },
+    capturePlan: {
+      schema: "trace-ui/information-gain-capture-plan-v1",
+      status: "no-additional-targets",
+      targetCount: 0,
+      omittedTargetCount: 0,
+      targets: [],
+      limitations: [],
+    },
+    runtimeAttestations: [],
+    cryptoKats: [],
     warnings: [],
     limitations: [],
   };
@@ -612,5 +622,148 @@ describe("案件工作区准确率门禁", () => {
     await user.click(panel.getByRole("button", { name: "运行诊断" }));
     expect(await panel.findByText("Semantic verification")).toBeInTheDocument();
     expect(panel.getByText("Missing exact output bytes.")).toBeInTheDocument();
+  });
+
+  it("生成、严格检查并以 exact ELF parent 导入运行时镜像认证", async () => {
+    const user = userEvent.setup();
+    const exactArtifactId = "elf-runtime-1";
+    const runtimeCase: TraceAnalysisCaseDocument = {
+      ...caseDocument,
+      case: {
+        ...caseDocument.case,
+        exactBinaryArtifactId: exactArtifactId,
+        artifacts: [{
+          artifactId: exactArtifactId,
+          kind: "static-binary",
+          label: "Exact libtarget.so",
+          path: "libtarget.so",
+          sha256: "a".repeat(64),
+          fileSize: 8192,
+          importedAtMs: 1,
+          parentArtifactIds: [],
+          summary: {
+            schema: "elf-identity",
+            moduleName: "libtarget.so",
+            architecture: "AArch64",
+            binarySha256: "a".repeat(64),
+            expectedBinarySha256: "a".repeat(64),
+            exactIdentityMatched: true,
+            captureOffsets: [],
+            eventCount: 0,
+            runCount: 0,
+            warningCount: 0,
+            stopReasonCounts: {},
+            notes: [],
+          },
+        }],
+      },
+    };
+    const generated = {
+      fileName: "runtime-attestation-libtarget.js",
+      moduleName: "libtarget.so",
+      staticBinaryPath: "C:\\samples\\libtarget.so",
+      protocolVersion: "trace-ui/frida-runtime-attestation-v1",
+      fridaApiVersion: "16.x",
+      script: "send(result);",
+      plan: {
+        schema: "trace-ui/frida-runtime-attestation-v1",
+        attestationId: "runtime-attestation-libtarget",
+        moduleName: "libtarget.so",
+        expectedIdentity: {
+          binarySha256: "a".repeat(64), fileSize: 8192, architecture: "AArch64", elfMachine: 183,
+        },
+        loadBaseVaddr: "0x0",
+        expectedMappedSize: 8192,
+        windowBytes: 4096,
+        maxWindows: 1024,
+        coverageStrategy: "full-file-backed-executable-coverage",
+        completeExecutableCoverage: true,
+        totalExecutableBytes: 8192,
+        selectedExecutableBytes: 8192,
+        planSha256: "b".repeat(64),
+        windows: [],
+      },
+      warnings: [],
+    };
+    const inspection = {
+      schema: "trace-ui/runtime-attestation-verification-v1",
+      capturePath: "C:\\captures\\runtime.json",
+      exactBinaryPath: "C:\\samples\\libtarget.so",
+      status: "verified-full",
+      verificationGateMet: true,
+      recordCount: 1,
+      records: [{
+        schema: "trace-ui/runtime-attestation-verification-v1",
+        attestationId: "runtime-attestation-libtarget",
+        moduleName: "libtarget.so",
+        status: "verified-full",
+        verificationGateMet: true,
+        attestedScope: "file-backed executable PT_LOAD bytes",
+        exactBinarySha256: "a".repeat(64),
+        expectedBinarySha256: "a".repeat(64),
+        exactBuildId: null,
+        expectedBuildId: null,
+        planSha256: "b".repeat(64),
+        regeneratedPlanSha256: "b".repeat(64),
+        planMatched: true,
+        moduleSize: 8192,
+        expectedMappedSize: 8192,
+        moduleSizeSufficient: true,
+        completeExecutableCoverage: true,
+        totalExecutableBytes: 8192,
+        selectedExecutableBytes: 8192,
+        matchedExecutableBytes: 8192,
+        matchedWindowCount: 2,
+        mismatchedWindowCount: 0,
+        unreadableWindowCount: 0,
+        missingWindowCount: 0,
+        unexpectedWindowCount: 0,
+        windows: [],
+        evidence: ["all executable bytes matched"],
+        counterEvidence: [],
+        blockers: [],
+        limitations: [],
+      }],
+      warnings: [],
+      limitations: [],
+    };
+
+    localStorage.setItem("trace-ui-analysis-case:session-case", runtimeCase.casePath);
+    mocks.invoke.mockImplementation(async (command: string) => {
+      if (command === "load_analysis_case") return runtimeCase;
+      if (command === "generate_frida_runtime_attestation") return generated;
+      if (command === "inspect_runtime_attestation") return inspection;
+      if (command === "add_analysis_case_artifact") return { case: runtimeCase.case };
+      throw new Error(`unexpected command ${command}`);
+    });
+    const view = render(<AnalysisCasePanel sessionId="session-case" />);
+    const panel = within(view.container);
+    expect(await panel.findByText("运行时镜像认证（手动 Frida）")).toBeInTheDocument();
+
+    mocks.open.mockResolvedValueOnce("C:\\samples\\libtarget.so");
+    await user.click(panel.getByRole("button", { name: "选择 ELF 文件" }));
+    await user.click(panel.getByRole("button", { name: "生成认证脚本" }));
+    expect(await panel.findByText("runtime-attestation-libtarget.js")).toBeInTheDocument();
+    expect(mocks.invoke).toHaveBeenCalledWith("generate_frida_runtime_attestation", {
+      request: {
+        moduleName: "libtarget.so",
+        staticBinaryPath: "C:\\samples\\libtarget.so",
+        windowBytes: 4096,
+        maxWindows: 1024,
+      },
+    });
+
+    mocks.open.mockResolvedValueOnce("C:\\captures\\runtime.json");
+    await user.click(panel.getByRole("button", { name: "检查手动捕获" }));
+    expect((await panel.findAllByText("verified-full")).length).toBeGreaterThan(0);
+    await user.click(panel.getByRole("button", { name: "导入案件（反证也保留）" }));
+    expect(mocks.invoke).toHaveBeenCalledWith("add_analysis_case_artifact", expect.objectContaining({
+      artifactPath: "C:\\captures\\runtime.json",
+      kindHint: "runtime-attestation",
+      parentArtifactIds: [exactArtifactId],
+    }));
+    expect(mocks.invoke.mock.calls.map(call => call[0])).not.toEqual(expect.arrayContaining([
+      "attach_frida", "spawn_frida", "load_frida", "run_frida",
+    ]));
   });
 });

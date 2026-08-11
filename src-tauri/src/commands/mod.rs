@@ -696,6 +696,112 @@ pub async fn save_frida_hook(
 }
 
 #[tauri::command]
+pub async fn generate_frida_runtime_attestation(
+    request: trace_core::FridaRuntimeAttestationRequest,
+) -> Result<trace_core::FridaRuntimeAttestationScript, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        trace_core::generate_frida_runtime_attestation_script(&request)
+    })
+    .await
+    .map_err(|error| format!("Task execution failed: {error}"))?
+}
+
+#[tauri::command]
+pub async fn save_frida_runtime_attestation(
+    path: String,
+    request: trace_core::FridaRuntimeAttestationRequest,
+) -> Result<String, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        let generated = trace_core::generate_frida_runtime_attestation_script(&request)?;
+        let trimmed = path.trim();
+        if trimmed.is_empty() {
+            return Err("output path must not be empty".to_string());
+        }
+        let mut output_path = std::path::PathBuf::from(trimmed);
+        if output_path.extension().and_then(|value| value.to_str()) != Some("js") {
+            output_path.set_extension("js");
+        }
+        let parent = output_path
+            .parent()
+            .filter(|value| !value.as_os_str().is_empty())
+            .ok_or_else(|| "output path must include a parent directory".to_string())?;
+        if !parent.is_dir() {
+            return Err(format!(
+                "output directory does not exist: {}",
+                parent.display()
+            ));
+        }
+        std::fs::write(&output_path, generated.script.as_bytes())
+            .map_err(|error| format!("failed to save runtime attestation script: {error}"))?;
+        Ok(output_path.to_string_lossy().into_owned())
+    })
+    .await
+    .map_err(|error| format!("Task execution failed: {error}"))?
+}
+
+#[tauri::command]
+pub async fn inspect_runtime_attestation(
+    capture_path: String,
+    exact_binary_path: String,
+) -> Result<trace_core::RuntimeAttestationInspectionReport, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        trace_core::inspect_runtime_attestation_capture(&capture_path, &exact_binary_path)
+    })
+    .await
+    .map_err(|error| format!("Task execution failed: {error}"))?
+}
+
+#[tauri::command]
+pub async fn verify_crypto_semantic_kat(
+    request: trace_core::CryptoSemanticKatRequest,
+) -> Result<trace_core::CryptoSemanticKatReport, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        Ok(trace_core::verify_crypto_semantic_kat(&request))
+    })
+    .await
+    .map_err(|error| format!("Task execution failed: {error}"))?
+}
+
+#[tauri::command]
+pub async fn save_crypto_semantic_kat(
+    path: String,
+    request: trace_core::CryptoSemanticKatRequest,
+) -> Result<String, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        let trimmed = path.trim();
+        if trimmed.is_empty() {
+            return Err("output path must not be empty".to_string());
+        }
+        let output_path = std::path::PathBuf::from(trimmed);
+        let parent = output_path
+            .parent()
+            .filter(|value| !value.as_os_str().is_empty())
+            .ok_or_else(|| "output path must include a parent directory".to_string())?;
+        if !parent.is_dir() {
+            return Err(format!(
+                "output directory does not exist: {}",
+                parent.display()
+            ));
+        }
+        trace_core::save_crypto_semantic_kat_report(&output_path.to_string_lossy(), &request)?;
+        Ok(output_path.to_string_lossy().into_owned())
+    })
+    .await
+    .map_err(|error| format!("Task execution failed: {error}"))?
+}
+
+#[tauri::command]
+pub async fn inspect_crypto_semantic_kat(
+    path: String,
+) -> Result<trace_core::CryptoSemanticKatReport, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        trace_core::inspect_crypto_semantic_kat_report(&path)
+    })
+    .await
+    .map_err(|error| format!("Task execution failed: {error}"))?
+}
+
+#[tauri::command]
 pub async fn load_frida_capture(path: String) -> Result<trace_core::FridaCaptureBundle, String> {
     tauri::async_runtime::spawn_blocking(move || {
         let trimmed = path.trim();
@@ -705,6 +811,32 @@ pub async fn load_frida_capture(path: String) -> Result<trace_core::FridaCapture
         let bytes = std::fs::read(trimmed)
             .map_err(|error| format!("failed to read Frida capture: {error}"))?;
         trace_core::parse_frida_capture_bundle(&bytes)
+    })
+    .await
+    .map_err(|error| format!("Task execution failed: {error}"))?
+}
+
+#[tauri::command]
+pub async fn infer_frida_abi(
+    path: String,
+    min_observations: Option<u32>,
+    max_functions: Option<u32>,
+    max_candidates_per_function: Option<u32>,
+    output_path: Option<String>,
+) -> Result<trace_core::FridaAbiInferenceReport, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        let report = trace_core::inspect_frida_abi_capture(
+            &path,
+            &trace_core::FridaAbiInferenceOptions {
+                min_observations: min_observations.unwrap_or(2),
+                max_functions: max_functions.unwrap_or(64),
+                max_candidates_per_function: max_candidates_per_function.unwrap_or(128),
+            },
+        )?;
+        if let Some(output_path) = output_path {
+            trace_core::save_frida_abi_inference(&output_path, &report)?;
+        }
+        Ok(report)
     })
     .await
     .map_err(|error| format!("Task execution failed: {error}"))?
@@ -1884,6 +2016,30 @@ pub async fn diagnose_analysis_case(
             }
         }
         Ok(report)
+    })
+    .await
+    .map_err(|error| format!("Task execution failed: {error}"))?
+}
+
+#[tauri::command]
+pub async fn plan_analysis_case_capture(
+    case_path: String,
+) -> Result<trace_core::InformationGainCapturePlan, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        trace_core::diagnose_trace_analysis_case(&case_path)
+            .map(|report| report.capture_plan)
+            .map_err(|error| error.to_string())
+    })
+    .await
+    .map_err(|error| format!("Task execution failed: {error}"))?
+}
+
+#[tauri::command]
+pub async fn run_accuracy_benchmark(
+    suite_path: String,
+) -> Result<trace_core::AccuracyBenchmarkReport, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        trace_core::run_accuracy_benchmark_file(&suite_path)
     })
     .await
     .map_err(|error| format!("Task execution failed: {error}"))?

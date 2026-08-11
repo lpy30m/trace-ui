@@ -1,3 +1,4 @@
+pub mod accuracy_benchmark;
 pub mod analysis;
 pub mod analysis_case;
 pub mod analysis_task;
@@ -7,6 +8,7 @@ pub mod cache;
 pub mod chunk_scan;
 pub mod engine;
 pub mod error;
+pub mod evidence_pack;
 pub mod flat;
 pub mod line_index;
 pub mod merge;
@@ -19,6 +21,12 @@ pub mod scanner;
 pub mod session;
 pub mod utils;
 
+pub use accuracy_benchmark::{
+    run_accuracy_benchmark_file, run_accuracy_benchmark_suite, AccuracyBenchmarkCase,
+    AccuracyBenchmarkCaseResult, AccuracyBenchmarkClaimExpectation, AccuracyBenchmarkFailure,
+    AccuracyBenchmarkReport, AccuracyBenchmarkSuite, ACCURACY_BENCHMARK_REPORT_SCHEMA,
+    ACCURACY_BENCHMARK_SUITE_SCHEMA,
+};
 pub use analysis::{
     AnalysisComparison, AnalysisEvidence, AnalysisRecord, AnalysisRecordSummary,
     AnalysisReportExport, AnalysisUniqueEvidence, TraceCountDelta, TraceDiffOptions,
@@ -28,21 +36,30 @@ pub use analysis::{
 pub use analysis_case::{
     add_trace_case_artifact, create_trace_analysis_case, diagnose_trace_analysis_case,
     load_trace_analysis_case, resolve_trace_case_artifact_path, save_trace_analysis_case,
-    upsert_trace_case_claim, upsert_trace_case_experiment, ReplayDoctorNextAction,
-    ReplayDoctorReport, ReplayDoctorTimelineEntry, ReplayStateReadinessComponent,
-    ReplayStateReadinessReport, TraceAnalysisCase, TraceAnalysisCaseDocument, TraceCaseArtifact,
-    TraceCaseArtifactHealth, TraceCaseArtifactImportResult, TraceCaseArtifactKind,
-    TraceCaseArtifactSummary, TraceCaseClaim, TraceCaseClaimAuditEntry, TraceCaseClaimLedgerAudit,
-    TraceCaseClaimStatus, TraceCaseControlledExperimentPair, TraceCaseEvidenceRef,
+    upsert_trace_case_claim, upsert_trace_case_experiment, InformationGainCapturePlan,
+    InformationGainCaptureTarget, ReplayDoctorNextAction, ReplayDoctorReport,
+    ReplayDoctorTimelineEntry, ReplayStateReadinessComponent, ReplayStateReadinessReport,
+    TraceAnalysisCase, TraceAnalysisCaseDocument, TraceCaseArtifact, TraceCaseArtifactHealth,
+    TraceCaseArtifactImportResult, TraceCaseArtifactKind, TraceCaseArtifactSummary, TraceCaseClaim,
+    TraceCaseClaimAuditEntry, TraceCaseClaimLedgerAudit, TraceCaseClaimStatus,
+    TraceCaseControlledExperimentPair, TraceCaseCryptoKatReport, TraceCaseEvidenceRef,
     TraceCaseExperiment, TraceCaseExperimentAxis, TraceCaseExperimentCell,
-    TraceCaseExperimentMatrixReport, TraceCaseExperimentRecommendation, CLAIM_LEDGER_AUDIT_SCHEMA,
-    EXPERIMENT_MATRIX_SCHEMA, REPLAY_DOCTOR_SCHEMA, REPLAY_STATE_READINESS_SCHEMA,
+    TraceCaseExperimentMatrixReport, TraceCaseExperimentRecommendation,
+    TraceCaseRuntimeAttestationReport, CLAIM_LEDGER_AUDIT_SCHEMA, EXPERIMENT_MATRIX_SCHEMA,
+    INFORMATION_GAIN_CAPTURE_PLAN_SCHEMA, REPLAY_DOCTOR_SCHEMA, REPLAY_STATE_READINESS_SCHEMA,
     TRACE_ANALYSIS_CASE_SCHEMA,
 };
 pub use analysis_task::{AnalysisTaskInfo, AnalysisTaskStatus};
 pub use api_types::*;
 pub use engine::TraceEngine;
 pub use error::{Result, TraceError};
+pub use evidence_pack::{
+    build_analysis_case_evidence_pack, parse_evidence_locator,
+    render_analysis_case_evidence_pack_markdown, AnalysisCaseEvidencePack,
+    AnalysisCaseEvidencePackRequest, EvidencePackBudget, EvidencePackClaim,
+    EvidencePackEvidenceItem, EvidencePackInvalidArtifact, EvidencePackLocator,
+    EvidencePackUnknown, AI_EVIDENCE_PACK_SCHEMA,
+};
 pub use query::aes_schedule::{expand_aes_key, verify_aes_schedule, AesScheduleVerification};
 pub use query::analysis_summary::{
     summarize_dependency_graph, AnalysisKeyStep, AnalysisOperationCount, AnalysisStringEvidence,
@@ -62,6 +79,14 @@ pub use query::crypto_functions::{
     CryptoFamily, CryptoFunctionCandidate, CryptoFunctionIo, CryptoFunctionReport,
     CryptoFunctionsOptions,
 };
+pub use query::crypto_kat::{
+    inspect_crypto_semantic_kat_report, parse_crypto_semantic_kat_report,
+    save_crypto_semantic_kat_report, verify_crypto_semantic_kat, CryptoKatAlgorithm,
+    CryptoKatDirection, CryptoKatMismatch, CryptoKatStatus, CryptoSemanticKatReport,
+    CryptoSemanticKatRequest, CRYPTO_SEMANTIC_KAT_SCHEMA, CRYPTO_SEMANTIC_KAT_VERIFICATION_SCHEMA,
+    MAX_CRYPTO_KAT_DATA_BYTES, MAX_CRYPTO_KAT_DERIVED_KEY_BYTES, MAX_CRYPTO_KAT_PBKDF2_ITERATIONS,
+    MAX_CRYPTO_KAT_SECRET_BYTES,
+};
 pub use query::crypto_material::{
     CryptoFormula, CryptoMaterial, CryptoMaterialCaseSummary, CryptoMaterialKind,
     CryptoMaterialMultiTraceReport, CryptoMaterialMultiTraceRequest, CryptoMaterialOptions,
@@ -75,9 +100,18 @@ pub use query::detection_doctor::{
     build_crypto_detection_doctor_report, CryptoDetectionDoctorReport, CryptoDetectionStage,
     CRYPTO_DETECTION_DOCTOR_SCHEMA,
 };
-pub use query::elf_identity::{inspect_elf_binary, ElfBinaryIdentity};
+pub use query::elf_identity::{
+    inspect_elf_binary, inspect_elf_layout, inspect_elf_layout_bytes, ElfBinaryIdentity,
+    ElfBinaryLayout, ElfBuildIdLocation, ElfLoadSegment,
+};
 pub use query::evidence_score::{
     score_evidence, EvidenceAssessment, EvidenceScoreFactor, EvidenceScoreSignal,
+};
+pub use query::frida_abi::{
+    infer_frida_abi, inspect_frida_abi_capture, save_frida_abi_inference,
+    FridaAbiArgumentCandidate, FridaAbiInferenceOptions, FridaAbiInferenceReport,
+    FridaContextPointerCandidate, FridaFunctionAbiInference, FridaPointerLengthPairCandidate,
+    FridaReturnCandidate, FridaStructFieldCandidate, FRIDA_ABI_INFERENCE_SCHEMA,
 };
 pub use query::frida_capture::{
     analyze_frida_crypto_materials, generate_angr_state_seed, get_frida_capture_event,
@@ -128,6 +162,17 @@ pub use query::ollvm::{
     OllvmStateRegisterMatch, OllvmTraceCase, OllvmVersionBlockCandidate,
     OllvmVersionDispatcherMapping, OllvmVersionMapReport, OllvmVersionMapRequest,
     OllvmVersionSummary, OllvmVersionTargetMapping, OllvmVersionTraceCase, OpaqueBranchCandidate,
+};
+pub use query::runtime_attestation::{
+    build_runtime_attestation_plan, generate_frida_runtime_attestation_script,
+    inspect_runtime_attestation_capture, parse_runtime_attestation_capture_bundle,
+    verify_runtime_attestation_bundle, verify_runtime_attestation_record,
+    FridaRuntimeAttestationRequest, FridaRuntimeAttestationScript, RuntimeAttestationCaptureBundle,
+    RuntimeAttestationExpectedIdentity, RuntimeAttestationInspectionReport, RuntimeAttestationPlan,
+    RuntimeAttestationRecord, RuntimeAttestationVerificationReport,
+    RuntimeAttestationWindowCapture, RuntimeAttestationWindowKind, RuntimeAttestationWindowPlan,
+    RuntimeAttestationWindowVerification, FRIDA_RUNTIME_ATTESTATION_SCHEMA,
+    RUNTIME_ATTESTATION_VERIFICATION_SCHEMA,
 };
 pub use query::software_aes::{
     AesKeyScheduleEvidence, AesSboxFingerprint,

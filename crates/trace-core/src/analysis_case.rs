@@ -11,12 +11,20 @@ use sha2::{Digest, Sha256};
 use crate::analysis::AnalysisRecord;
 use crate::error::{Result, TraceError};
 use crate::query::angr::{parse_angr_ollvm_result_bundle, AngrOllvmResultBundle};
+use crate::query::crypto_kat::{
+    parse_crypto_semantic_kat_report, CryptoKatStatus, CryptoSemanticKatReport,
+    CRYPTO_SEMANTIC_KAT_VERIFICATION_SCHEMA,
+};
 use crate::query::elf_identity::{inspect_elf_binary, ElfBinaryIdentity};
 use crate::query::frida_capture::{
     parse_frida_capture_bundle, FridaCaptureBundle, FridaCaptureEvent,
 };
 use crate::query::frida_checkpoint::unicorn_checkpoint_offsets;
 use crate::query::ollvm::{parse_ida_annotation_bundle, IdaAnnotationBundle, OllvmReport};
+use crate::query::runtime_attestation::{
+    parse_runtime_attestation_capture_bundle, verify_runtime_attestation_bundle,
+    RuntimeAttestationCaptureBundle, RuntimeAttestationInspectionReport,
+};
 use crate::query::unicorn::{parse_unicorn_ollvm_result_bundle, UnicornOllvmResultBundle};
 use crate::query::unicorn_compare::{
     compare_unicorn_ollvm_rounds, UnicornOllvmRoundComparisonReport, UnicornOllvmRoundInput,
@@ -28,6 +36,7 @@ pub const REPLAY_DOCTOR_SCHEMA: &str = "trace-ui/replay-doctor-v1";
 pub const CLAIM_LEDGER_AUDIT_SCHEMA: &str = "trace-ui/claim-ledger-audit-v1";
 pub const REPLAY_STATE_READINESS_SCHEMA: &str = "trace-ui/replay-state-readiness-v1";
 pub const EXPERIMENT_MATRIX_SCHEMA: &str = "trace-ui/experiment-matrix-v1";
+pub const INFORMATION_GAIN_CAPTURE_PLAN_SCHEMA: &str = "trace-ui/information-gain-capture-plan-v1";
 const MAX_CASE_FILE_BYTES: u64 = 16 * 1024 * 1024;
 const MAX_ARTIFACT_IMPORT_BYTES: u64 = 64 * 1024 * 1024;
 const MAX_ARTIFACTS: usize = 512;
@@ -47,12 +56,14 @@ fn now_ms() -> u64 {
 pub enum TraceCaseArtifactKind {
     Trace,
     StaticBinary,
+    RuntimeAttestation,
     FridaCapture,
     UnicornResult,
     AngrResult,
     IdaAnnotations,
     OllvmReport,
     AnalysisReport,
+    CryptoKat,
     CryptoReport,
     Other,
 }
@@ -62,12 +73,14 @@ impl TraceCaseArtifactKind {
         match self {
             Self::Trace => "trace",
             Self::StaticBinary => "static-binary",
+            Self::RuntimeAttestation => "runtime-attestation",
             Self::FridaCapture => "frida-capture",
             Self::UnicornResult => "unicorn-result",
             Self::AngrResult => "angr-result",
             Self::IdaAnnotations => "ida-annotations",
             Self::OllvmReport => "ollvm-report",
             Self::AnalysisReport => "analysis-report",
+            Self::CryptoKat => "crypto-kat",
             Self::CryptoReport => "crypto-report",
             Self::Other => "other",
         }
@@ -77,12 +90,14 @@ impl TraceCaseArtifactKind {
         match value.trim().to_ascii_lowercase().replace('_', "-").as_str() {
             "trace" | "trace-log" | "log" => Ok(Self::Trace),
             "static-binary" | "binary" | "elf" | "so" => Ok(Self::StaticBinary),
+            "runtime-attestation" | "attestation" | "runtime-image" => Ok(Self::RuntimeAttestation),
             "frida-capture" | "frida" => Ok(Self::FridaCapture),
             "unicorn-result" | "unicorn" => Ok(Self::UnicornResult),
             "angr-result" | "angr" => Ok(Self::AngrResult),
             "ida-annotations" | "ida" => Ok(Self::IdaAnnotations),
             "ollvm-report" | "ollvm" => Ok(Self::OllvmReport),
             "analysis-report" | "analysis" => Ok(Self::AnalysisReport),
+            "crypto-kat" | "kat" | "crypto-semantic-kat" => Ok(Self::CryptoKat),
             "crypto-report" | "crypto" => Ok(Self::CryptoReport),
             "other" => Ok(Self::Other),
             other => Err(format!("unsupported case artifact kind: {other}")),
@@ -105,6 +120,28 @@ pub struct TraceCaseArtifactSummary {
     pub expected_binary_sha256: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub exact_identity_matched: Option<bool>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub runtime_attestation_status: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub runtime_attestation_verification_gate_met: Option<bool>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub crypto_kat_algorithm: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub crypto_kat_status: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub crypto_kat_verification_gate_met: Option<bool>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub crypto_kat_claim_scope: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub crypto_kat_bytes_checked: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub complete_executable_coverage: Option<bool>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub total_executable_bytes: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub selected_executable_bytes: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub matched_executable_bytes: Option<u64>,
     #[serde(default)]
     pub capture_offsets: Vec<String>,
     #[serde(default)]
@@ -277,6 +314,42 @@ pub struct ReplayDoctorNextAction {
 
 #[derive(Clone, Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
+pub struct InformationGainCaptureTarget {
+    pub rank: u32,
+    pub information_gain_score: u8,
+    pub action: String,
+    pub target_kind: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub tool_name: Option<String>,
+    pub artifact_ids: Vec<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub module_name: Option<String>,
+    pub module_relative_offsets: Vec<String>,
+    pub registers: Vec<String>,
+    pub memory_requirements: Vec<String>,
+    pub controlled_variables: Vec<String>,
+    pub resolves_claim_ids: Vec<String>,
+    pub competing_hypotheses: Vec<String>,
+    pub reason: String,
+    pub success_criteria: String,
+    pub manual_execution_required: bool,
+    pub evidence_level: String,
+    pub redundancy_key: String,
+}
+
+#[derive(Clone, Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct InformationGainCapturePlan {
+    pub schema: String,
+    pub status: String,
+    pub target_count: u64,
+    pub omitted_target_count: u64,
+    pub targets: Vec<InformationGainCaptureTarget>,
+    pub limitations: Vec<String>,
+}
+
+#[derive(Clone, Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
 pub struct TraceCaseClaimAuditEntry {
     pub claim_id: String,
     pub source: String,
@@ -411,21 +484,41 @@ pub struct ReplayDoctorReport {
     pub claim_ledger_audit: TraceCaseClaimLedgerAudit,
     pub state_readiness: ReplayStateReadinessReport,
     pub experiment_matrix: TraceCaseExperimentMatrixReport,
+    pub capture_plan: InformationGainCapturePlan,
+    pub runtime_attestations: Vec<TraceCaseRuntimeAttestationReport>,
+    pub crypto_kats: Vec<TraceCaseCryptoKatReport>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub unicorn_round_comparison: Option<UnicornOllvmRoundComparisonReport>,
     pub warnings: Vec<String>,
     pub limitations: Vec<String>,
 }
 
+#[derive(Clone, Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct TraceCaseRuntimeAttestationReport {
+    pub artifact_id: String,
+    pub exact_binary_artifact_id: String,
+    pub report: RuntimeAttestationInspectionReport,
+}
+
+#[derive(Clone, Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct TraceCaseCryptoKatReport {
+    pub artifact_id: String,
+    pub report: CryptoSemanticKatReport,
+}
+
 enum ParsedCaseArtifact {
     Trace,
     StaticBinary(ElfBinaryIdentity),
+    RuntimeAttestation(RuntimeAttestationCaptureBundle),
     Frida(FridaCaptureBundle),
     Unicorn(UnicornOllvmResultBundle),
     Angr(AngrOllvmResultBundle),
     Ida(IdaAnnotationBundle),
     Ollvm(OllvmReport),
     Analysis(AnalysisRecord),
+    CryptoKat(CryptoSemanticKatReport),
     Crypto(Value),
     Other(Option<Value>),
 }
@@ -519,6 +612,107 @@ fn frida_capture_offsets(bundle: &FridaCaptureBundle) -> Vec<String> {
     }))
 }
 
+fn runtime_attestation_capture_summary(
+    bundle: &RuntimeAttestationCaptureBundle,
+) -> TraceCaseArtifactSummary {
+    let module_names = bundle
+        .records
+        .iter()
+        .map(|record| record.module_name.clone())
+        .collect::<BTreeSet<_>>();
+    let expected_hashes = bundle
+        .records
+        .iter()
+        .map(|record| record.expected_binary_sha256.to_ascii_lowercase())
+        .collect::<BTreeSet<_>>();
+    TraceCaseArtifactSummary {
+        schema: Some(bundle.schema.clone()),
+        module_name: (module_names.len() == 1)
+            .then(|| module_names.iter().next().cloned())
+            .flatten(),
+        binary_sha256: (expected_hashes.len() == 1)
+            .then(|| expected_hashes.iter().next().cloned())
+            .flatten(),
+        expected_binary_sha256: (expected_hashes.len() == 1)
+            .then(|| expected_hashes.iter().next().cloned())
+            .flatten(),
+        runtime_attestation_status: Some("capture-unverified".to_string()),
+        runtime_attestation_verification_gate_met: Some(false),
+        complete_executable_coverage: Some(
+            !bundle.records.is_empty()
+                && bundle
+                    .records
+                    .iter()
+                    .all(|record| record.complete_executable_coverage),
+        ),
+        total_executable_bytes: bundle
+            .records
+            .iter()
+            .map(|record| record.total_executable_bytes)
+            .max(),
+        selected_executable_bytes: bundle
+            .records
+            .iter()
+            .map(|record| record.selected_executable_bytes)
+            .max(),
+        matched_executable_bytes: None,
+        event_count: bundle.records.len() as u64,
+        warning_count: bundle.warnings.len() as u64
+            + bundle
+                .records
+                .iter()
+                .map(|record| record.warnings.len() as u64)
+                .sum::<u64>(),
+        notes: vec![
+            "This is a user-captured runtime-image record; its hashes are recomputed against the bound exact ELF before any claim gate can pass."
+                .to_string(),
+        ],
+        ..Default::default()
+    }
+}
+
+fn apply_runtime_attestation_report_summary(
+    summary: &mut TraceCaseArtifactSummary,
+    report: &RuntimeAttestationInspectionReport,
+) {
+    summary.runtime_attestation_status = Some(report.status.clone());
+    summary.runtime_attestation_verification_gate_met = Some(report.verification_gate_met);
+    summary.exact_identity_matched = Some(
+        !report.records.is_empty()
+            && report.records.iter().all(|record| {
+                record
+                    .exact_binary_sha256
+                    .eq_ignore_ascii_case(&record.expected_binary_sha256)
+            }),
+    );
+    summary.complete_executable_coverage = Some(
+        !report.records.is_empty()
+            && report
+                .records
+                .iter()
+                .all(|record| record.complete_executable_coverage),
+    );
+    summary.total_executable_bytes = report
+        .records
+        .iter()
+        .map(|record| record.total_executable_bytes)
+        .max();
+    summary.selected_executable_bytes = report
+        .records
+        .iter()
+        .map(|record| record.selected_executable_bytes)
+        .max();
+    summary.matched_executable_bytes = report
+        .records
+        .iter()
+        .map(|record| record.matched_executable_bytes)
+        .max();
+    summary.notes.push(format!(
+        "Strict exact-ELF verification status: {} (gateMet={}).",
+        report.status, report.verification_gate_met
+    ));
+}
+
 fn inspect_with_kind(path: &Path, kind: TraceCaseArtifactKind) -> Result<ArtifactInspection> {
     match kind {
         TraceCaseArtifactKind::Trace => Ok(ArtifactInspection {
@@ -558,6 +752,16 @@ fn inspect_with_kind(path: &Path, kind: TraceCaseArtifactKind) -> Result<Artifac
                     ..Default::default()
                 },
                 parsed: ParsedCaseArtifact::StaticBinary(identity),
+            })
+        }
+        TraceCaseArtifactKind::RuntimeAttestation => {
+            let bytes = read_bounded(path, MAX_ARTIFACT_IMPORT_BYTES, "runtime attestation")?;
+            let bundle = parse_runtime_attestation_capture_bundle(&bytes)
+                .map_err(TraceError::InvalidArgument)?;
+            Ok(ArtifactInspection {
+                kind,
+                summary: runtime_attestation_capture_summary(&bundle),
+                parsed: ParsedCaseArtifact::RuntimeAttestation(bundle),
             })
         }
         TraceCaseArtifactKind::FridaCapture => {
@@ -620,6 +824,7 @@ fn inspect_with_kind(path: &Path, kind: TraceCaseArtifactKind) -> Result<Artifac
                         "Unicorn is bounded concrete replay and remains Candidate/Related evidence."
                             .to_string(),
                     ],
+                    ..Default::default()
                 },
                 parsed: ParsedCaseArtifact::Unicorn(bundle),
             })
@@ -738,6 +943,34 @@ fn inspect_with_kind(path: &Path, kind: TraceCaseArtifactKind) -> Result<Artifac
                 parsed: ParsedCaseArtifact::Analysis(record),
             })
         }
+        TraceCaseArtifactKind::CryptoKat => {
+            let bytes = read_bounded(path, MAX_ARTIFACT_IMPORT_BYTES, "crypto KAT report")?;
+            let report = parse_crypto_semantic_kat_report(&bytes)
+                .map_err(TraceError::InvalidArgument)?;
+            Ok(ArtifactInspection {
+                kind,
+                summary: TraceCaseArtifactSummary {
+                    schema: Some(report.schema.clone()),
+                    crypto_kat_algorithm: Some(report.algorithm.as_str().to_string()),
+                    crypto_kat_status: Some(report.status.as_str().to_string()),
+                    crypto_kat_verification_gate_met: Some(report.verification_gate_met),
+                    crypto_kat_claim_scope: Some(report.claim_scope.clone()),
+                    crypto_kat_bytes_checked: Some(
+                        report.bytes_checked.saturating_add(report.tag_bytes_checked),
+                    ),
+                    event_count: 1,
+                    warning_count: u64::from(report.status == CryptoKatStatus::Invalid),
+                    notes: vec![
+                        "This report is accepted only after its embedded vector is deterministically recomputed; it proves one exact vector, not function provenance or runtime reachability."
+                            .to_string(),
+                        "The artifact contains sensitive key/password/input/output material."
+                            .to_string(),
+                    ],
+                    ..Default::default()
+                },
+                parsed: ParsedCaseArtifact::CryptoKat(report),
+            })
+        }
         TraceCaseArtifactKind::CryptoReport => {
             let bytes = read_bounded(path, MAX_ARTIFACT_IMPORT_BYTES, "crypto report")?;
             let value: Value = serde_json::from_slice(&bytes).map_err(|error| {
@@ -823,6 +1056,16 @@ fn detect_artifact_kind(path: &Path) -> Result<TraceCaseArtifactKind> {
         return Ok(TraceCaseArtifactKind::Other);
     }
     let bytes = std::fs::read(path)?;
+    if parse_runtime_attestation_capture_bundle(&bytes).is_ok() {
+        return Ok(TraceCaseArtifactKind::RuntimeAttestation);
+    }
+    if let Ok(value) = serde_json::from_slice::<Value>(&bytes) {
+        if value.get("schema").and_then(Value::as_str)
+            == Some(CRYPTO_SEMANTIC_KAT_VERIFICATION_SCHEMA)
+        {
+            return Ok(TraceCaseArtifactKind::CryptoKat);
+        }
+    }
     if parse_unicorn_ollvm_result_bundle(&bytes).is_ok() {
         return Ok(TraceCaseArtifactKind::UnicornResult);
     }
@@ -904,6 +1147,11 @@ fn validate_case(case: &TraceAnalysisCase) -> Result<()> {
             )));
         }
     }
+    let artifact_kind_by_id = case
+        .artifacts
+        .iter()
+        .map(|artifact| (artifact.artifact_id.as_str(), artifact.kind))
+        .collect::<BTreeMap<_, _>>();
     for artifact in &case.artifacts {
         let mut parents = HashSet::new();
         for parent in &artifact.parent_artifact_ids {
@@ -913,6 +1161,22 @@ fn validate_case(case: &TraceAnalysisCase) -> Result<()> {
             {
                 return Err(TraceError::InvalidArgument(format!(
                     "artifact {} has an invalid parent reference: {parent}",
+                    artifact.artifact_id
+                )));
+            }
+        }
+        if artifact.kind == TraceCaseArtifactKind::RuntimeAttestation {
+            let static_binary_parent_count = artifact
+                .parent_artifact_ids
+                .iter()
+                .filter(|parent| {
+                    artifact_kind_by_id.get(parent.as_str())
+                        == Some(&TraceCaseArtifactKind::StaticBinary)
+                })
+                .count();
+            if static_binary_parent_count != 1 {
+                return Err(TraceError::InvalidArgument(format!(
+                    "runtime attestation artifact {} must bind exactly one static-binary parent",
                     artifact.artifact_id
                 )));
             }
@@ -1206,18 +1470,91 @@ pub fn add_trace_case_artifact(
             )));
         }
     }
-    let (artifact, _) = artifact_from_path(
+    let (mut artifact, parsed) = artifact_from_path(
         Path::new(case_path),
         Path::new(artifact_path),
         kind_hint,
         label,
-        parent_artifact_ids,
+        parent_artifact_ids.clone(),
     )?;
+    if artifact.kind == TraceCaseArtifactKind::RuntimeAttestation {
+        let mut static_binary_parent_ids = artifact
+            .parent_artifact_ids
+            .iter()
+            .filter(|parent_id| {
+                document.case.artifacts.iter().any(|candidate| {
+                    candidate.artifact_id == **parent_id
+                        && candidate.kind == TraceCaseArtifactKind::StaticBinary
+                })
+            })
+            .cloned()
+            .collect::<Vec<_>>();
+        if static_binary_parent_ids.is_empty() {
+            let selected = document
+                .case
+                .exact_binary_artifact_id
+                .as_ref()
+                .and_then(|artifact_id| {
+                    document.case.artifacts.iter().find(|candidate| {
+                        candidate.artifact_id == *artifact_id
+                            && candidate.kind == TraceCaseArtifactKind::StaticBinary
+                    })
+                })
+                .ok_or_else(|| {
+                    TraceError::InvalidArgument(
+                        "import the exact AArch64 ELF before importing a runtime attestation, or pass its static-binary artifact ID as the parent"
+                            .to_string(),
+                    )
+                })?;
+            artifact
+                .parent_artifact_ids
+                .push(selected.artifact_id.clone());
+            static_binary_parent_ids.push(selected.artifact_id.clone());
+        }
+        static_binary_parent_ids.sort();
+        static_binary_parent_ids.dedup();
+        if static_binary_parent_ids.len() != 1 {
+            return Err(TraceError::InvalidArgument(
+                "a runtime attestation must bind exactly one static-binary parent".to_string(),
+            ));
+        }
+        artifact.parent_artifact_ids.sort();
+        artifact.parent_artifact_ids.dedup();
+        let exact_binary = document
+            .case
+            .artifacts
+            .iter()
+            .find(|candidate| candidate.artifact_id == static_binary_parent_ids[0])
+            .ok_or_else(|| {
+                TraceError::InvalidArgument(
+                    "runtime attestation static-binary parent was not found".to_string(),
+                )
+            })?;
+        let exact_binary_path = resolve_trace_case_artifact_path(case_path, &exact_binary.path)?;
+        let capture_path = resolve_trace_case_artifact_path(case_path, &artifact.path)?;
+        let ParsedCaseArtifact::RuntimeAttestation(bundle) = &parsed else {
+            return Err(TraceError::Internal(
+                "runtime attestation parser returned an unexpected artifact type".to_string(),
+            ));
+        };
+        let report = verify_runtime_attestation_bundle(
+            bundle,
+            &capture_path.to_string_lossy(),
+            &exact_binary_path.to_string_lossy(),
+        )
+        .map_err(TraceError::InvalidArgument)?;
+        apply_runtime_attestation_report_summary(&mut artifact.summary, &report);
+    }
     if let Some(existing) = document
         .case
         .artifacts
         .iter()
-        .find(|existing| existing.kind == artifact.kind && existing.sha256 == artifact.sha256)
+        .find(|existing| {
+            existing.kind == artifact.kind
+                && existing.sha256 == artifact.sha256
+                && (artifact.kind != TraceCaseArtifactKind::RuntimeAttestation
+                    || existing.parent_artifact_ids == artifact.parent_artifact_ids)
+        })
         .cloned()
     {
         return Ok(TraceCaseArtifactImportResult {
@@ -1469,28 +1806,13 @@ fn normalized_claim_key(claim: &TraceCaseClaim) -> String {
     format!("{scope}\0{statement}")
 }
 
-fn evidence_has_semantic_verification_marker(evidence: &TraceCaseEvidenceRef) -> bool {
-    let text = format!("{} {}", evidence.locator, evidence.description).to_ascii_lowercase();
-    [
-        "semantic",
-        "known-answer",
-        "known answer",
-        "byte-for-byte",
-        "exact output",
-        "digest match",
-        "mac verified",
-        "verification gate",
-        "round-trip",
-    ]
-    .iter()
-    .any(|marker| text.contains(marker))
-}
-
 fn build_claim_ledger_audit(
     persisted_claims: &[TraceCaseClaim],
     generated_claims: &[TraceCaseClaim],
     artifacts: &[TraceCaseArtifact],
     health: &[TraceCaseArtifactHealth],
+    runtime_attestations: &[TraceCaseRuntimeAttestationReport],
+    crypto_kats: &[TraceCaseCryptoKatReport],
 ) -> TraceCaseClaimLedgerAudit {
     let artifact_by_id = artifacts
         .iter()
@@ -1517,7 +1839,8 @@ fn build_claim_ledger_audit(
         let mut valid_counter = 0u64;
         let mut invalid_evidence = 0u64;
         let mut evidence_kinds = Vec::new();
-        let mut semantic_marker = false;
+        let mut runtime_attestation_gate_met = false;
+        let mut crypto_kat_gate_met = false;
         for (evidence, counter) in claim
             .supporting_evidence
             .iter()
@@ -1548,13 +1871,39 @@ fn build_claim_ledger_audit(
                 valid_counter += 1;
             } else {
                 valid_supporting += 1;
-                semantic_marker |= evidence_has_semantic_verification_marker(evidence);
+                runtime_attestation_gate_met |= artifact.is_some_and(|artifact| {
+                    artifact.kind == TraceCaseArtifactKind::RuntimeAttestation
+                        && runtime_attestations.iter().any(|attestation| {
+                            attestation.artifact_id == artifact.artifact_id
+                                && attestation.report.status == "verified-full"
+                                && attestation.report.verification_gate_met
+                        })
+                });
+                crypto_kat_gate_met |= artifact.is_some_and(|artifact| {
+                    artifact.kind == TraceCaseArtifactKind::CryptoKat
+                        && crypto_kats.iter().any(|kat| {
+                            kat.artifact_id == artifact.artifact_id
+                                && kat.report.status == CryptoKatStatus::VerifiedFull
+                                && kat.report.verification_gate_met
+                                && kat.report.claim_scope == claim.scope
+                        })
+                });
             }
         }
         evidence_kinds.sort_by_key(|kind| kind.as_str());
 
         let mut blockers = Vec::new();
         let mut notes = Vec::new();
+        let runtime_image_scope = claim
+            .scope
+            .trim()
+            .to_ascii_lowercase()
+            .starts_with("runtime-image:");
+        let crypto_scope = claim
+            .scope
+            .trim()
+            .to_ascii_lowercase()
+            .starts_with("crypto:");
         if invalid_evidence > 0 {
             blockers.push(format!(
                 "{invalid_evidence} evidence reference(s) point to an invalid, changed, or malformed artifact."
@@ -1574,11 +1923,23 @@ fn build_claim_ledger_audit(
                 "{valid_counter} valid counter-evidence reference(s) must be resolved before retaining this status."
             ));
         }
-        if claim.status == TraceCaseClaimStatus::Verified && !semantic_marker {
-            blockers.push(
-                "Verified requires an explicit deterministic semantic/known-answer/output-match evidence locator; structural or SHA-only evidence is insufficient."
-                    .to_string(),
-            );
+        if claim.status == TraceCaseClaimStatus::Verified {
+            if runtime_image_scope && !runtime_attestation_gate_met {
+                blockers.push(
+                    "A runtime-image:* Verified claim requires a valid runtime-attestation artifact whose exact-ELF recomputation status is verified-full; evidence descriptions or SHA-only artifacts cannot open this gate."
+                        .to_string(),
+                );
+            } else if crypto_scope && !crypto_kat_gate_met {
+                blockers.push(
+                    "A crypto:* Verified claim requires a valid crypto-kat artifact whose embedded parameters and output were strictly recomputed as verified-full, and whose exact claimScope matches this claim; evidence locator or description text cannot open this gate."
+                        .to_string(),
+                );
+            } else if !runtime_image_scope && !crypto_scope {
+                blockers.push(
+                    "This claim scope has no implemented structured Verified gate. Free-text semantic/known-answer markers, structural reports, simulation results, and SHA-only evidence cannot open a gate; retain Observed/Related until a dedicated deterministic protocol exists."
+                        .to_string(),
+                );
+            }
         }
         if claim.status == TraceCaseClaimStatus::Refuted && valid_counter == 0 {
             blockers.push(
@@ -1597,7 +1958,8 @@ fn build_claim_ledger_audit(
         } else if valid_supporting == 0 {
             TraceCaseClaimStatus::Unknown
         } else if claim.status == TraceCaseClaimStatus::Verified
-            && semantic_marker
+            && ((runtime_image_scope && runtime_attestation_gate_met)
+                || (crypto_scope && crypto_kat_gate_met))
             && invalid_evidence == 0
             && claim.missing_evidence.is_empty()
         {
@@ -1685,7 +2047,9 @@ fn build_claim_ledger_audit(
         claims,
         contradictions,
         limitations: vec![
-            "The ledger audit checks provenance, artifact integrity, counter-evidence, and explicit semantic markers; it does not independently prove the claim statement."
+            "The ledger audit checks provenance, artifact integrity, counter-evidence, and structured runtime-image/crypto gates; it does not independently prove claim statements outside those bounded scopes."
+                .to_string(),
+            "runtime-image:* claims require verified-full runtime attestation, while crypto:* claims require an exact-scope verified-full crypto KAT; neither gate can verify OLLVM structure, reachability, or simulator completeness."
                 .to_string(),
             "OLLVM, Unicorn, and angr structural evidence cannot pass the Verified gate by itself."
                 .to_string(),
@@ -2559,6 +2923,468 @@ fn build_experiment_matrix(
     }
 }
 
+fn capture_target_kind(action: &str) -> &'static str {
+    if action.contains("integrity") {
+        "artifact-integrity"
+    } else if action.contains("runtime-attestation") || action.contains("runtime-image") {
+        "runtime-image"
+    } else if action.contains("crypto-kat") {
+        "crypto-semantic"
+    } else if action.contains("elf") {
+        "exact-binary"
+    } else if action.contains("checkpoint") || action.contains("call-boundary") {
+        "closer-checkpoint"
+    } else if action.contains("recapture") || action.contains("runtime-state") {
+        "register-memory-state"
+    } else if action.contains("unicorn") || action.contains("angr") {
+        "bounded-simulation"
+    } else if action.starts_with("vary-only-")
+        || action.contains("matrix")
+        || action.contains("cross-build")
+    {
+        "controlled-run"
+    } else if action.contains("claim") {
+        "claim-resolution"
+    } else {
+        "evidence-follow-up"
+    }
+}
+
+fn capture_information_gain_score(action: &str, priority: u8) -> u8 {
+    match action {
+        "fix-artifact-integrity" | "resolve-runtime-image-mismatch" | "select-exact-elf" => 100,
+        "resolve-claim-counter-evidence" => 98,
+        "generate-unicorn-from-checkpoint" | "generate-closer-checkpoint-hook" => 96,
+        "replace-invalid-crypto-kat" => 95,
+        "capture-full-runtime-attestation" | "recapture-runtime-attestation" => 94,
+        "generate-frida-recapture-hook" | "capture-exact-runtime-state" => 92,
+        "generate-runtime-attestation" => 90,
+        "switch-stalled-seeds-to-bounded-angr" => 86,
+        "generate-first-unicorn-replay" => 82,
+        "vary-only-key" | "vary-only-input" | "align-cross-build-controls" => 80,
+        _ => priority,
+    }
+}
+
+fn controlled_variables_for_action(action: &str) -> Vec<String> {
+    match action {
+        "vary-only-key" => vec![
+            "change:keyGroup".to_string(),
+            "hold:binarySha256,inputGroup,environmentGroup".to_string(),
+        ],
+        "vary-only-input" => vec![
+            "change:inputGroup".to_string(),
+            "hold:binarySha256,keyGroup,environmentGroup".to_string(),
+        ],
+        "align-cross-build-controls" => vec![
+            "change:binarySha256".to_string(),
+            "hold:keyGroup,inputGroup,environmentGroup".to_string(),
+        ],
+        "fill-missing-matrix-cell" => {
+            vec!["use:declared-missing-build/key/input/environment-cell".to_string()]
+        }
+        _ => Vec::new(),
+    }
+}
+
+fn competing_hypotheses_for_action(action: &str) -> Vec<String> {
+    if action.contains("runtime-attestation") || action.contains("runtime-image") {
+        vec![
+            "The selected exact ELF is the image mapped for the observed run.".to_string(),
+            "A different, patched, repacked, or partially unreadable runtime image produced the evidence."
+                .to_string(),
+        ]
+    } else if action.contains("crypto-kat") {
+        vec![
+            "The recorded algorithm and parameters reproduce the observed output exactly.".to_string(),
+            "At least one algorithm, parameter, direction, input boundary, output, or tag assumption is wrong."
+                .to_string(),
+        ]
+    } else if action.contains("recapture") || action.contains("runtime-state") {
+        vec![
+            "Replay stopped or diverged because required register/memory state was missing."
+                .to_string(),
+            "Replay has sufficient state and the divergence reflects unsupported semantics or a wrong seed/ELF."
+                .to_string(),
+        ]
+    } else if action.contains("checkpoint") || action.contains("call-boundary") {
+        vec![
+            "The real target returns through the authorized continuation with state needed for forward progress."
+                .to_string(),
+            "The call does not return through that continuation or later behavior depends on uncaptured state."
+                .to_string(),
+        ]
+    } else if action.starts_with("vary-only-") || action.contains("cross-build") {
+        vec![
+            "The changed controlled axis causes the observed crypto/control-flow difference."
+                .to_string(),
+            "The difference is explained by an uncontrolled build, input, key, or environment variable."
+                .to_string(),
+        ]
+    } else if action.contains("unicorn") || action.contains("angr") {
+        vec![
+            "The exact captured state continues to the candidate successor within the bounded model."
+                .to_string(),
+            "The continuation stalls, diverges, or remains underconstrained within the explicit bounds."
+                .to_string(),
+        ]
+    } else {
+        Vec::new()
+    }
+}
+
+fn success_criteria_for_action(action: &str) -> String {
+    match action {
+        "fix-artifact-integrity" => {
+            "Every referenced artifact again matches its imported size/SHA-256 and strict parser."
+                .to_string()
+        }
+        "resolve-runtime-image-mismatch" | "capture-full-runtime-attestation" => {
+            "The strict report is either verified-full across every file-backed executable PT_LOAD byte or retains an exact mismatched/unreadable window as counter-evidence."
+                .to_string()
+        }
+        "generate-runtime-attestation" | "recapture-runtime-attestation" => {
+            "A user-captured report binds the module basename and exact ELF plan with explicit complete/sampled coverage."
+                .to_string()
+        }
+        "replace-invalid-crypto-kat" => {
+            "The replacement report strictly parses, deterministically recomputes, and returns verified-full or an exact refutation without edited status fields."
+                .to_string()
+        }
+        "select-exact-elf" => {
+            "The imported AArch64 ELF SHA-256 exactly matches the replay/result identity."
+                .to_string()
+        }
+        "generate-frida-recapture-hook" | "capture-exact-runtime-state" => {
+            "The new exact-offset event contains the requested GPR/NZCV and only the bounded readable register-relative memory needed by the current stop."
+                .to_string()
+        }
+        "generate-closer-checkpoint-hook" | "generate-unicorn-from-checkpoint" => {
+            "The authorized closer capture/replay advances beyond the prior stop or returns a new explicit missing-state/terminal reason."
+                .to_string()
+        }
+        "switch-stalled-seeds-to-bounded-angr" => {
+            "Bounded symbolic continuation returns explicit candidate paths/constraints or a clear depth/state/dead-end bound without being promoted above Related."
+                .to_string()
+        }
+        "vary-only-key" | "vary-only-input" | "align-cross-build-controls" => {
+            "Two valid experiment cells differ on exactly the requested axis and preserve exact artifact identities for comparison."
+                .to_string()
+        }
+        _ => "The requested evidence resolves at least one current blocker or produces explicit counter-evidence without repeating an equivalent unchanged capture."
+            .to_string(),
+    }
+}
+
+fn target_module_name(artifact_ids: &[String], artifacts: &[TraceCaseArtifact]) -> Option<String> {
+    let modules = artifact_ids
+        .iter()
+        .filter_map(|artifact_id| {
+            artifacts
+                .iter()
+                .find(|artifact| artifact.artifact_id == *artifact_id)
+                .and_then(|artifact| artifact.summary.module_name.clone())
+        })
+        .collect::<BTreeSet<_>>();
+    (modules.len() == 1)
+        .then(|| modules.iter().next().cloned())
+        .flatten()
+}
+
+fn capture_redundancy_key(
+    action: &str,
+    tool_name: Option<&str>,
+    artifact_ids: &[String],
+    offsets: &[String],
+    controlled_variables: &[String],
+) -> String {
+    let mut hasher = Sha256::new();
+    for value in std::iter::once(action)
+        .chain(tool_name)
+        .chain(artifact_ids.iter().map(String::as_str))
+        .chain(offsets.iter().map(String::as_str))
+        .chain(controlled_variables.iter().map(String::as_str))
+    {
+        hasher.update(value.as_bytes());
+        hasher.update([0]);
+    }
+    let digest = format!("{:x}", hasher.finalize());
+    format!("capture-{}", &digest[..24])
+}
+
+fn capture_targets_have_action(targets: &[InformationGainCaptureTarget], needle: &str) -> bool {
+    targets.iter().any(|target| target.action.contains(needle))
+}
+
+fn build_information_gain_capture_plan(
+    next_actions: &[ReplayDoctorNextAction],
+    audit: &TraceCaseClaimLedgerAudit,
+    readiness: &ReplayStateReadinessReport,
+    experiment_matrix: &TraceCaseExperimentMatrixReport,
+    artifacts: &[TraceCaseArtifact],
+) -> InformationGainCapturePlan {
+    const MAX_TARGETS: usize = 32;
+    let blocked_claim_ids = audit
+        .claims
+        .iter()
+        .filter(|claim| claim.gate_status == "blocked")
+        .map(|claim| claim.claim_id.clone())
+        .collect::<Vec<_>>();
+    let needs_gpr = readiness.components.iter().any(|component| {
+        component.component == "general-purpose-registers" && component.status != "captured"
+    });
+    let needs_nzcv = readiness
+        .components
+        .iter()
+        .any(|component| component.component == "nzcv" && component.status != "captured");
+    let needs_stack = readiness.components.iter().any(|component| {
+        component.component == "stack-memory"
+            && matches!(component.status.as_str(), "not-captured" | "unreadable")
+    });
+    let needs_pointer = readiness.components.iter().any(|component| {
+        component.component == "pointer-heap-memory"
+            && matches!(component.status.as_str(), "not-captured" | "unreadable")
+    });
+
+    let mut targets = Vec::<InformationGainCaptureTarget>::new();
+    let mut seen = BTreeSet::<String>::new();
+    for action in next_actions {
+        let mut artifact_ids = action.artifact_ids.clone();
+        artifact_ids.sort();
+        artifact_ids.dedup();
+        let offsets = normalize_offsets(action.seed_capture_offsets.clone());
+        let controlled_variables = controlled_variables_for_action(&action.action);
+        let redundancy_key = capture_redundancy_key(
+            &action.action,
+            action.tool_name.as_deref(),
+            &artifact_ids,
+            &offsets,
+            &controlled_variables,
+        );
+        if !seen.insert(redundancy_key.clone()) {
+            continue;
+        }
+        let is_state_capture = action.action.contains("recapture")
+            || action.action.contains("runtime-state")
+            || action.action.contains("checkpoint");
+        let mut registers = Vec::new();
+        let mut memory_requirements = Vec::new();
+        if is_state_capture && needs_gpr {
+            registers.push("x0-x30,sp,pc".to_string());
+        }
+        if is_state_capture && needs_nzcv {
+            registers.push("nzcv".to_string());
+        }
+        if is_state_capture && needs_stack {
+            memory_requirements
+                .push("bounded SP-relative stack window at the exact current offset".to_string());
+        }
+        if is_state_capture && needs_pointer {
+            memory_requirements.push(
+                "only current-register X0-X28-relative missing ranges reported by the latest bounded replay"
+                    .to_string(),
+            );
+        }
+        let resolves_claim_ids = if action.action.contains("claim") {
+            blocked_claim_ids.clone()
+        } else {
+            Vec::new()
+        };
+        targets.push(InformationGainCaptureTarget {
+            rank: 0,
+            information_gain_score: capture_information_gain_score(&action.action, action.priority),
+            action: action.action.clone(),
+            target_kind: capture_target_kind(&action.action).to_string(),
+            tool_name: action.tool_name.clone(),
+            artifact_ids: artifact_ids.clone(),
+            module_name: target_module_name(&artifact_ids, artifacts),
+            module_relative_offsets: offsets,
+            registers,
+            memory_requirements,
+            controlled_variables,
+            resolves_claim_ids,
+            competing_hypotheses: competing_hypotheses_for_action(&action.action),
+            reason: action.reason.clone(),
+            success_criteria: success_criteria_for_action(&action.action),
+            manual_execution_required: action.manual_execution_required,
+            evidence_level: action.evidence_level.clone(),
+            redundancy_key,
+        });
+    }
+
+    for recommendation in experiment_matrix.recommendations.iter().take(4) {
+        let controlled_variables = controlled_variables_for_action(&recommendation.action);
+        let redundancy_key = capture_redundancy_key(
+            &recommendation.action,
+            Some("upsert_analysis_case_experiment"),
+            &[],
+            &[],
+            &controlled_variables,
+        );
+        if !seen.insert(redundancy_key.clone()) {
+            continue;
+        }
+        targets.push(InformationGainCaptureTarget {
+            rank: 0,
+            information_gain_score: capture_information_gain_score(
+                &recommendation.action,
+                recommendation.priority,
+            ),
+            action: recommendation.action.clone(),
+            target_kind: "controlled-run".to_string(),
+            tool_name: Some("upsert_analysis_case_experiment".to_string()),
+            artifact_ids: Vec::new(),
+            module_name: None,
+            module_relative_offsets: Vec::new(),
+            registers: Vec::new(),
+            memory_requirements: Vec::new(),
+            controlled_variables,
+            resolves_claim_ids: Vec::new(),
+            competing_hypotheses: competing_hypotheses_for_action(&recommendation.action),
+            reason: recommendation.reason.clone(),
+            success_criteria: success_criteria_for_action(&recommendation.action),
+            manual_execution_required: true,
+            evidence_level: "candidate/related".to_string(),
+            redundancy_key,
+        });
+    }
+
+    for component in &readiness.components {
+        let Some(next_action) = component.next_action.as_ref() else {
+            continue;
+        };
+        let equivalent = match component.component.as_str() {
+            "exact-elf-identity" => capture_targets_have_action(&targets, "exact-elf"),
+            "general-purpose-registers" | "nzcv" => {
+                capture_targets_have_action(&targets, "runtime-state")
+                    || capture_targets_have_action(&targets, "recapture")
+            }
+            "stack-memory" | "pointer-heap-memory" => {
+                capture_targets_have_action(&targets, "recapture")
+            }
+            "call-boundary" => capture_targets_have_action(&targets, "checkpoint"),
+            _ => false,
+        };
+        if equivalent {
+            continue;
+        }
+        let action = format!("capture-state-{}", component.component);
+        let offsets = component
+            .source_artifact_ids
+            .iter()
+            .flat_map(|artifact_id| {
+                artifacts
+                    .iter()
+                    .find(|artifact| artifact.artifact_id == *artifact_id)
+                    .into_iter()
+                    .flat_map(|artifact| artifact.summary.capture_offsets.clone())
+            })
+            .collect::<Vec<_>>();
+        let offsets = normalize_offsets(offsets);
+        let redundancy_key = capture_redundancy_key(
+            &action,
+            Some("generate_frida_hook"),
+            &component.source_artifact_ids,
+            &offsets,
+            &[],
+        );
+        if !seen.insert(redundancy_key.clone()) {
+            continue;
+        }
+        let (registers, memory_requirements, score) = match component.component.as_str() {
+            "general-purpose-registers" => (vec!["x0-x30,sp,pc".to_string()], Vec::new(), 93),
+            "nzcv" => (vec!["nzcv".to_string()], Vec::new(), 92),
+            "simd-fp" => (
+                vec!["required v/q registers,fpcr,fpsr".to_string()],
+                Vec::new(),
+                82,
+            ),
+            "stack-memory" => (
+                Vec::new(),
+                vec!["bounded SP-relative window".to_string()],
+                90,
+            ),
+            "pointer-heap-memory" => (
+                Vec::new(),
+                vec!["only reported X0-X28-relative missing ranges".to_string()],
+                91,
+            ),
+            "tls-system-state" => (
+                vec!["only the reported TLS/system register".to_string()],
+                Vec::new(),
+                80,
+            ),
+            "call-boundary" => (vec!["x0-x30,sp,pc,nzcv".to_string()], Vec::new(), 95),
+            "exact-elf-identity" => (Vec::new(), Vec::new(), 100),
+            _ => (Vec::new(), Vec::new(), 75),
+        };
+        targets.push(InformationGainCaptureTarget {
+            rank: 0,
+            information_gain_score: score,
+            action,
+            target_kind: if component.component == "exact-elf-identity" {
+                "exact-binary".to_string()
+            } else {
+                "register-memory-state".to_string()
+            },
+            tool_name: (component.component != "exact-elf-identity")
+                .then(|| "generate_frida_hook".to_string()),
+            artifact_ids: component.source_artifact_ids.clone(),
+            module_name: target_module_name(&component.source_artifact_ids, artifacts),
+            module_relative_offsets: offsets,
+            registers,
+            memory_requirements,
+            controlled_variables: Vec::new(),
+            resolves_claim_ids: Vec::new(),
+            competing_hypotheses: vec![
+                format!("{} is required for faithful continuation.", component.component),
+                format!("{} is not load-bearing for the tested bounded path.", component.component),
+            ],
+            reason: format!("{} {next_action}", component.details),
+            success_criteria: "The closer exact capture supplies the requested state or records an explicit unreadable/unsupported result without filling bytes with zeros."
+                .to_string(),
+            manual_execution_required: component.component != "exact-elf-identity",
+            evidence_level: "candidate/related".to_string(),
+            redundancy_key,
+        });
+    }
+
+    targets.sort_by(|left, right| {
+        right
+            .information_gain_score
+            .cmp(&left.information_gain_score)
+            .then_with(|| left.action.cmp(&right.action))
+            .then_with(|| left.redundancy_key.cmp(&right.redundancy_key))
+    });
+    let omitted_target_count = targets.len().saturating_sub(MAX_TARGETS) as u64;
+    targets.truncate(MAX_TARGETS);
+    for (index, target) in targets.iter_mut().enumerate() {
+        target.rank = index as u32 + 1;
+    }
+    let status = if targets.is_empty() {
+        "no-additional-targets"
+    } else if targets[0].information_gain_score >= 95 {
+        "critical-evidence-gap"
+    } else {
+        "ranked-targets-ready"
+    };
+    InformationGainCapturePlan {
+        schema: INFORMATION_GAIN_CAPTURE_PLAN_SCHEMA.to_string(),
+        status: status.to_string(),
+        target_count: targets.len() as u64,
+        omitted_target_count,
+        targets,
+        limitations: vec![
+            "Information-gain scores are deterministic heuristic rankings over current blockers, state gaps, and controlled-run coverage; they are not probabilities or proof."
+                .to_string(),
+            "A target should be repeated only when its exact offset, requested state, controlled variable, or expected discriminator changes; unchanged captures are deliberately deduplicated."
+                .to_string(),
+            "Trace UI only plans/generates bounded capture or simulation handoffs. The user manually runs the target, Frida, IDA, angr, and Unicorn."
+                .to_string(),
+        ],
+    }
+}
+
 pub fn diagnose_trace_analysis_case(case_path: &str) -> Result<ReplayDoctorReport> {
     let document = load_trace_analysis_case(case_path)?;
     let mut health = Vec::with_capacity(document.case.artifacts.len());
@@ -2566,6 +3392,9 @@ pub fn diagnose_trace_analysis_case(case_path: &str) -> Result<ReplayDoctorRepor
     let mut warnings = Vec::new();
     let mut valid_unicorn = Vec::<(TraceCaseArtifact, UnicornOllvmResultBundle)>::new();
     let mut valid_frida = Vec::<(TraceCaseArtifact, FridaCaptureBundle)>::new();
+    let mut valid_runtime_attestations =
+        Vec::<(TraceCaseArtifact, RuntimeAttestationCaptureBundle)>::new();
+    let mut valid_crypto_kats = Vec::<(TraceCaseArtifact, CryptoSemanticKatReport)>::new();
     let mut valid_angr = Vec::<(TraceCaseArtifact, AngrOllvmResultBundle)>::new();
     let mut valid_binaries = Vec::<(TraceCaseArtifact, ElfBinaryIdentity)>::new();
     let mut generated_claims = Vec::new();
@@ -2609,6 +3438,9 @@ pub fn diagnose_trace_analysis_case(case_path: &str) -> Result<ReplayDoctorRepor
                     ParsedCaseArtifact::StaticBinary(identity) => {
                         valid_binaries.push((artifact.clone(), identity));
                     }
+                    ParsedCaseArtifact::RuntimeAttestation(bundle) => {
+                        valid_runtime_attestations.push((artifact.clone(), bundle));
+                    }
                     ParsedCaseArtifact::Frida(bundle) => {
                         valid_frida.push((artifact.clone(), bundle));
                     }
@@ -2626,6 +3458,9 @@ pub fn diagnose_trace_analysis_case(case_path: &str) -> Result<ReplayDoctorRepor
                     }
                     ParsedCaseArtifact::Analysis(record) => {
                         let _ = record.analysis_id;
+                    }
+                    ParsedCaseArtifact::CryptoKat(report) => {
+                        valid_crypto_kats.push((artifact.clone(), report));
                     }
                     ParsedCaseArtifact::Crypto(value) => {
                         let _ = value.is_object();
@@ -2660,9 +3495,14 @@ pub fn diagnose_trace_analysis_case(case_path: &str) -> Result<ReplayDoctorRepor
     timeline.sort_by_key(|entry| entry.imported_at_ms);
     valid_unicorn.sort_by_key(|(artifact, _)| artifact.imported_at_ms);
     valid_frida.sort_by_key(|(artifact, _)| artifact.imported_at_ms);
+    valid_runtime_attestations.sort_by_key(|(artifact, _)| artifact.imported_at_ms);
+    valid_crypto_kats.sort_by_key(|(artifact, _)| artifact.imported_at_ms);
     valid_angr.sort_by_key(|(artifact, _)| artifact.imported_at_ms);
+    valid_binaries.sort_by_key(|(artifact, _)| artifact.imported_at_ms);
 
     let mut next_actions = Vec::new();
+    let mut runtime_attestations = Vec::<TraceCaseRuntimeAttestationReport>::new();
+    let mut crypto_kats = Vec::<TraceCaseCryptoKatReport>::new();
     let broken_ids = health
         .iter()
         .filter(|item| item.status != "valid")
@@ -2679,6 +3519,291 @@ pub fn diagnose_trace_analysis_case(case_path: &str) -> Result<ReplayDoctorRepor
             "Restore the exact imported file or remove and re-import the correct artifact before using later replay conclusions.",
             false,
         ));
+    }
+
+    for (attestation_artifact, bundle) in &valid_runtime_attestations {
+        let exact_binary_parent_id = attestation_artifact
+            .parent_artifact_ids
+            .iter()
+            .find(|parent_id| {
+                document.case.artifacts.iter().any(|candidate| {
+                    candidate.artifact_id == **parent_id
+                        && candidate.kind == TraceCaseArtifactKind::StaticBinary
+                })
+            })
+            .cloned();
+        let Some(exact_binary_parent_id) = exact_binary_parent_id else {
+            warnings.push(format!(
+                "{} has no bound exact static-binary parent.",
+                attestation_artifact.label
+            ));
+            continue;
+        };
+        let Some((binary_artifact, binary_identity)) = valid_binaries
+            .iter()
+            .find(|(artifact, _)| artifact.artifact_id == exact_binary_parent_id)
+        else {
+            warnings.push(format!(
+                "{} cannot be verified until its exact ELF parent passes integrity and parser checks.",
+                attestation_artifact.label
+            ));
+            continue;
+        };
+        let capture_path = resolve_trace_case_artifact_path(case_path, &attestation_artifact.path)?;
+        let binary_path = resolve_trace_case_artifact_path(case_path, &binary_artifact.path)?;
+        match verify_runtime_attestation_bundle(
+            bundle,
+            &capture_path.to_string_lossy(),
+            &binary_path.to_string_lossy(),
+        ) {
+            Ok(report) => {
+                let module_name = report
+                    .records
+                    .first()
+                    .map(|record| record.module_name.as_str())
+                    .or_else(|| attestation_artifact.summary.module_name.as_deref())
+                    .unwrap_or("unknown-module");
+                let scope = format!(
+                    "runtime-image:{}@{}",
+                    module_name, binary_identity.binary_sha256
+                );
+                match report.status.as_str() {
+                    "verified-full" if report.verification_gate_met => {
+                        generated_claims.push(generated_claim(
+                            format!(
+                                "The user-captured mapped runtime image for {module_name} matches the bound exact ELF across all file-backed executable PT_LOAD bytes."
+                            ),
+                            scope,
+                            TraceCaseClaimStatus::Verified,
+                            vec![
+                                evidence_ref(
+                                    attestation_artifact,
+                                    "runtime-attestation/verified-full",
+                                    "Strict verification recomputed all planned runtime windows against the bound exact ELF.",
+                                ),
+                                evidence_ref(
+                                    binary_artifact,
+                                    "sha256",
+                                    binary_identity.binary_sha256.clone(),
+                                ),
+                            ],
+                            Vec::new(),
+                            Vec::new(),
+                            report.limitations.clone(),
+                        ));
+                    }
+                    "related-sampled" => {
+                        generated_claims.push(generated_claim(
+                            format!(
+                                "Sampled user-captured executable windows for {module_name} match the bound exact ELF."
+                            ),
+                            scope,
+                            TraceCaseClaimStatus::Related,
+                            vec![
+                                evidence_ref(
+                                    attestation_artifact,
+                                    "runtime-attestation/related-sampled",
+                                    "Strict verification matched the sampled executable windows.",
+                                ),
+                                evidence_ref(
+                                    binary_artifact,
+                                    "sha256",
+                                    binary_identity.binary_sha256.clone(),
+                                ),
+                            ],
+                            Vec::new(),
+                            vec![
+                                "Full coverage of every file-backed executable PT_LOAD byte"
+                                    .to_string(),
+                            ],
+                            report.limitations.clone(),
+                        ));
+                        next_actions.push(next_action(
+                            96,
+                            "capture-full-runtime-attestation",
+                            Some("generate_frida_runtime_attestation"),
+                            vec![
+                                binary_artifact.artifact_id.clone(),
+                                attestation_artifact.artifact_id.clone(),
+                            ],
+                            Vec::new(),
+                            "The current runtime-image evidence is deterministic but sampled, so it cannot pass the scoped Verified gate.",
+                            "Generate a full-coverage runtime attestation for the same module basename and exact ELF, run the Frida 16.x script manually in the intended process, then import the new capture with this exact ELF as its parent.",
+                            true,
+                        ));
+                    }
+                    "refuted" => {
+                        generated_claims.push(generated_claim(
+                            format!(
+                                "The user-captured mapped runtime image for {module_name} matches the bound exact ELF."
+                            ),
+                            scope,
+                            TraceCaseClaimStatus::Refuted,
+                            vec![evidence_ref(
+                                binary_artifact,
+                                "sha256",
+                                "The selected exact ELF defines the bytes used for comparison.",
+                            )],
+                            vec![evidence_ref(
+                                attestation_artifact,
+                                "runtime-attestation/refuted",
+                                report
+                                    .records
+                                    .iter()
+                                    .flat_map(|record| record.counter_evidence.iter())
+                                    .next()
+                                    .cloned()
+                                    .unwrap_or_else(|| {
+                                        "The runtime attestation conflicts with the bound exact ELF."
+                                            .to_string()
+                                    }),
+                            )],
+                            Vec::new(),
+                            report.limitations.clone(),
+                        ));
+                        next_actions.push(next_action(
+                            99,
+                            "resolve-runtime-image-mismatch",
+                            Some("inspect_runtime_attestation"),
+                            vec![
+                                binary_artifact.artifact_id.clone(),
+                                attestation_artifact.artifact_id.clone(),
+                            ],
+                            Vec::new(),
+                            "The user-captured runtime bytes, plan, or expected identity conflict with the bound exact ELF.",
+                            "Inspect the mismatched windows and module path. Select the actually loaded module build if different, or generate and run a new manual attestation capture under the controlled target run. Preserve this artifact as counter-evidence.",
+                            true,
+                        ));
+                    }
+                    _ => {
+                        next_actions.push(next_action(
+                            95,
+                            "recapture-runtime-attestation",
+                            Some("generate_frida_runtime_attestation"),
+                            vec![
+                                binary_artifact.artifact_id.clone(),
+                                attestation_artifact.artifact_id.clone(),
+                            ],
+                            Vec::new(),
+                            "The runtime attestation is incomplete or contains mixed record statuses.",
+                            "Review unreadable or missing windows, generate the bounded Frida 16.x attestation script again for the same exact ELF, run it manually, and import the complete capture.",
+                            true,
+                        ));
+                    }
+                }
+                runtime_attestations.push(TraceCaseRuntimeAttestationReport {
+                    artifact_id: attestation_artifact.artifact_id.clone(),
+                    exact_binary_artifact_id: binary_artifact.artifact_id.clone(),
+                    report,
+                });
+            }
+            Err(error) => warnings.push(format!(
+                "Runtime attestation verification failed for {}: {error}",
+                attestation_artifact.label
+            )),
+        }
+    }
+
+    if valid_runtime_attestations.is_empty() {
+        if let Some((binary_artifact, binary_identity)) = valid_binaries
+            .iter()
+            .find(|(artifact, _)| {
+                document.case.exact_binary_artifact_id.as_deref()
+                    == Some(artifact.artifact_id.as_str())
+            })
+            .or_else(|| valid_binaries.last())
+        {
+            next_actions.push(next_action(
+                94,
+                "generate-runtime-attestation",
+                Some("generate_frida_runtime_attestation"),
+                vec![binary_artifact.artifact_id.clone()],
+                Vec::new(),
+                "The case has an exact AArch64 ELF but no user-captured evidence that this image was mapped in the target process.",
+                format!(
+                    "Generate a Frida 16.x runtime-attestation script for the module basename and exact ELF SHA-256 {}, run it manually in the intended process, then import the JSON/NDJSON capture with this ELF as its parent.",
+                    binary_identity.binary_sha256
+                ),
+                true,
+            ));
+        }
+    }
+
+    for (artifact, report) in &valid_crypto_kats {
+        let vector_description = format!(
+            "{} deterministic vector ({} output bytes{}).",
+            report.algorithm.as_str(),
+            report.bytes_checked,
+            if report.tag_bytes_checked > 0 {
+                format!(" + {} tag bytes", report.tag_bytes_checked)
+            } else {
+                String::new()
+            }
+        );
+        match report.status {
+            CryptoKatStatus::VerifiedFull if report.verification_gate_met => {
+                generated_claims.push(generated_claim(
+                    format!(
+                        "The observed output matches the exact recorded {} parameters and input byte-for-byte.",
+                        report.algorithm.as_str()
+                    ),
+                    report.claim_scope.clone(),
+                    TraceCaseClaimStatus::Verified,
+                    vec![evidence_ref(
+                        artifact,
+                        "crypto-kat/verified-full",
+                        format!(
+                            "{vector_description} The embedded request was strictly recomputed during artifact import and Replay Doctor validation."
+                        ),
+                    )],
+                    Vec::new(),
+                    Vec::new(),
+                    report.limitations.clone(),
+                ));
+            }
+            CryptoKatStatus::Refuted => {
+                generated_claims.push(generated_claim(
+                    format!(
+                        "The observed output matches the exact recorded {} parameters and input byte-for-byte.",
+                        report.algorithm.as_str()
+                    ),
+                    report.claim_scope.clone(),
+                    TraceCaseClaimStatus::Refuted,
+                    Vec::new(),
+                    vec![evidence_ref(
+                        artifact,
+                        "crypto-kat/refuted",
+                        report.refutation_reason.clone().unwrap_or_else(|| {
+                            format!(
+                                "{vector_description} First mismatch: {:?}.",
+                                report.first_mismatch
+                            )
+                        }),
+                    )],
+                    Vec::new(),
+                    report.limitations.clone(),
+                ));
+            }
+            _ => {
+                next_actions.push(next_action(
+                    92,
+                    "replace-invalid-crypto-kat",
+                    Some("verify_crypto_semantic_kat"),
+                    vec![artifact.artifact_id.clone()],
+                    Vec::new(),
+                    report
+                        .invalid_reason
+                        .clone()
+                        .unwrap_or_else(|| "The crypto KAT did not pass its strict gate.".to_string()),
+                    "Correct the explicit algorithm parameters or captured bytes, generate a new deterministic KAT report, and import it while preserving this failed attempt as evidence.",
+                    false,
+                ));
+            }
+        }
+        crypto_kats.push(TraceCaseCryptoKatReport {
+            artifact_id: artifact.artifact_id.clone(),
+            report: report.clone(),
+        });
     }
 
     let latest_unicorn = valid_unicorn.last();
@@ -3020,6 +4145,8 @@ pub fn diagnose_trace_analysis_case(case_path: &str) -> Result<ReplayDoctorRepor
         &generated_claims,
         &document.case.artifacts,
         &health,
+        &runtime_attestations,
+        &crypto_kats,
     );
     let persisted_claim_blockers = claim_ledger_audit
         .claims
@@ -3048,6 +4175,13 @@ pub fn diagnose_trace_analysis_case(case_path: &str) -> Result<ReplayDoctorRepor
     next_actions.dedup_by(|left, right| {
         left.action == right.action && left.seed_capture_offsets == right.seed_capture_offsets
     });
+    let capture_plan = build_information_gain_capture_plan(
+        &next_actions,
+        &claim_ledger_audit,
+        &state_readiness,
+        &experiment_matrix,
+        &document.case.artifacts,
+    );
     let status = if health.iter().any(|item| item.status != "valid") {
         "invalid-artifacts"
     } else if next_actions
@@ -3085,10 +4219,13 @@ pub fn diagnose_trace_analysis_case(case_path: &str) -> Result<ReplayDoctorRepor
         claim_ledger_audit,
         state_readiness,
         experiment_matrix,
+        capture_plan,
+        runtime_attestations,
+        crypto_kats,
         unicorn_round_comparison: round_comparison,
         warnings,
         limitations: vec![
-            "Replay Doctor validates files, schemas, offsets, and supplied ELF identities; it does not attest the image loaded at runtime."
+            "An exact ELF SHA-256 alone does not attest the runtime image. A verified-full runtime attestation can verify only the user-captured mapped metadata windows and all file-backed executable PT_LOAD bytes, and is not hardware-backed or remote attestation."
                 .to_string(),
             "Dynamic traces contain executed behavior only. Unobserved paths and states remain unknown."
                 .to_string(),
@@ -3120,6 +4257,95 @@ mod tests {
         elf[52..54].copy_from_slice(&64u16.to_le_bytes());
         elf[54..56].copy_from_slice(&56u16.to_le_bytes());
         elf
+    }
+
+    fn write_u32(bytes: &mut [u8], offset: usize, value: u32) {
+        bytes[offset..offset + 4].copy_from_slice(&value.to_le_bytes());
+    }
+
+    fn write_u64(bytes: &mut [u8], offset: usize, value: u64) {
+        bytes[offset..offset + 8].copy_from_slice(&value.to_le_bytes());
+    }
+
+    fn runtime_attestable_elf() -> Vec<u8> {
+        let mut elf = vec![0u8; 8192];
+        elf[..4].copy_from_slice(b"\x7fELF");
+        elf[4] = 2;
+        elf[5] = 1;
+        elf[6] = 1;
+        elf[16..18].copy_from_slice(&3u16.to_le_bytes());
+        elf[18..20].copy_from_slice(&183u16.to_le_bytes());
+        elf[20..24].copy_from_slice(&1u32.to_le_bytes());
+        write_u64(&mut elf, 32, 64);
+        elf[52..54].copy_from_slice(&64u16.to_le_bytes());
+        elf[54..56].copy_from_slice(&56u16.to_le_bytes());
+        elf[56..58].copy_from_slice(&1u16.to_le_bytes());
+        write_u32(&mut elf, 64, 1);
+        write_u32(&mut elf, 68, 5);
+        write_u64(&mut elf, 72, 0);
+        write_u64(&mut elf, 80, 0);
+        let elf_len = elf.len() as u64;
+        write_u64(&mut elf, 96, elf_len);
+        write_u64(&mut elf, 104, elf_len);
+        write_u64(&mut elf, 112, 0x1000);
+        for (index, byte) in elf[0x1000..].iter_mut().enumerate() {
+            *byte = (index % 251) as u8;
+        }
+        elf
+    }
+
+    fn matching_runtime_attestation_record(
+        plan: &crate::query::runtime_attestation::RuntimeAttestationPlan,
+    ) -> crate::query::runtime_attestation::RuntimeAttestationRecord {
+        use crate::query::runtime_attestation::{
+            RuntimeAttestationRecord, RuntimeAttestationWindowCapture,
+        };
+
+        RuntimeAttestationRecord {
+            protocol: crate::query::runtime_attestation::FRIDA_RUNTIME_ATTESTATION_SCHEMA
+                .to_string(),
+            event: "runtime-attestation".to_string(),
+            attestation_id: plan.attestation_id.clone(),
+            timestamp_ms: 1,
+            module_name: plan.module_name.clone(),
+            module_path: Some("/data/app/libtarget.so".to_string()),
+            module_base: Some("0x71000000".to_string()),
+            module_size: plan.expected_mapped_size,
+            expected_binary_sha256: plan.expected_identity.binary_sha256.clone(),
+            expected_file_size: plan.expected_identity.file_size,
+            expected_architecture: plan.expected_identity.architecture.clone(),
+            expected_elf_machine: plan.expected_identity.elf_machine,
+            expected_build_id: plan.expected_identity.build_id.clone(),
+            load_base_vaddr: plan.load_base_vaddr.clone(),
+            expected_mapped_size: plan.expected_mapped_size,
+            window_bytes: plan.window_bytes,
+            max_windows: plan.max_windows,
+            coverage_strategy: plan.coverage_strategy.clone(),
+            complete_executable_coverage: plan.complete_executable_coverage,
+            total_executable_bytes: plan.total_executable_bytes,
+            selected_executable_bytes: plan.selected_executable_bytes,
+            plan_sha256: plan.plan_sha256.clone(),
+            fatal_error: None,
+            windows: plan
+                .windows
+                .iter()
+                .map(|window| RuntimeAttestationWindowCapture {
+                    index: window.index,
+                    kind: window.kind,
+                    segment_index: window.segment_index,
+                    file_offset: window.file_offset.clone(),
+                    module_offset: window.module_offset.clone(),
+                    length: window.length,
+                    expected_sha256: window.expected_sha256.clone(),
+                    actual_sha256: Some(window.expected_sha256.clone()),
+                    status: "matched".to_string(),
+                    address: Some("0x71000000".to_string()),
+                    protection: Some("r-x".to_string()),
+                    read_error: None,
+                })
+                .collect(),
+            warnings: Vec::new(),
+        }
     }
 
     fn create_case_with_exact_elf(name: &str) -> (PathBuf, PathBuf, PathBuf, ElfBinaryIdentity) {
@@ -3362,6 +4588,18 @@ mod tests {
         assert_eq!(report.status, "needs-runtime-capture");
         assert_eq!(report.next_actions[0].action, "capture-exact-runtime-state");
         assert!(report.next_actions[0].manual_execution_required);
+        assert_eq!(
+            report.capture_plan.schema,
+            INFORMATION_GAIN_CAPTURE_PLAN_SCHEMA
+        );
+        assert_eq!(
+            report.capture_plan.targets[0].action,
+            "capture-exact-runtime-state"
+        );
+        assert!(report.capture_plan.targets[0]
+            .registers
+            .iter()
+            .any(|value| value.contains("x0-x30")));
         let _ = std::fs::remove_dir_all(dir);
     }
 
@@ -3406,6 +4644,27 @@ mod tests {
             .find(|component| component.component == "pointer-heap-memory")
             .unwrap();
         assert_eq!(pointer.status, "not-captured");
+        let target = report
+            .capture_plan
+            .targets
+            .iter()
+            .find(|target| target.action == "generate-frida-recapture-hook")
+            .unwrap();
+        assert_eq!(target.module_relative_offsets, vec!["0x100"]);
+        assert!(target
+            .memory_requirements
+            .iter()
+            .any(|value| value.contains("X0-X28")));
+        assert!(
+            report
+                .capture_plan
+                .targets
+                .iter()
+                .map(|target| target.redundancy_key.as_str())
+                .collect::<BTreeSet<_>>()
+                .len()
+                == report.capture_plan.targets.len()
+        );
         let _ = std::fs::remove_dir_all(dir);
     }
 
@@ -3510,11 +4769,197 @@ mod tests {
     }
 
     #[test]
-    fn verified_claim_requires_explicit_semantic_evidence_marker() {
+    fn runtime_attestation_auto_binds_exact_elf_and_opens_only_scoped_gate() {
+        use crate::query::runtime_attestation::{
+            build_runtime_attestation_plan, FridaRuntimeAttestationRequest,
+        };
+
+        let dir = temp_path("runtime-attestation-case");
+        std::fs::create_dir_all(&dir).unwrap();
+        let case_path = dir.join("sample.traceui-case");
+        let elf_path = dir.join("libtarget.so");
+        let capture_path = dir.join("runtime-attestation.json");
+        std::fs::write(&elf_path, runtime_attestable_elf()).unwrap();
+        let document = create_trace_analysis_case(
+            case_path.to_str().unwrap(),
+            "runtime attestation",
+            None,
+            Some(elf_path.to_str().unwrap()),
+        )
+        .unwrap();
+        let exact_artifact_id = document.case.exact_binary_artifact_id.unwrap();
+        let plan = build_runtime_attestation_plan(&FridaRuntimeAttestationRequest {
+            module_name: "libtarget.so".to_string(),
+            static_binary_path: elf_path.to_string_lossy().into_owned(),
+            window_bytes: 4096,
+            max_windows: 8,
+        })
+        .unwrap();
+        assert!(plan.complete_executable_coverage);
+        let record = matching_runtime_attestation_record(&plan);
+        std::fs::write(&capture_path, serde_json::to_vec_pretty(&record).unwrap()).unwrap();
+
+        let imported = add_trace_case_artifact(
+            case_path.to_str().unwrap(),
+            capture_path.to_str().unwrap(),
+            None,
+            Some("Runtime image attestation"),
+            Vec::new(),
+        )
+        .unwrap();
+        assert_eq!(
+            imported.artifact.kind,
+            TraceCaseArtifactKind::RuntimeAttestation
+        );
+        assert_eq!(
+            imported.artifact.parent_artifact_ids,
+            vec![exact_artifact_id.clone()]
+        );
+        assert_eq!(
+            imported
+                .artifact
+                .summary
+                .runtime_attestation_status
+                .as_deref(),
+            Some("verified-full")
+        );
+        assert_eq!(
+            imported
+                .artifact
+                .summary
+                .runtime_attestation_verification_gate_met,
+            Some(true)
+        );
+
+        let report = diagnose_trace_analysis_case(case_path.to_str().unwrap()).unwrap();
+        assert_eq!(report.runtime_attestations.len(), 1);
+        assert!(report.runtime_attestations[0].report.verification_gate_met);
+        let generated = report
+            .generated_claims
+            .iter()
+            .find(|claim| claim.scope.starts_with("runtime-image:"))
+            .unwrap();
+        assert_eq!(generated.status, TraceCaseClaimStatus::Verified);
+        let audit = report
+            .claim_ledger_audit
+            .claims
+            .iter()
+            .find(|claim| claim.claim_id == generated.claim_id)
+            .unwrap();
+        assert!(audit.verification_gate_passed);
+
+        let forged = TraceCaseClaim {
+            claim_id: "forged-runtime-marker".to_string(),
+            statement: "The runtime image matches.".to_string(),
+            scope: format!(
+                "runtime-image:libtarget.so@{}",
+                plan.expected_identity.binary_sha256
+            ),
+            status: TraceCaseClaimStatus::Verified,
+            supporting_evidence: vec![TraceCaseEvidenceRef {
+                artifact_id: exact_artifact_id,
+                locator: "runtime-attestation/verified-full semantic-known-answer".to_string(),
+                description: "A description alone claims the gate passed.".to_string(),
+            }],
+            counter_evidence: Vec::new(),
+            missing_evidence: Vec::new(),
+            limitations: Vec::new(),
+            created_by: "test".to_string(),
+            created_at_ms: 1,
+            updated_at_ms: 1,
+        };
+        upsert_trace_case_claim(case_path.to_str().unwrap(), forged).unwrap();
+        let blocked = diagnose_trace_analysis_case(case_path.to_str().unwrap()).unwrap();
+        let forged_audit = blocked
+            .claim_ledger_audit
+            .claims
+            .iter()
+            .find(|claim| claim.claim_id == "forged-runtime-marker")
+            .unwrap();
+        assert_eq!(forged_audit.gate_status, "blocked");
+        assert!(!forged_audit.verification_gate_passed);
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn runtime_attestation_mismatch_is_imported_as_counter_evidence() {
+        use crate::query::runtime_attestation::{
+            build_runtime_attestation_plan, FridaRuntimeAttestationRequest,
+            RuntimeAttestationWindowKind,
+        };
+
+        let dir = temp_path("runtime-attestation-refuted");
+        std::fs::create_dir_all(&dir).unwrap();
+        let case_path = dir.join("sample.traceui-case");
+        let elf_path = dir.join("libtarget.so");
+        let capture_path = dir.join("runtime-attestation.json");
+        std::fs::write(&elf_path, runtime_attestable_elf()).unwrap();
+        create_trace_analysis_case(
+            case_path.to_str().unwrap(),
+            "runtime attestation mismatch",
+            None,
+            Some(elf_path.to_str().unwrap()),
+        )
+        .unwrap();
+        let plan = build_runtime_attestation_plan(&FridaRuntimeAttestationRequest {
+            module_name: "libtarget.so".to_string(),
+            static_binary_path: elf_path.to_string_lossy().into_owned(),
+            window_bytes: 4096,
+            max_windows: 8,
+        })
+        .unwrap();
+        let mut record = matching_runtime_attestation_record(&plan);
+        let executable = record
+            .windows
+            .iter_mut()
+            .find(|window| window.kind == RuntimeAttestationWindowKind::Executable)
+            .unwrap();
+        executable.actual_sha256 = Some("ff".repeat(32));
+        executable.status = "mismatch".to_string();
+        std::fs::write(&capture_path, serde_json::to_vec_pretty(&record).unwrap()).unwrap();
+
+        let imported = add_trace_case_artifact(
+            case_path.to_str().unwrap(),
+            capture_path.to_str().unwrap(),
+            None,
+            None,
+            Vec::new(),
+        )
+        .unwrap();
+        assert_eq!(
+            imported
+                .artifact
+                .summary
+                .runtime_attestation_status
+                .as_deref(),
+            Some("refuted")
+        );
+        let report = diagnose_trace_analysis_case(case_path.to_str().unwrap()).unwrap();
+        assert_eq!(report.runtime_attestations[0].report.status, "refuted");
+        assert!(report.generated_claims.iter().any(|claim| {
+            claim.scope.starts_with("runtime-image:")
+                && claim.status == TraceCaseClaimStatus::Refuted
+                && !claim.counter_evidence.is_empty()
+        }));
+        assert!(report
+            .next_actions
+            .iter()
+            .any(|action| action.action == "resolve-runtime-image-mismatch"));
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn crypto_verified_claim_requires_strict_matching_kat_not_forged_text() {
+        use crate::query::crypto_kat::{
+            save_crypto_semantic_kat_report, CryptoKatAlgorithm, CryptoSemanticKatRequest,
+            CRYPTO_SEMANTIC_KAT_SCHEMA,
+        };
+
         let dir = temp_path("claim-gate");
         std::fs::create_dir_all(&dir).unwrap();
         let trace = dir.join("sample.log");
         let case_path = dir.join("sample.traceui-case");
+        let kat_path = dir.join("sha256-kat.json");
         std::fs::write(&trace, b"trace\n").unwrap();
         let document = create_trace_analysis_case(
             case_path.to_str().unwrap(),
@@ -3523,16 +4968,36 @@ mod tests {
             None,
         )
         .unwrap();
-        let artifact_id = document.case.artifacts[0].artifact_id.clone();
+        let trace_artifact_id = document.case.artifacts[0].artifact_id.clone();
+        let kat_request = CryptoSemanticKatRequest {
+            schema: CRYPTO_SEMANTIC_KAT_SCHEMA.to_string(),
+            algorithm: CryptoKatAlgorithm::Sha256,
+            direction: None,
+            key_hex: None,
+            input_hex: Some("68656c6c6f".to_string()),
+            observed_output_hex: "2cf24dba5fb0a30e26e83b2ac5b9e29e1b161e5c1fa7425e73043362938b9824"
+                .to_string(),
+            iv_hex: None,
+            aad_hex: None,
+            observed_tag_hex: None,
+            password_hex: None,
+            salt_hex: None,
+            iterations: None,
+            derived_key_length: None,
+        };
+        let kat_report =
+            save_crypto_semantic_kat_report(kat_path.to_str().unwrap(), &kat_request).unwrap();
         let mut claim = TraceCaseClaim {
             claim_id: "claim-aes".to_string(),
-            statement: "AES output is verified for this exact call.".to_string(),
-            scope: "libtarget.so@build".to_string(),
+            statement: "SHA-256 output is verified for this exact vector.".to_string(),
+            scope: kat_report.claim_scope.clone(),
             status: TraceCaseClaimStatus::Verified,
             supporting_evidence: vec![TraceCaseEvidenceRef {
-                artifact_id,
-                locator: "sha256".to_string(),
-                description: "The trace artifact remained unchanged.".to_string(),
+                artifact_id: trace_artifact_id,
+                locator: "semantic-known-answer".to_string(),
+                description:
+                    "Byte-for-byte exact output allegedly matches the known-answer vector."
+                        .to_string(),
             }],
             counter_evidence: Vec::new(),
             missing_evidence: Vec::new(),
@@ -3552,9 +5017,21 @@ mod tests {
         assert_eq!(audit.gate_status, "blocked");
         assert_eq!(audit.recommended_status, TraceCaseClaimStatus::Observed);
 
-        claim.supporting_evidence[0].locator = "semantic-known-answer".to_string();
-        claim.supporting_evidence[0].description =
-            "Byte-for-byte exact output matches the known-answer vector.".to_string();
+        let imported = add_trace_case_artifact(
+            case_path.to_str().unwrap(),
+            kat_path.to_str().unwrap(),
+            None,
+            None,
+            Vec::new(),
+        )
+        .unwrap();
+        assert_eq!(imported.artifact.kind, TraceCaseArtifactKind::CryptoKat);
+        claim.supporting_evidence[0] = TraceCaseEvidenceRef {
+            artifact_id: imported.artifact.artifact_id,
+            locator: "crypto-kat/verified-full".to_string(),
+            description: "Strict report recomputation passed for this exact claimScope."
+                .to_string(),
+        };
         upsert_trace_case_claim(case_path.to_str().unwrap(), claim).unwrap();
         let passed = diagnose_trace_analysis_case(case_path.to_str().unwrap()).unwrap();
         let audit = passed
@@ -3565,6 +5042,63 @@ mod tests {
             .unwrap();
         assert!(audit.verification_gate_passed);
         assert_eq!(audit.gate_status, "passed");
+        assert_eq!(passed.crypto_kats.len(), 1);
+        assert!(passed.generated_claims.iter().any(|claim| {
+            claim.scope == kat_report.claim_scope && claim.status == TraceCaseClaimStatus::Verified
+        }));
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn unsupported_and_structural_scopes_cannot_be_promoted_by_text_markers() {
+        let dir = temp_path("unsupported-verified-gate");
+        std::fs::create_dir_all(&dir).unwrap();
+        let trace = dir.join("sample.log");
+        let case_path = dir.join("sample.traceui-case");
+        std::fs::write(&trace, b"trace\n").unwrap();
+        let document = create_trace_analysis_case(
+            case_path.to_str().unwrap(),
+            "structural gate",
+            Some(trace.to_str().unwrap()),
+            None,
+        )
+        .unwrap();
+        upsert_trace_case_claim(
+            case_path.to_str().unwrap(),
+            TraceCaseClaim {
+                claim_id: "forged-ollvm-verified".to_string(),
+                statement: "The complete OLLVM CFG was recovered.".to_string(),
+                scope: "ollvm:libtarget.so@0x100".to_string(),
+                status: TraceCaseClaimStatus::Verified,
+                supporting_evidence: vec![TraceCaseEvidenceRef {
+                    artifact_id: document.case.artifacts[0].artifact_id.clone(),
+                    locator: "semantic-known-answer verification-gate".to_string(),
+                    description: "Free text alleges exact output and complete recovery."
+                        .to_string(),
+                }],
+                counter_evidence: Vec::new(),
+                missing_evidence: Vec::new(),
+                limitations: Vec::new(),
+                created_by: "test".to_string(),
+                created_at_ms: 1,
+                updated_at_ms: 1,
+            },
+        )
+        .unwrap();
+        let report = diagnose_trace_analysis_case(case_path.to_str().unwrap()).unwrap();
+        let audit = report
+            .claim_ledger_audit
+            .claims
+            .iter()
+            .find(|claim| claim.claim_id == "forged-ollvm-verified")
+            .unwrap();
+        assert_eq!(audit.gate_status, "blocked");
+        assert_eq!(audit.recommended_status, TraceCaseClaimStatus::Observed);
+        assert!(!audit.verification_gate_passed);
+        assert!(audit
+            .blockers
+            .iter()
+            .any(|blocker| blocker.contains("no implemented structured Verified gate")));
         let _ = std::fs::remove_dir_all(dir);
     }
 

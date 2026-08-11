@@ -18,26 +18,32 @@ use trace_core::{
     generate_angr_ollvm_script_with_seeds_flow_identity_and_checkpoint,
     generate_angr_state_seed as build_angr_state_seed, generate_frida_hook as build_frida_hook,
     generate_frida_ollvm_dispatcher_hook as build_frida_ollvm_dispatcher_hook,
+    generate_frida_runtime_attestation_script as build_frida_runtime_attestation,
     generate_frida_unicorn_checkpoint_hook as build_frida_unicorn_checkpoint_hook,
     generate_frida_unicorn_recapture_hook as build_frida_unicorn_recapture_hook,
     generate_ida_ollvm_script,
     generate_unicorn_ollvm_script_with_checkpoint_result as build_unicorn_ollvm_script,
-    get_frida_capture_event as build_frida_capture_event, inspect_elf_binary,
+    get_frida_capture_event as build_frida_capture_event,
+    inspect_crypto_semantic_kat_report as build_crypto_kat_inspection, inspect_elf_binary,
+    inspect_frida_abi_capture as build_frida_abi_inference,
+    inspect_runtime_attestation_capture as build_runtime_attestation_inspection,
     list_frida_hook_recipes as build_frida_hook_recipes, parse_angr_ollvm_result_bundle,
     parse_frida_capture_bundle, parse_hex_addr, parse_ida_annotation_bundle,
-    parse_unicorn_ollvm_result_bundle, score_evidence,
-    search_frida_capture_events as build_frida_capture_event_search, summarize_dependency_graph,
-    AnalysisEvidence, AngrOllvmFlowConfig, BuildOptions, CryptoFunctionsOptions,
-    CryptoMaterialKind, CryptoMaterialMultiTraceRequest, CryptoMaterialOptions,
-    CryptoMaterialTraceCase, DepTreeOptions, EvidenceScoreSignal, ForwardSliceOptions,
-    FridaArgumentKind, FridaArgumentSpec, FridaCaptureDirection, FridaCaptureSearchOptions,
-    FridaHookRequest, FridaOllvmDispatcherAtlasOptions, FridaOllvmDispatcherHookOptions,
-    FridaStalkerMode, FridaUnicornCheckpointHookOptions, FridaUnicornRecaptureHookOptions,
-    HashAlgorithm, HashMatchRequest, HashTransformOptions, OllvmAnalysisOptions,
-    OllvmMultiTraceRequest, OllvmTraceCase, OllvmVersionMapRequest, OllvmVersionTraceCase,
-    SearchOptions, SliceOptions, StringQueryOptions, TraceDiffOptions, TraceEngine,
-    UnicornOllvmConfig, UnicornOllvmRoundInput, ValueEndian, ValueSearchKind, ValueSearchRequest,
-    WhiteBoxMultiTraceRequest, WhiteBoxOptions, WhiteBoxTraceCaseRequest,
+    parse_unicorn_ollvm_result_bundle, save_crypto_semantic_kat_report as save_crypto_kat,
+    score_evidence, search_frida_capture_events as build_frida_capture_event_search,
+    summarize_dependency_graph, AnalysisEvidence, AngrOllvmFlowConfig, BuildOptions,
+    CryptoFunctionsOptions, CryptoKatAlgorithm, CryptoKatDirection, CryptoMaterialKind,
+    CryptoMaterialMultiTraceRequest, CryptoMaterialOptions, CryptoMaterialTraceCase,
+    CryptoSemanticKatRequest, DepTreeOptions, EvidenceScoreSignal, ForwardSliceOptions,
+    FridaAbiInferenceOptions, FridaArgumentKind, FridaArgumentSpec, FridaCaptureDirection,
+    FridaCaptureSearchOptions, FridaHookRequest, FridaOllvmDispatcherAtlasOptions,
+    FridaOllvmDispatcherHookOptions, FridaRuntimeAttestationRequest, FridaStalkerMode,
+    FridaUnicornCheckpointHookOptions, FridaUnicornRecaptureHookOptions, HashAlgorithm,
+    HashMatchRequest, HashTransformOptions, OllvmAnalysisOptions, OllvmMultiTraceRequest,
+    OllvmTraceCase, OllvmVersionMapRequest, OllvmVersionTraceCase, SearchOptions, SliceOptions,
+    StringQueryOptions, TraceDiffOptions, TraceEngine, UnicornOllvmConfig, UnicornOllvmRoundInput,
+    ValueEndian, ValueSearchKind, ValueSearchRequest, WhiteBoxMultiTraceRequest, WhiteBoxOptions,
+    WhiteBoxTraceCaseRequest, CRYPTO_SEMANTIC_KAT_SCHEMA,
 };
 
 fn decode_hex_bytes(value: &str) -> Result<Vec<u8>, String> {
@@ -2102,6 +2108,7 @@ impl TraceToolHandler {
             capabilities: vec![
                 "crypto_implementation_analysis".to_string(),
                 "semantic_aes_verification".to_string(),
+                "crypto_semantic_kat".to_string(),
                 "backward_taint".to_string(),
                 "forward_taint".to_string(),
                 "call_effects".to_string(),
@@ -2110,11 +2117,16 @@ impl TraceToolHandler {
                 "unified_value_search".to_string(),
                 "crypto_material_index".to_string(),
                 "frida_hook_generation".to_string(),
+                "frida_abi_inference".to_string(),
+                "runtime_image_attestation".to_string(),
                 "dynamic_cfg_ollvm_analysis".to_string(),
                 "idapython_bridge_generation".to_string(),
                 "unicorn_exact_seed_concrete_replay".to_string(),
                 "analysis_case_workspace".to_string(),
                 "replay_doctor".to_string(),
+                "ai_evidence_pack".to_string(),
+                "information_gain_capture_planning".to_string(),
+                "accuracy_benchmark_gate".to_string(),
                 "claim_counter_evidence_gate".to_string(),
                 "replay_state_readiness".to_string(),
                 "controlled_experiment_matrix".to_string(),
@@ -3418,7 +3430,7 @@ impl TraceToolHandler {
 
     #[tool(
         name = "ingest_analysis_case_artifact",
-        description = "Hash and strictly parse one user-produced artifact into an existing .traceui-case workspace. Recognized artifacts include traces, exact ELF files, Frida captures, Unicorn results, angr results, IDA annotations, OLLVM reports, analysis reports, and crypto reports. Invalid schemas, changed files, duplicate parent IDs, and unsupported exact-result identities are rejected. The tool only imports files; runtime execution remains manual."
+        description = "Hash and strictly parse one user-produced artifact into an existing .traceui-case workspace. Recognized artifacts include traces, exact ELF files, runtime attestations, Frida captures, Unicorn results, angr results, IDA annotations, OLLVM reports, analysis reports, and crypto reports. Runtime attestations bind exactly one static-binary parent and refuted captures remain counter-evidence. Invalid schemas, changed files, duplicate parent IDs, and unsupported exact-result identities are rejected. The tool only imports files; runtime execution remains manual."
     )]
     async fn ingest_analysis_case_artifact(
         &self,
@@ -3440,7 +3452,7 @@ impl TraceToolHandler {
 
     #[tool(
         name = "diagnose_analysis_case",
-        description = "Run Replay Doctor over a .traceui-case workspace. It re-hashes every artifact, reruns strict parsers, checks module/exact ELF provenance, compares compatible Unicorn rounds by exact capture offset, recognizes authorized closer checkpoint captures, separates observed/related/refuted/unknown claims, and returns deterministic next actions such as recapture, post-call checkpoint, bounded angr, integrity repair, or stop. It never executes Frida, Unicorn, angr, IDA, or the target. All OLLVM/replay findings remain Candidate/Related."
+        description = "Run Replay Doctor over a .traceui-case workspace. It re-hashes every artifact, reruns strict parsers, strictly verifies bound runtime attestations, checks module/exact ELF provenance, compares compatible Unicorn rounds by exact capture offset, recognizes authorized closer checkpoint captures, separates observed/related/refuted/unknown claims, and returns deterministic next actions such as runtime recapture, post-call checkpoint, bounded angr, integrity repair, or stop. It never executes Frida, Unicorn, angr, IDA, or the target. All OLLVM/replay findings remain Candidate/Related."
     )]
     async fn diagnose_analysis_case(
         &self,
@@ -3462,6 +3474,75 @@ impl TraceToolHandler {
                 "report": report,
                 "persistedClaimCount": persisted_claim_count,
             })))
+        })
+        .await
+    }
+
+    #[tool(
+        name = "plan_analysis_case_capture",
+        description = "Rank the next bounded evidence acquisitions for one .traceui-case by deterministic heuristic information gain. It combines claim blockers/counter-evidence, exact-ELF/runtime-attestation gaps, GPR/NZCV/stack/pointer/SIMD/system readiness, repeated Unicorn stalls, closer checkpoints, and missing controlled-run cells. Returns exact artifact IDs, available module-relative offsets, registers/memory to capture, competing hypotheses, success criteria, and a redundancy key so an AI does not request the same unchanged capture twice. Scores are priorities, not probabilities; execution remains manual and simulation/OLLVM results remain Candidate/Related."
+    )]
+    async fn plan_analysis_case_capture(
+        &self,
+        Parameters(req): Parameters<PlanAnalysisCaseCaptureRequest>,
+    ) -> Result<String, String> {
+        blocking(move || {
+            let report = trace_core::diagnose_trace_analysis_case(&req.case_path)
+                .map_err(|error| error.to_string())?;
+            let mut plan = report.capture_plan;
+            let max_targets = req.max_targets.clamp(1, 32) as usize;
+            if plan.targets.len() > max_targets {
+                plan.omitted_target_count = plan
+                    .omitted_target_count
+                    .saturating_add((plan.targets.len() - max_targets) as u64);
+                plan.targets.truncate(max_targets);
+                plan.target_count = plan.targets.len() as u64;
+            }
+            Ok(json(&plan))
+        })
+        .await
+    }
+
+    #[tool(
+        name = "run_accuracy_benchmark",
+        description = "Run a strict trace-ui/accuracy-benchmark-suite-v1 over one to 128 .traceui-case fixtures. Measures declared replay/capture-plan drift, claim gate and recommended-status drift, Verified false positives/false negatives, unexpected Verified claims, and fixture errors. gateMet is false on any mismatch. This is a regression gate over reviewed fixtures, not new evidence that fixture labels are ground truth."
+    )]
+    async fn run_accuracy_benchmark(
+        &self,
+        Parameters(req): Parameters<RunAccuracyBenchmarkRequest>,
+    ) -> Result<String, String> {
+        blocking(move || {
+            Ok(json(&trace_core::run_accuracy_benchmark_file(
+                &req.suite_path,
+            )?))
+        })
+        .await
+    }
+
+    #[tool(
+        name = "generate_analysis_case_evidence_pack",
+        description = "Build a bounded trace-ui/ai-evidence-pack-v1 from one .traceui-case for AI analysis. JSON or Markdown output lists each claim's Claim-Ledger recommended maximum status and keeps valid supporting evidence, valid counter-evidence, unknowns/next evidence needs, and invalid artifacts in separate sections. Every evidence item carries artifactId, artifact kind/label, raw locator, and parsed trace seq/line, memory range, module offset, or event index when explicitly encoded. max_tokens and max_items are enforced deterministically. The pack is context packaging, never new proof; summaries and descriptions cannot verify a claim."
+    )]
+    async fn generate_analysis_case_evidence_pack(
+        &self,
+        Parameters(req): Parameters<GenerateAnalysisCaseEvidencePackRequest>,
+    ) -> Result<String, String> {
+        blocking(move || {
+            let pack = trace_core::build_analysis_case_evidence_pack(
+                &trace_core::AnalysisCaseEvidencePackRequest {
+                    case_path: req.case_path,
+                    max_tokens: req.max_tokens,
+                    max_items: req.max_items,
+                    include_generated_claims: req.include_generated_claims,
+                },
+            )
+            .map_err(|error| error.to_string())?;
+            Ok(match req.format {
+                AnalysisCaseEvidencePackFormatRequest::Json => json(&pack),
+                AnalysisCaseEvidencePackFormatRequest::Markdown => {
+                    trace_core::render_analysis_case_evidence_pack_markdown(&pack)
+                }
+            })
         })
         .await
     }
@@ -4350,6 +4431,98 @@ impl TraceToolHandler {
     }
 
     #[tool(
+        name = "generate_frida_runtime_attestation",
+        description = "Generate a bounded Frida 16.x script that hashes mapped ELF metadata and exact-ELF-derived file-backed executable PT_LOAD windows for one module basename. The user runs the script manually; Trace UI never attaches, spawns, loads, or executes Frida. Only complete executable-byte coverage can later become scoped runtime-image Verified; deterministic sampling remains Related."
+    )]
+    async fn generate_frida_runtime_attestation(
+        &self,
+        Parameters(req): Parameters<GenerateFridaRuntimeAttestationRequest>,
+    ) -> Result<String, String> {
+        blocking(move || {
+            let request = FridaRuntimeAttestationRequest {
+                module_name: req.module_name,
+                static_binary_path: req.static_binary_path,
+                window_bytes: req.window_bytes,
+                max_windows: req.max_windows,
+            };
+            Ok(json(&build_frida_runtime_attestation(&request)?))
+        })
+        .await
+    }
+
+    #[tool(
+        name = "inspect_runtime_attestation",
+        description = "Strictly parse a user-captured trace-ui/frida-runtime-attestation-v1 JSON/NDJSON/send/CLI file, regenerate its plan from the selected exact AArch64 ELF, and report verified-full, related-sampled, refuted, or incomplete with byte coverage and counter-evidence. A verified-full result is scoped to captured mapped metadata and all file-backed executable PT_LOAD bytes; it does not verify crypto semantics, OLLVM, reachability, or simulator completeness."
+    )]
+    async fn inspect_runtime_attestation(
+        &self,
+        Parameters(req): Parameters<InspectRuntimeAttestationRequest>,
+    ) -> Result<String, String> {
+        blocking(move || {
+            Ok(json(&build_runtime_attestation_inspection(
+                &req.capture_path,
+                &req.exact_binary_path,
+            )?))
+        })
+        .await
+    }
+
+    #[tool(
+        name = "verify_crypto_semantic_kat",
+        description = "Create a strict deterministic crypto known-answer artifact for AES ECB/CBC/CTR/GCM, MD5, SHA-1/256/384/512, HMAC, or PBKDF2-HMAC. Inputs are bounded strict hex; the report records exact parameters, recomputed output, mismatch offset/range, and an exact claimScope. Only verified-full can open a matching crypto:* claim gate. Locator/description text cannot substitute for this artifact. output_path is optional and the saved file contains sensitive material."
+    )]
+    async fn verify_crypto_semantic_kat(
+        &self,
+        Parameters(req): Parameters<VerifyCryptoSemanticKatRequest>,
+    ) -> Result<String, String> {
+        blocking(move || {
+            let algorithm = req.algorithm.parse::<CryptoKatAlgorithm>()?;
+            let direction = req
+                .direction
+                .as_deref()
+                .map(str::parse::<CryptoKatDirection>)
+                .transpose()?;
+            let output_path = req.output_path;
+            let request = CryptoSemanticKatRequest {
+                schema: CRYPTO_SEMANTIC_KAT_SCHEMA.to_string(),
+                algorithm,
+                direction,
+                key_hex: req.key_hex,
+                input_hex: req.input_hex,
+                observed_output_hex: req.observed_output_hex,
+                iv_hex: req.iv_hex,
+                aad_hex: req.aad_hex,
+                observed_tag_hex: req.observed_tag_hex,
+                password_hex: req.password_hex,
+                salt_hex: req.salt_hex,
+                iterations: req.iterations,
+                derived_key_length: req.derived_key_length,
+            };
+            let report = match output_path.as_deref() {
+                Some(path) => save_crypto_kat(path, &request)?,
+                None => trace_core::verify_crypto_semantic_kat(&request),
+            };
+            Ok(json(&serde_json::json!({
+                "report": report,
+                "savedPath": output_path,
+                "containsSensitiveMaterial": true,
+            })))
+        })
+        .await
+    }
+
+    #[tool(
+        name = "inspect_crypto_semantic_kat",
+        description = "Strictly parse an existing trace-ui/crypto-semantic-kat-verification-v1 file and recompute every serialized field from the embedded vector. Rejects stale or forged status/claimScope/output fields. verified-full remains scoped to that exact vector and does not prove function provenance, runtime reachability, or OLLVM/simulator structure."
+    )]
+    async fn inspect_crypto_semantic_kat(
+        &self,
+        Parameters(req): Parameters<InspectCryptoSemanticKatRequest>,
+    ) -> Result<String, String> {
+        blocking(move || Ok(json(&build_crypto_kat_inspection(&req.file_path)?))).await
+    }
+
+    #[tool(
         name = "inspect_frida_capture",
         description = "Read user-captured JSON/NDJSON trace-ui/frida-hook-v1 send() messages, normalize hook calls, propagate module metadata, and summarize registers, buffers, returns, backtraces, and Stalker event counts. Trace UI does not attach, spawn, load, or execute Frida."
     )]
@@ -4361,6 +4534,34 @@ impl TraceToolHandler {
             let bytes = std::fs::read(&req.file_path)
                 .map_err(|error| format!("failed to read Frida capture: {error}"))?;
             Ok(json(&parse_frida_capture_bundle(&bytes)?))
+        })
+        .await
+    }
+
+    #[tool(
+        name = "infer_frida_abi",
+        description = "Infer conservative ARM64 ABI/structure candidates from repeated user-captured Frida events: X0-X7 argument roles, pointer+length pairs, stable context pointers, enter/leave buffer mutation, baseRegister+displacement field windows, and return-value shape. Requires repeated observations by default, reports exact event indices, and keeps every classification Candidate/Related. Hook labels/directions are metadata rather than proof; runtime pointers are process-specific. Trace UI only parses the capture and never runs Frida or the target."
+    )]
+    async fn infer_frida_abi(
+        &self,
+        Parameters(req): Parameters<InferFridaAbiRequest>,
+    ) -> Result<String, String> {
+        blocking(move || {
+            let report = build_frida_abi_inference(
+                &req.file_path,
+                &FridaAbiInferenceOptions {
+                    min_observations: req.min_observations,
+                    max_functions: req.max_functions,
+                    max_candidates_per_function: req.max_candidates_per_function,
+                },
+            )?;
+            if let Some(path) = req.output_path.as_deref() {
+                trace_core::save_frida_abi_inference(path, &report)?;
+            }
+            Ok(json(&serde_json::json!({
+                "report": report,
+                "savedPath": req.output_path,
+            })))
         })
         .await
     }
@@ -5625,12 +5826,19 @@ impl ServerHandler for TraceToolHandler {
              15. Extract: get_memory to read key buffers, get_trace_lines(full=true) for register details\n\
              16. Detection failure: diagnose_crypto_detection to distinguish not-observed from parser/scope/verification gaps\n\
              17. Multi-round case: open_analysis_case, ingest_analysis_case_artifact, then diagnose_analysis_case\n\
-             18. Accuracy gate: audit_analysis_case_claims before saying Verified; use upsert_analysis_case_experiment to isolate build/key/input/environment changes\n\n\
+             18. Accuracy gate: audit_analysis_case_claims before saying Verified; use upsert_analysis_case_experiment to isolate build/key/input/environment changes\n\
+             19. Runtime identity: generate_frida_runtime_attestation, let the user run it manually, then inspect_runtime_attestation and import the capture with the exact ELF as parent\n\n\
+             20. Crypto proof: verify_crypto_semantic_kat, optionally save/import the artifact, then inspect_crypto_semantic_kat; only an exact matching verified-full claimScope can open crypto:* Verified\n\n\
+             21. Active evidence: plan_analysis_case_capture ranks the next non-redundant offset/register/memory/controlled-run request by current blockers and explicit success criteria\n\n\
+             22. ABI candidates: infer_frida_abi over repeated manual captures to rank pointer+length, context, mutation, field-offset, and return-role candidates without claiming recovered types\n\n\
+             23. Regression gate: run_accuracy_benchmark on reviewed positive/negative .traceui-case fixtures before accepting confidence-level changes\n\n\
+             24. Bounded AI handoff: generate_analysis_case_evidence_pack in JSON or Markdown; preserve counter-evidence, unknowns, and invalid artifacts instead of sending an unbounded case dump\n\n\
              Tips:\n\
              - session_id is optional when only one trace is open\n\
              - Use data_only=true in forward_taint_analysis and taint_analysis to reduce noise\n\
              - Background tasks are cooperative; cancel_analysis_task stops before later phases and saving\n\
              - Taint source @LINE values are 1-based; start_seq/end_seq filters are 0-based\n\
+             - A disk ELF SHA-256 alone is not runtime proof; sampled runtime attestation remains Related and only complete executable-byte coverage can pass the runtime-image gate\n\
              - analyze_function with node_id shows entry args (X0-X7) and return value\n\
              - Use addr_range to focus search/taint on a specific address range".to_string(),
         )
@@ -5646,16 +5854,24 @@ mod tests {
         let router = TraceToolHandler::tool_router();
         assert_eq!(
             router.map.len(),
-            70,
+            78,
             "MCP tool count changed; update docs and this registry check"
         );
         for name in [
             "open_analysis_case",
             "ingest_analysis_case_artifact",
             "diagnose_analysis_case",
+            "plan_analysis_case_capture",
+            "run_accuracy_benchmark",
             "audit_analysis_case_claims",
             "upsert_analysis_case_experiment",
             "diagnose_crypto_detection",
+            "generate_frida_runtime_attestation",
+            "inspect_runtime_attestation",
+            "verify_crypto_semantic_kat",
+            "inspect_crypto_semantic_kat",
+            "infer_frida_abi",
+            "generate_analysis_case_evidence_pack",
         ] {
             assert!(router.has_route(name), "missing MCP accuracy tool {name}");
         }
@@ -5666,12 +5882,67 @@ mod tests {
             .unwrap_or_default();
         assert!(audit_description.contains("Verified"));
         assert!(audit_description.contains("Candidate/Related"));
+        let capture_plan_description = router.map["plan_analysis_case_capture"]
+            .attr
+            .description
+            .as_deref()
+            .unwrap_or_default();
+        assert!(capture_plan_description.contains("redundancy key"));
+        assert!(capture_plan_description.contains("not probabilities"));
+        let benchmark_description = router.map["run_accuracy_benchmark"]
+            .attr
+            .description
+            .as_deref()
+            .unwrap_or_default();
+        assert!(benchmark_description.contains("false positives/false negatives"));
+        assert!(benchmark_description.contains("not new evidence"));
         let experiment_description = router.map["upsert_analysis_case_experiment"]
             .attr
             .description
             .as_deref()
             .unwrap_or_default();
         assert!(experiment_description.contains("manually"));
+        let generate_attestation_description = router.map["generate_frida_runtime_attestation"]
+            .attr
+            .description
+            .as_deref()
+            .unwrap_or_default();
+        assert!(generate_attestation_description.contains("never attaches"));
+        assert!(generate_attestation_description.contains("sampling remains Related"));
+        let inspect_attestation_description = router.map["inspect_runtime_attestation"]
+            .attr
+            .description
+            .as_deref()
+            .unwrap_or_default();
+        assert!(inspect_attestation_description.contains("verified-full"));
+        assert!(inspect_attestation_description.contains("does not verify crypto semantics"));
+        let crypto_kat_description = router.map["verify_crypto_semantic_kat"]
+            .attr
+            .description
+            .as_deref()
+            .unwrap_or_default();
+        assert!(crypto_kat_description.contains("verified-full"));
+        assert!(crypto_kat_description.contains("Locator/description text cannot substitute"));
+        let inspect_crypto_kat_description = router.map["inspect_crypto_semantic_kat"]
+            .attr
+            .description
+            .as_deref()
+            .unwrap_or_default();
+        assert!(inspect_crypto_kat_description.contains("recompute every serialized field"));
+        let abi_description = router.map["infer_frida_abi"]
+            .attr
+            .description
+            .as_deref()
+            .unwrap_or_default();
+        assert!(abi_description.contains("pointer+length"));
+        assert!(abi_description.contains("Candidate/Related"));
+        let evidence_pack_description = router.map["generate_analysis_case_evidence_pack"]
+            .attr
+            .description
+            .as_deref()
+            .unwrap_or_default();
+        assert!(evidence_pack_description.contains("counter-evidence"));
+        assert!(evidence_pack_description.contains("never new proof"));
 
         let handler = TraceToolHandler::new(Arc::new(TraceEngine::new()));
         let Json(health) = handler.health(Parameters(HealthRequest {})).unwrap();
@@ -5679,9 +5950,211 @@ mod tests {
             "claim_counter_evidence_gate",
             "replay_state_readiness",
             "controlled_experiment_matrix",
+            "runtime_image_attestation",
+            "crypto_semantic_kat",
+            "information_gain_capture_planning",
+            "frida_abi_inference",
+            "accuracy_benchmark_gate",
+            "ai_evidence_pack",
         ] {
             assert!(health.capabilities.iter().any(|value| value == capability));
         }
+    }
+
+    #[tokio::test]
+    async fn evidence_pack_tool_returns_bounded_structured_case_context() {
+        let dir = std::env::temp_dir().join(format!(
+            "trace-ui-mcp-evidence-pack-{}",
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        let trace_path = dir.join("sample.log");
+        let case_path = dir.join("sample.traceui-case");
+        std::fs::write(&trace_path, b"trace\n").unwrap();
+        trace_core::create_trace_analysis_case(
+            case_path.to_str().unwrap(),
+            "MCP evidence pack",
+            Some(trace_path.to_str().unwrap()),
+            None,
+        )
+        .unwrap();
+
+        let handler = TraceToolHandler::new(Arc::new(TraceEngine::new()));
+        let output = handler
+            .generate_analysis_case_evidence_pack(Parameters(
+                GenerateAnalysisCaseEvidencePackRequest {
+                    case_path: case_path.to_string_lossy().into_owned(),
+                    format: AnalysisCaseEvidencePackFormatRequest::Json,
+                    max_tokens: 2_000,
+                    max_items: 32,
+                    include_generated_claims: true,
+                },
+            ))
+            .await
+            .unwrap();
+        let value: serde_json::Value = serde_json::from_str(&output).unwrap();
+        assert_eq!(value["schema"], "trace-ui/ai-evidence-pack-v1");
+        assert!(value["budget"]["estimatedTokenCount"].as_u64().unwrap() <= 2_000);
+        assert!(value.get("supportingEvidence").is_some());
+        assert!(value.get("counterEvidence").is_some());
+        assert!(value.get("unknowns").is_some());
+        assert!(value.get("invalidArtifacts").is_some());
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[tokio::test]
+    async fn accuracy_tools_execute_end_to_end_through_mcp_handlers() {
+        let dir = std::env::temp_dir().join(format!(
+            "trace-ui-mcp-accuracy-tools-{}",
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        let trace_path = dir.join("sample.log");
+        let case_path = dir.join("sample.traceui-case");
+        let kat_path = dir.join("sha256-kat.json");
+        let capture_path = dir.join("capture.json");
+        let abi_path = dir.join("abi.json");
+        let suite_path = dir.join("accuracy-suite.json");
+        std::fs::write(&trace_path, b"trace\n").unwrap();
+        trace_core::create_trace_analysis_case(
+            case_path.to_str().unwrap(),
+            "MCP accuracy tools",
+            Some(trace_path.to_str().unwrap()),
+            None,
+        )
+        .unwrap();
+
+        let handler = TraceToolHandler::new(Arc::new(TraceEngine::new()));
+        let kat_output = handler
+            .verify_crypto_semantic_kat(Parameters(VerifyCryptoSemanticKatRequest {
+                algorithm: "sha256".to_string(),
+                direction: None,
+                key_hex: None,
+                input_hex: Some("68656c6c6f".to_string()),
+                observed_output_hex:
+                    "2cf24dba5fb0a30e26e83b2ac5b9e29e1b161e5c1fa7425e73043362938b9824".to_string(),
+                iv_hex: None,
+                aad_hex: None,
+                observed_tag_hex: None,
+                password_hex: None,
+                salt_hex: None,
+                iterations: None,
+                derived_key_length: None,
+                output_path: Some(kat_path.to_string_lossy().into_owned()),
+            }))
+            .await
+            .unwrap();
+        let kat: serde_json::Value = serde_json::from_str(&kat_output).unwrap();
+        assert_eq!(kat["report"]["status"], "verified-full");
+
+        let inspected_output = handler
+            .inspect_crypto_semantic_kat(Parameters(InspectCryptoSemanticKatRequest {
+                file_path: kat_path.to_string_lossy().into_owned(),
+            }))
+            .await
+            .unwrap();
+        let inspected: serde_json::Value = serde_json::from_str(&inspected_output).unwrap();
+        assert_eq!(inspected["status"], "verified-full");
+
+        let capture = serde_json::json!([
+            {
+                "type": "send",
+                "payload": {
+                    "protocol": "trace-ui/frida-hook-v1",
+                    "hookId": "encrypt",
+                    "event": "hook-enter",
+                    "functionName": "encrypt_buffer",
+                    "timestampMs": 1,
+                    "threadId": 7,
+                    "callId": "call-1",
+                    "module": "libtarget.so",
+                    "moduleBase": "0x70000000",
+                    "moduleSize": 65536,
+                    "target": "0x70001000",
+                    "captures": [
+                        {"index":1,"label":"input","kind":"byteArray","direction":"input","phase":"enter","pointer":"0x71000000","value":"41424344","byteLength":4,"requestedLength":4},
+                        {"index":2,"label":"input-length","kind":"integer","direction":"input","phase":"enter","value":"4"}
+                    ]
+                }
+            },
+            {
+                "type": "send",
+                "payload": {
+                    "protocol": "trace-ui/frida-hook-v1",
+                    "hookId": "encrypt",
+                    "event": "hook-enter",
+                    "functionName": "encrypt_buffer",
+                    "timestampMs": 2,
+                    "threadId": 7,
+                    "callId": "call-2",
+                    "module": "libtarget.so",
+                    "moduleBase": "0x70000000",
+                    "moduleSize": 65536,
+                    "target": "0x70001000",
+                    "captures": [
+                        {"index":1,"label":"input","kind":"byteArray","direction":"input","phase":"enter","pointer":"0x71000100","value":"4142434445","byteLength":5,"requestedLength":5},
+                        {"index":2,"label":"input-length","kind":"integer","direction":"input","phase":"enter","value":"5"}
+                    ]
+                }
+            }
+        ]);
+        std::fs::write(&capture_path, serde_json::to_vec_pretty(&capture).unwrap()).unwrap();
+        let abi_output = handler
+            .infer_frida_abi(Parameters(InferFridaAbiRequest {
+                file_path: capture_path.to_string_lossy().into_owned(),
+                min_observations: 2,
+                max_functions: 8,
+                max_candidates_per_function: 32,
+                output_path: Some(abi_path.to_string_lossy().into_owned()),
+            }))
+            .await
+            .unwrap();
+        let abi: serde_json::Value = serde_json::from_str(&abi_output).unwrap();
+        assert_eq!(abi["report"]["schema"], "trace-ui/frida-abi-inference-v1");
+        assert!(!abi["report"]["functions"][0]["pointerLengthPairs"]
+            .as_array()
+            .unwrap()
+            .is_empty());
+
+        let plan_output = handler
+            .plan_analysis_case_capture(Parameters(PlanAnalysisCaseCaptureRequest {
+                case_path: case_path.to_string_lossy().into_owned(),
+                max_targets: 3,
+            }))
+            .await
+            .unwrap();
+        let plan: serde_json::Value = serde_json::from_str(&plan_output).unwrap();
+        assert_eq!(plan["schema"], "trace-ui/information-gain-capture-plan-v1");
+        assert!(plan["targets"].as_array().unwrap().len() <= 3);
+
+        let suite = serde_json::json!({
+            "schema": "trace-ui/accuracy-benchmark-suite-v1",
+            "suiteId": "mcp-handler-smoke",
+            "cases": [{
+                "caseId": "empty-case",
+                "casePath": "sample.traceui-case",
+                "claimExpectations": [],
+                "requireNoUnexpectedVerified": true
+            }]
+        });
+        std::fs::write(&suite_path, serde_json::to_vec_pretty(&suite).unwrap()).unwrap();
+        let benchmark_output = handler
+            .run_accuracy_benchmark(Parameters(RunAccuracyBenchmarkRequest {
+                suite_path: suite_path.to_string_lossy().into_owned(),
+            }))
+            .await
+            .unwrap();
+        let benchmark: serde_json::Value = serde_json::from_str(&benchmark_output).unwrap();
+        assert_eq!(benchmark["schema"], "trace-ui/accuracy-benchmark-report-v1");
+        assert_eq!(benchmark["gateMet"], true);
+
+        let _ = std::fs::remove_dir_all(dir);
     }
 
     fn build_session(engine: &TraceEngine, lines: &[&str]) -> (String, std::path::PathBuf) {

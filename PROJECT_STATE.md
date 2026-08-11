@@ -1,12 +1,18 @@
 # 项目状态与交接（先读这个）
 
-## 2026-08-02 当前增量
+## 2026-08-11 当前增量
 
 - 前端安全与工作流收尾：Crypto Materials 和 Frida 材料索引默认遮罩 key/salt/digest 等完整字节，改为每条材料独立显示/隐藏；Frida 捕获列表支持元数据搜索、事件类型和 payload 筛选，并使用 `useVirtualizerNoSync` 虚拟滚动；Crypto 子页面按首次访问懒加载并保持已访问页签状态；Frida/OLLVM 页面提示所有脚本由用户手动执行；不支持独立窗口的页签已禁用拖出；`npm run check:ui-guards` 与 `npm run test:ui` 防止自动 Frida 行为、空浮动面板、关键旧文案和核心交互回归。
 
 - 新增 **Crypto Material Explorer**：统一索引 raw/derived key、password、salt、IV、nonce、counter、plaintext/ciphertext、digest/MAC、AAD、tag；支持 AES、MD5/SHA、HMAC、PBKDF2 确定性复算和跨 trace salt/nonce 候选隔离。
 - 软件 AES 分析补充动态内存证据：标准 S-box 地址/值指纹、AES-128 44-word 展开密钥验证、连续 input/output 重建和逐 block 语义复算；无 API 注释的 GumTrace 也可进入 Verified，现有 CBC/CTR/GCM 与 Crypto Materials/Frida/OLLVM 工作流保持不变。
 - 新增 **Frida 16 Hook Generator**：按 module export 或 module-relative offset 生成 X0-X7、SP/LR/PC、buffer/string、return、backtrace、Stalker 脚本，事件协议为 `trace-ui/frida-hook-v1`。产品边界固定为“只生成/保存脚本”，用户自行 attach、spawn、load 和执行 hook。
+- 新增 **Frida 16 运行时镜像认证**：按 exact AArch64 ELF 的映射 metadata 与全部 file-backed executable `PT_LOAD` bytes 生成有界 SHA-256 计划和手动脚本，回导后严格重算为 `verified-full` / `related-sampled` / `refuted` / `incomplete`。只有完整覆盖能验证 `runtime-image:*` scope；抽样、OLLVM、angr/Unicorn 和密码语义不会被误提升。
+- 新增 **AI Evidence Pack**：MCP `generate_analysis_case_evidence_pack` 从严格 `.traceui-case` 生成有 token/entry 预算的 JSON/Markdown，分别输出 Claim Ledger 最高等级、supporting/counter evidence、unknowns 与 invalid artifacts，并保留 artifact ID 和可解析 locator。pack 只压缩上下文，不创建新证据。
+- 新增 **Crypto Semantic KAT**：MCP/Tauri 对 AES ECB/CBC/CTR/GCM、MD5、SHA、HMAC、PBKDF2-HMAC 生成并严格复验 `trace-ui/crypto-semantic-kat-verification-v1`；只有 exact `claimScope` 的 `verified-full` artifact 能支持对应 `crypto:*` Verified，自由文本 marker 不再有效。
+- 新增 **信息增益捕获规划**：Replay Doctor `capturePlan` 和 MCP `plan_analysis_case_capture` 按 blocker、反证、缺失寄存器/内存、checkpoint、controlled-run cell 与模拟停滞排序下一次补采样，输出 exact offset、capture requirements、competing hypotheses、success criteria 与 redundancy key。
+- 新增 **Frida ABI/结构候选推断**：MCP/Tauri `infer_frida_abi` 从重复手动捕获推断 pointer+length、context、mutation、field window 与 return shape；保留 exact event index，所有分类为 Candidate/Related，runtime pointer 不跨运行复用。
+- 新增 **Accuracy Benchmark / CI Gate**：严格 suite/report 协议统计 claim gate/status、Verified 误报/漏报、unexpected Verified、fixture error 与 capture-plan 排序漂移；CI 显式运行 benchmark，MCP handler 另有端到端 smoke test。
 - 新增 **Frida 16 Crypto API Recipes**：GUI/MCP 可列出并套用 OpenSSL/BoringSSL 与 Apple CommonCrypto 的 17 个常见 MD5/SHA、EVP、HMAC、PBKDF2、CCCrypt 配方；支持固定长度、X0-X7 长度寄存器和返回时 `*Xn` u32 输出长度。ABI 无法证明的算法、PRF、IV/栈参数均保留警告，长度指针读取失败不会降级为最大缓冲区读取。
 - 新增 **Frida Capture Import / angr State Seed**：导入用户手动捕获的 JSON/NDJSON/`TRACE_UI_JSON` CLI 日志，规范化 callId/module mapping，查看 registers/buffers/return/backtrace/Stalker batches，并生成 `trace-ui/angr-state-seed-v1` 的 `configure_state(state)`。
 - 新增 **AI 分页检索 Frida Capture**：MCP `search_frida_capture_events` 按元数据、事件类型、module/function/callId 与 payload 条件返回有界摘要和精确 event index；`get_frida_capture_event` 再按需读取单个事件。寄存器、buffer、return、backtrace 默认不返回，避免大捕获占满 AI 上下文。
@@ -31,12 +37,12 @@
 - Frida capture parser 已同步保留 X8-X28 pointer snapshot 与 SP 栈窗口，相关 byteArray 会进入 angr/Unicorn state seed；有端到端回归防止退回旧 X0-X7 导入限制。
 - 增强 **OLLVM condition-state profile**：条件分支报告聚合已捕获/缺失观察、distinct 条件值、按 outcome 的值分布及 NZCV 的 N/Z/C/V set/clear 计数；profile 不完整时明确标记，仍仅作为 Candidate/Related 证据。
 - GUI 入口位于 `Crypto > Materials`、`Crypto > Frida Hook`、`Crypto > IDA / OLLVM`，其中 OLLVM 面板包含 IDA、通用 angr bridge 与“模拟增强”里的 checkpoint → bounded angr 接力；Tauri 和 MCP 已完整接线。
-- MCP 覆盖 `analyze_crypto_materials`、`compare_crypto_material_traces`、`list_frida_hook_recipes`、`generate_frida_hook`、`generate_frida_ollvm_dispatcher_hook`、`generate_frida_unicorn_recapture_hook`、`generate_frida_unicorn_checkpoint_hook`、`inspect_frida_capture`、`search_frida_capture_events`、`get_frida_capture_event`、`analyze_frida_crypto_materials`、`analyze_frida_ollvm_dispatcher_capture`、`generate_angr_state_seed`、`analyze_ollvm`、`compare_ollvm_traces`、`map_ollvm_versions`、`generate_ida_ollvm_script`、`inspect_ida_annotations`、`generate_angr_ollvm_script`、`inspect_angr_ollvm_results`、`generate_unicorn_ollvm_script`、`inspect_unicorn_ollvm_results`、`compare_unicorn_ollvm_rounds`。当前 MCP 共 64 个工具，Tauri invoke handler 共 83 个命令。
+- MCP 覆盖 `analyze_crypto_materials`、`compare_crypto_material_traces`、`verify_crypto_semantic_kat`、`inspect_crypto_semantic_kat`、`list_frida_hook_recipes`、`generate_frida_hook`、`generate_frida_runtime_attestation`、`inspect_runtime_attestation`、`infer_frida_abi`、`generate_analysis_case_evidence_pack`、`plan_analysis_case_capture`、`run_accuracy_benchmark`、`generate_frida_ollvm_dispatcher_hook`、`generate_frida_unicorn_recapture_hook`、`generate_frida_unicorn_checkpoint_hook`、`inspect_frida_capture`、`search_frida_capture_events`、`get_frida_capture_event`、`analyze_frida_crypto_materials`、`analyze_frida_ollvm_dispatcher_capture`、`generate_angr_state_seed`、`analyze_ollvm`、`compare_ollvm_traces`、`map_ollvm_versions`、`generate_ida_ollvm_script`、`inspect_ida_annotations`、`generate_angr_ollvm_script`、`inspect_angr_ollvm_results`、`generate_unicorn_ollvm_script`、`inspect_unicorn_ollvm_results`、`compare_unicorn_ollvm_rounds`。当前 MCP 共 78 个工具，Tauri invoke handler 共 100 个命令。
 - Skills：更新 `trace-analysis`、`frida-hook-generation`、`ida-ollvm-analysis`。Frida skill 会优先检查审计配方，并明确禁止自动执行脚本；angr bridge 同样只生成脚本，由用户手动运行。
 - `main` push 会触发 `.github/workflows/macos.yml`，构建 macOS arm64 与 x64 DMG artifacts。
 
 > 用途：让 AI（Claude / Codex）快速理解当前项目状态再继续干活，也给作者自己当记忆锚点。
-> 最近更新：2026-08-02。当前代码变更与交接先读 `CURRENT_CHANGELOG.md`；历史设计见 `AI_ANALYSIS_ROADMAP.md` / `OPTIMIZATION_ROADMAP.md`，实施细节见 `CRYPTO_FUNCTIONS_IMPL.md`，macOS 构建见 `MACOS_SOURCE_BUILD.md`。
+> 最近更新：2026-08-11。当前代码变更与交接先读 `CURRENT_CHANGELOG.md`；历史设计见 `AI_ANALYSIS_ROADMAP.md` / `OPTIMIZATION_ROADMAP.md`，实施细节见 `CRYPTO_FUNCTIONS_IMPL.md`，macOS 构建见 `MACOS_SOURCE_BUILD.md`。
 
 ## 1. 这是什么
 
@@ -75,9 +81,9 @@ AI/MCP 建的分析（磁盘持久化、按 trace 内容校验）现在能在 ap
 Rust workspace 5 crate：
 - `trace-parser` — 行解析、数据模型（`RegId`/`ParsedLine`/`MemOp`）、指令分类 `insn_class.rs`（**ARM64 密码指令已分类**）、格式检测 `gumtrace::detect_format`
 - `trace-core` — 分析引擎。`engine/`（build/slice/forward_slice/search/query/source_sink/trace_diff/crypto_functions/function_inspect）、`query/`（纯逻辑+DTO）、`flat/`（bincode 缓存）、`analysis.rs`（分析记录）、`session.rs`（SessionState）
-- `trace-mcp` — MCP 协议层，当前 63 个 `#[tool]`，HTTP/SSE + stdio 双传输
+- `trace-mcp` — MCP 协议层，当前 78 个 `#[tool]`，HTTP/SSE + stdio 双传输
 - `trace-cli` — 独立 stdio MCP 二进制
-- `src-tauri` — Tauri 胶水，invoke handler 当前 83 个命令、`mcp.rs`（内置 MCP :19821）
+- `src-tauri` — Tauri 胶水，invoke handler 当前 100 个命令、`mcp.rs`（内置 MCP :19821）
 
 前端 `src-web/src`：`App.tsx` + `TraceTable.tsx`(Canvas) 为核心；面板系统在 `components/TabPanel.tsx`（8 个页签：Memory/Accesses/Taint State/Search/Strings/Crypto/Analyses/Function）；状态 `hooks/useTraceStore.ts`；类型 `types/trace.ts`。
 
@@ -98,14 +104,14 @@ cargo build --release --bin trace-cli   # 可选：stdio MCP CLI
 macOS：见 `MACOS_SOURCE_BUILD.md`（`npm ci --prefix src-web` + `cargo tauri build --target aarch64-apple-darwin`）。
 验证：`cargo test` 能跑到 "N passed" 就说明 trace-core/trace-mcp 编译通过。
 
-## 5. 下一步候选（按性价比，均未做）
+## 5. 下一步候选（按提升 AI 准确率收益排序）
 
-- **工程加固（推荐先做）**：永久锁 tauri 版本漂移 + 最小 CI（fmt/clippy/test + 前端构建）
-- 密码线收尾：`analyze_crypto_functions` 接进 `auto_investigate` + 做成 Recipe + 关联 known-digest 输出 + 磁盘缓存
-- 通用值/内存搜索 `find_memory_pattern`（Hex/整数/地址/ASCII-UTF8）
-- 字符串索引保留原始字节/UTF-16/末尾 NUL（提升 known-digest 命中）
-- 前端 Vitest 测试
-- 详细路线见 `OPTIMIZATION_ROADMAP.md` 阶段五及后续。
+- **Coverage-aware Claim Gate**：把 exact ELF 静态 CFG/函数范围与动态 trace 覆盖率绑定到 claim；对“没有 AES”“分支恒定”“CFG 已恢复”等否定或完备性结论，明确显示未执行 block/branch，并在覆盖不足时自动限制最高等级。
+- **最小可复核 Evidence Slice**：从 artifact locator 导出带 SHA-256 的原始 trace 行、寄存器、内存字节、module offset 和 parent provenance 小包，让 AI 读取真正的负载证据，而不是只读摘要；在 slice 之间建立 typed provenance graph，阻止跨 build/进程/offset 混用。
+- **Memory Object / Alias / Lifetime 模型**：结合 malloc/free/mmap、栈帧、base+offset 和跨调用 pointer 传播，重建对象边界、别名、生命周期及字段稳定性；提升 ABI、污点、crypto buffer 和 Unicorn missing-memory 判断，并避免把地址复用误认成同一对象。
+- **外部调用 Record/Replay Summary**：把同一 exact offset 的 Frida enter/leave 捕获转成有界调用摘要（输入窗口、返回值、输出 mutation、side-effect 范围），供 Unicorn 在明确授权下跨过常见 BL/BLR；缺少匹配调用时仍停止，不静默伪造系统状态。
+- **Counterfactual Paired Replay**：从同一 checkpoint 生成“原始 concrete seed”和“单变量扰动 seed”，专门寻找 opaque branch/dispatcher 的反例；输出必须标成 hypothetical/counterexample candidate，不能冒充真实运行可达性。
+- **状态覆盖扩展与基准语料**：为确有需要的严重样本增加 bounded SIMD/FP、TLS/selected system-state capture/import；持续扩充真实正负 fixture、协议 mutation/fuzz/property tests 和跨版本 benchmark。GUI 再补 Crypto KAT 创建表单、ABI/benchmark 详情页，降低人工误配参数的概率。
 
 ## 6. 改代码要知道的约定 / 坑（AI 务必读）
 

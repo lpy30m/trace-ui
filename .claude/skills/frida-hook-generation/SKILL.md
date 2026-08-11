@@ -1,14 +1,15 @@
 ---
 name: frida-hook-generation
-description: Generate bounded ARM64 Frida 16.x JavaScript hook scripts, inspect user-captured trace-ui/frida-hook-v1 JSON or NDJSON, index captured crypto materials, and turn exact-offset register/buffer captures into manual angr, Unicorn, or OLLVM state seeds through the trace-ui MCP server. Use for native exports or module-relative offsets, X0-X7 arguments, full ARM64 GPR snapshots, key/salt/digest buffers, strings, returns, backtraces, Stalker events, capture review, missing-memory recapture, or Frida-to-simulator handoff. Trace UI never attaches, spawns, loads, or executes Frida; the user controls runtime execution.
+description: Generate bounded ARM64 Frida 16.x JavaScript hook or runtime-image-attestation scripts, inspect user-captured trace-ui/frida-hook-v1 or trace-ui/frida-runtime-attestation-v1 JSON/NDJSON, infer conservative repeated-call ABI/structure candidates, index captured crypto materials, and turn exact-offset register/buffer captures into manual angr, Unicorn, or OLLVM state seeds through the trace-ui MCP server. Use for native exports or module-relative offsets, exact ELF runtime-byte verification, X0-X7 arguments, pointer-length/context/field candidates, full ARM64 GPR snapshots, key/salt/digest buffers, strings, returns, backtraces, Stalker events, capture review, missing-memory recapture, or Frida-to-simulator handoff. Trace UI never attaches, spawns, loads, or executes Frida; the user controls runtime execution.
 ---
 
 # Generate Frida 16 hooks with trace-ui
 
 Use `mcp__trace-ui__list_frida_hook_recipes`, `mcp__trace-ui__generate_frida_hook`,
+`mcp__trace-ui__generate_frida_runtime_attestation`, `mcp__trace-ui__inspect_runtime_attestation`,
 `mcp__trace-ui__generate_frida_ollvm_dispatcher_hook`, `mcp__trace-ui__inspect_frida_capture`,
 `mcp__trace-ui__search_frida_capture_events`, `mcp__trace-ui__get_frida_capture_event`,
-`mcp__trace-ui__analyze_frida_crypto_materials`, `mcp__trace-ui__analyze_frida_ollvm_dispatcher_capture`, and
+`mcp__trace-ui__infer_frida_abi`, `mcp__trace-ui__analyze_frida_crypto_materials`, `mcp__trace-ui__analyze_frida_ollvm_dispatcher_capture`, and
 `mcp__trace-ui__generate_angr_state_seed`, `mcp__trace-ui__generate_unicorn_ollvm_script`,
 `mcp__trace-ui__inspect_unicorn_ollvm_results`, and
 `mcp__trace-ui__generate_frida_unicorn_recapture_hook`, and
@@ -33,6 +34,10 @@ strict artifact provenance and counter-evidence.
    `search_frida_capture_events` to page compact summaries, then `get_frida_capture_event` for one exact
    event index, normally a `hook-enter` with registers or buffers. Keep registers, capture values,
    return values, and backtraces opt-in.
+   When argument roles are unclear and at least two comparable calls exist, run `infer_frida_abi` before
+   widening the Hook. Review pointer+length, stable context, enter/leave mutation, field-window, and
+   return-shape candidates with their exact event indices. Treat labels as metadata and every inference
+   as Candidate/Related; runtime pointers are process-specific.
 8. When crypto roles are requested, run `analyze_frida_crypto_materials`. Treat explicit labels as
    Related unless exact MD5/SHA/HMAC/PBKDF2 recomputation verifies the captured call. Prefer byteArray;
    text re-encoding is weaker evidence.
@@ -74,11 +79,22 @@ strict artifact provenance and counter-evidence.
     replay still lacks state, pass the same capture, exact ELF, and same prior result to
     `generate_angr_ollvm_script.checkpoint_result_path`; inspect the resulting `checkpointProbes` as
     bounded Candidate/Related paths.
-13. When the capture becomes a load-bearing seed or is followed by another Frida/Unicorn/angr round,
+13. When the claim depends on which ELF image was mapped, call `generate_frida_runtime_attestation`
+    with the exact AArch64 ELF, bounded `window_bytes`, and `max_windows`. Let the user run the generated
+    Frida 16.x script manually, then call `inspect_runtime_attestation` with the capture and same ELF.
+    Only full coverage of all file-backed executable `PT_LOAD` bytes may become scoped
+    `runtime-image:*` Verified. Sampling remains Related; mismatches are counter-evidence; writable/BSS/
+    heap/JIT, crypto semantics, OLLVM, and simulator reachability remain outside this gate.
+14. When the capture becomes a load-bearing seed or is followed by another Frida/Unicorn/angr round,
     ingest the exact ELF, capture, and each generated result into the same `.traceui-case` with explicit
     parent artifact IDs. Run Replay Doctor and the Claim Ledger audit before reporting a conclusion.
-    Artifact integrity and exact-offset matching prevent obvious mix-ups; they do not attest the module
-    loaded at runtime or make a simulator path Verified.
+    Bind a runtime-attestation artifact to exactly one static-binary parent and preserve refuted captures.
+    Artifact integrity and exact-offset matching alone do not attest the runtime image or make a simulator
+    path Verified. For an AI handoff, call `generate_analysis_case_evidence_pack` with explicit token/item
+    bounds and preserve its counter-evidence, unknowns, invalid artifacts, and omitted counts.
+    Call `plan_analysis_case_capture` after Replay Doctor when the next Hook location or memory window is
+    uncertain; follow the highest relevant non-redundant target, remembering that its score is a priority,
+    not a probability.
 
 ## Request fields
 
@@ -93,6 +109,10 @@ strict artifact provenance and counter-evidence.
 - `stalker_duration_ms` and `max_bytes`: keep bounded.
 - Dispatcher capture additionally accepts unique `capture_pointer_registers` X0-X28,
   `pointer_capture_bytes` 1-4096, and `stack_capture_bytes` 0-16384 starting at SP.
+- Runtime attestation accepts `module_name`, `static_binary_path`, power-of-two `window_bytes` 256-65536,
+  and `max_windows` 1-4096. A sampled plan never passes the full-coverage gate.
+- ABI inference accepts `file_path`, `min_observations` 2-64, `max_functions` 1-128,
+  `max_candidates_per_function` 8-512, and an optional JSON `output_path`.
 
 ## Selection rules
 
@@ -108,6 +128,9 @@ strict artifact provenance and counter-evidence.
   preserves NZCV and attempts packed `state.regs.nzcv` first, with an explicit N/Z/C/V fallback.
 - Default Stalker to `off`. Enable `calls` first; use `blocks` or `instructions` only for a narrow function and bounded duration.
 - Treat invalid pointers, unreadable memory, and truncated captures as expected runtime conditions.
+- Require repeated observations before cross-call ABI claims. A stable pointer or matching byte length is
+  a role candidate only; confirm it with instructions, data flow, symbols/API contracts, or controlled
+  counterexamples before labeling a type or expanding capture scope.
 - Prefer `byteArray` captures for angr memory seeds. Re-encoded UTF-8/UTF-16 strings do not preserve
   invalid bytes or original terminators.
 - Match `moduleBase/moduleSize` and the exact binary build before trusting pointer rebasing.

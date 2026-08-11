@@ -2,7 +2,10 @@ import React, { useCallback, useEffect, useMemo, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import type {
   CryptoDetectionDoctorReport,
+  FridaRuntimeAttestationRequest,
+  FridaRuntimeAttestationScript,
   ReplayDoctorReport,
+  RuntimeAttestationInspectionReport,
   TraceAnalysisCaseDocument,
   TraceCaseArtifact,
   TraceCaseClaimStatus,
@@ -43,6 +46,13 @@ function shortHash(value?: string): string {
 function artifactSummary(artifact: TraceCaseArtifact): string {
   const parts: string[] = [];
   if (artifact.summary.moduleName) parts.push(artifact.summary.moduleName);
+  if (artifact.summary.runtimeAttestationStatus) parts.push(artifact.summary.runtimeAttestationStatus);
+  if (artifact.summary.cryptoKatAlgorithm) parts.push(artifact.summary.cryptoKatAlgorithm);
+  if (artifact.summary.cryptoKatStatus) parts.push(artifact.summary.cryptoKatStatus);
+  if (artifact.summary.cryptoKatBytesChecked !== undefined) parts.push(`${artifact.summary.cryptoKatBytesChecked} KAT bytes`);
+  if (artifact.summary.matchedExecutableBytes !== undefined && artifact.summary.totalExecutableBytes !== undefined) {
+    parts.push(`${artifact.summary.matchedExecutableBytes}/${artifact.summary.totalExecutableBytes} executable bytes`);
+  }
   if (artifact.summary.captureOffsets.length) parts.push(`${artifact.summary.captureOffsets.length} offsets`);
   if (artifact.summary.eventCount) parts.push(`${artifact.summary.eventCount} events/seeds`);
   if (artifact.summary.runCount) parts.push(`${artifact.summary.runCount} runs/probes`);
@@ -55,6 +65,15 @@ export default function AnalysisCasePanel({ sessionId }: Props) {
   const [report, setReport] = useState<ReplayDoctorReport | null>(null);
   const [cryptoReport, setCryptoReport] = useState<CryptoDetectionDoctorReport | null>(null);
   const [binaryPath, setBinaryPath] = useState("");
+  const [attestationModuleName, setAttestationModuleName] = useState("");
+  const [attestationBinaryArtifactId, setAttestationBinaryArtifactId] = useState("");
+  const [attestationBinaryPath, setAttestationBinaryPath] = useState("");
+  const [attestationWindowBytes, setAttestationWindowBytes] = useState(4096);
+  const [attestationMaxWindows, setAttestationMaxWindows] = useState(1024);
+  const [attestationScript, setAttestationScript] = useState<FridaRuntimeAttestationScript | null>(null);
+  const [attestationCapturePath, setAttestationCapturePath] = useState("");
+  const [attestationInspection, setAttestationInspection] = useState<RuntimeAttestationInspectionReport | null>(null);
+  const [attestationSavedPath, setAttestationSavedPath] = useState("");
   const [experimentLabel, setExperimentLabel] = useState("");
   const [experimentBinarySha, setExperimentBinarySha] = useState("");
   const [experimentKeyGroup, setExperimentKeyGroup] = useState("");
@@ -83,6 +102,17 @@ export default function AnalysisCasePanel({ sessionId }: Props) {
     const saved = localStorage.getItem(storageKey);
     if (saved) void loadPath(saved);
   }, [storageKey, loadPath]);
+
+  useEffect(() => {
+    if (!document) return;
+    const binaries = document.case.artifacts.filter(artifact => artifact.kind === "static-binary");
+    const preferred = document.case.exactBinaryArtifactId && binaries.some(artifact => artifact.artifactId === document.case.exactBinaryArtifactId)
+      ? document.case.exactBinaryArtifactId
+      : binaries[0]?.artifactId ?? "";
+    setAttestationBinaryArtifactId(current => binaries.some(artifact => artifact.artifactId === current) ? current : preferred);
+    const selected = binaries.find(artifact => artifact.artifactId === preferred);
+    setAttestationModuleName(current => current || selected?.summary.moduleName || "");
+  }, [document]);
 
   const createCase = useCallback(async () => {
     const { save } = await import("@tauri-apps/plugin-dialog");
@@ -152,6 +182,101 @@ export default function AnalysisCasePanel({ sessionId }: Props) {
     if (typeof selected === "string") setBinaryPath(selected);
   }, []);
 
+  const buildAttestationRequest = useCallback((): FridaRuntimeAttestationRequest => {
+    if (!attestationModuleName.trim()) throw new Error("请输入运行时模块 basename，例如 libtarget.so。");
+    if (!attestationBinaryPath.trim()) throw new Error("请选择生成认证计划所用的 exact AArch64 ELF。");
+    return {
+      moduleName: attestationModuleName.trim(),
+      staticBinaryPath: attestationBinaryPath.trim(),
+      windowBytes: attestationWindowBytes,
+      maxWindows: attestationMaxWindows,
+    };
+  }, [attestationModuleName, attestationBinaryPath, attestationWindowBytes, attestationMaxWindows]);
+
+  const chooseAttestationBinary = useCallback(async () => {
+    const { open } = await import("@tauri-apps/plugin-dialog");
+    const selected = await open({
+      title: "选择运行时认证对应的 exact AArch64 ELF",
+      multiple: false,
+      directory: false,
+    });
+    if (typeof selected === "string") {
+      setAttestationBinaryPath(selected);
+      setAttestationScript(null);
+      setAttestationInspection(null);
+      setAttestationSavedPath("");
+    }
+  }, []);
+
+  const generateRuntimeAttestation = useCallback(async () => {
+    setBusy(true); setError(null);
+    try {
+      const request = buildAttestationRequest();
+      const generated = await invoke<FridaRuntimeAttestationScript>("generate_frida_runtime_attestation", { request });
+      setAttestationScript(generated);
+      setAttestationSavedPath("");
+    } catch (e) { setError(String(e)); }
+    finally { setBusy(false); }
+  }, [buildAttestationRequest]);
+
+  const saveRuntimeAttestation = useCallback(async () => {
+    let request: FridaRuntimeAttestationRequest;
+    try { request = buildAttestationRequest(); }
+    catch (e) { setError(String(e)); return; }
+    const { save } = await import("@tauri-apps/plugin-dialog");
+    const selected = await save({
+      title: "保存 Frida 运行时镜像认证脚本",
+      defaultPath: attestationScript?.fileName ?? "trace-ui-runtime-attestation.js",
+      filters: [{ name: "JavaScript", extensions: ["js"] }],
+    });
+    if (!selected) return;
+    setBusy(true); setError(null);
+    try {
+      setAttestationSavedPath(await invoke<string>("save_frida_runtime_attestation", { path: selected, request }));
+    } catch (e) { setError(String(e)); }
+    finally { setBusy(false); }
+  }, [attestationScript, buildAttestationRequest]);
+
+  const inspectRuntimeAttestation = useCallback(async () => {
+    let request: FridaRuntimeAttestationRequest;
+    try { request = buildAttestationRequest(); }
+    catch (e) { setError(String(e)); return; }
+    const { open } = await import("@tauri-apps/plugin-dialog");
+    const selected = await open({
+      title: "选择手动运行 Frida 后保存的认证 JSON/NDJSON/日志",
+      multiple: false,
+      directory: false,
+    });
+    if (typeof selected !== "string") return;
+    setBusy(true); setError(null);
+    try {
+      const inspection = await invoke<RuntimeAttestationInspectionReport>("inspect_runtime_attestation", {
+        capturePath: selected,
+        exactBinaryPath: request.staticBinaryPath,
+      });
+      setAttestationCapturePath(selected);
+      setAttestationInspection(inspection);
+    } catch (e) { setError(String(e)); }
+    finally { setBusy(false); }
+  }, [buildAttestationRequest]);
+
+  const importRuntimeAttestation = useCallback(async () => {
+    if (!document || !attestationCapturePath || !attestationBinaryArtifactId) return;
+    setBusy(true); setError(null);
+    try {
+      const imported = await invoke<{ case: TraceAnalysisCaseDocument["case"] }>("add_analysis_case_artifact", {
+        casePath: document.casePath,
+        artifactPath: attestationCapturePath,
+        kindHint: "runtime-attestation",
+        label: `Runtime attestation · ${attestationModuleName.trim() || "module"}`,
+        parentArtifactIds: [attestationBinaryArtifactId],
+      });
+      remember({ casePath: document.casePath, case: imported.case });
+      setReport(null);
+    } catch (e) { setError(String(e)); }
+    finally { setBusy(false); }
+  }, [document, attestationCapturePath, attestationBinaryArtifactId, attestationModuleName, remember]);
+
   const diagnoseAes = useCallback(async () => {
     if (!sessionId) return;
     setBusy(true); setError(null);
@@ -200,6 +325,15 @@ export default function AnalysisCasePanel({ sessionId }: Props) {
     experimentEnvironmentGroup, experimentChangedAxis, selectedExperimentArtifacts, remember,
   ]);
 
+  const staticBinaryArtifacts = useMemo(
+    () => document?.case.artifacts.filter(artifact => artifact.kind === "static-binary") ?? [],
+    [document],
+  );
+  const selectedAttestationBinary = useMemo(
+    () => staticBinaryArtifacts.find(artifact => artifact.artifactId === attestationBinaryArtifactId),
+    [staticBinaryArtifacts, attestationBinaryArtifactId],
+  );
+
   const healthById = useMemo(
     () => new Map(report?.artifactHealth.map(item => [item.artifactId, item]) ?? []),
     [report],
@@ -229,6 +363,118 @@ export default function AnalysisCasePanel({ sessionId }: Props) {
             </div>
             <div title={document.casePath} style={{ marginTop: 4, color: "var(--text-tertiary)", fontSize: 10, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{document.casePath}</div>
           </div>
+
+          <section style={cardStyle}>
+            <div style={{ display: "flex", alignItems: "center", gap: 7 }}>
+              <div style={{ color: "var(--text-primary)", fontSize: 12, fontWeight: 600 }}>运行时镜像认证（手动 Frida）</div>
+              {attestationInspection && <span style={{ color: statusColor(attestationInspection.status), fontSize: 10 }}>
+                {attestationInspection.status} · gate {String(attestationInspection.verificationGateMet)}
+              </span>}
+            </div>
+            <div style={{ marginTop: 4, color: "var(--text-secondary)", fontSize: 10, lineHeight: 1.5 }}>
+              生成脚本后由你在目标环境手动运行，再导入输出。Trace UI 不会连接、启动、加载或执行 Frida。只有 exact ELF、计划和全部 file-backed executable PT_LOAD 字节完整匹配，才会得到仅限 runtime-image 的 Verified；抽样匹配只能是 Related。
+            </div>
+            <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(190px, 1fr))", gap: 6, marginTop: 8 }}>
+              <input
+                aria-label="运行时模块 basename"
+                value={attestationModuleName}
+                onChange={event => { setAttestationModuleName(event.target.value); setAttestationScript(null); }}
+                placeholder="libtarget.so"
+                style={{ ...buttonStyle, height: 28 }}
+              />
+              <select
+                aria-label="认证绑定的 exact ELF artifact"
+                value={attestationBinaryArtifactId}
+                onChange={event => { setAttestationBinaryArtifactId(event.target.value); setAttestationInspection(null); }}
+                style={{ ...buttonStyle, height: 28 }}
+              >
+                <option value="">选择案件中的 exact ELF</option>
+                {staticBinaryArtifacts.map(artifact => <option key={artifact.artifactId} value={artifact.artifactId}>
+                  {artifact.label} · {shortHash(artifact.summary.binarySha256 ?? artifact.sha256)}
+                </option>)}
+              </select>
+              <input
+                aria-label="运行时认证 exact ELF 路径"
+                value={attestationBinaryPath}
+                onChange={event => { setAttestationBinaryPath(event.target.value); setAttestationScript(null); setAttestationInspection(null); }}
+                placeholder="exact ELF 绝对路径"
+                style={{ ...buttonStyle, height: 28 }}
+              />
+              <button type="button" style={buttonStyle} disabled={busy} onClick={chooseAttestationBinary}>选择 ELF 文件</button>
+              <label style={{ color: "var(--text-secondary)", fontSize: 10 }}>
+                window bytes
+                <input
+                  aria-label="认证窗口字节"
+                  type="number"
+                  min={256}
+                  max={65536}
+                  step={256}
+                  value={attestationWindowBytes}
+                  onChange={event => { setAttestationWindowBytes(Number(event.target.value)); setAttestationScript(null); }}
+                  style={{ ...buttonStyle, width: "100%", height: 28, marginTop: 2 }}
+                />
+              </label>
+              <label style={{ color: "var(--text-secondary)", fontSize: 10 }}>
+                max windows
+                <input
+                  aria-label="认证最大窗口数"
+                  type="number"
+                  min={1}
+                  max={4096}
+                  value={attestationMaxWindows}
+                  onChange={event => { setAttestationMaxWindows(Number(event.target.value)); setAttestationScript(null); }}
+                  style={{ ...buttonStyle, width: "100%", height: 28, marginTop: 2 }}
+                />
+              </label>
+            </div>
+            {!staticBinaryArtifacts.length && <div style={{ marginTop: 6, color: "#d29922", fontSize: 10 }}>请先把 exact AArch64 ELF 导入案件；认证捕获必须绑定唯一 static-binary parent。</div>}
+            {selectedAttestationBinary && <div style={{ marginTop: 5, color: "var(--text-tertiary)", fontSize: 10 }}>
+              parent artifact: {selectedAttestationBinary.label} · {shortHash(selectedAttestationBinary.summary.binarySha256 ?? selectedAttestationBinary.sha256)}
+            </div>}
+            <div style={{ display: "flex", flexWrap: "wrap", gap: 6, marginTop: 8 }}>
+              <button type="button" style={{ ...buttonStyle, background: "var(--btn-primary)", color: "#fff" }} disabled={busy || !attestationBinaryPath.trim() || !attestationModuleName.trim()} onClick={generateRuntimeAttestation}>生成认证脚本</button>
+              <button type="button" style={buttonStyle} disabled={busy || !attestationScript} onClick={saveRuntimeAttestation}>保存脚本</button>
+              <button type="button" style={buttonStyle} disabled={busy || !attestationBinaryPath.trim()} onClick={inspectRuntimeAttestation}>检查手动捕获</button>
+              <button type="button" style={buttonStyle} disabled={busy || !attestationInspection || !attestationCapturePath || !attestationBinaryArtifactId} onClick={importRuntimeAttestation}>导入案件（反证也保留）</button>
+            </div>
+            {attestationScript && <div style={{ marginTop: 8, padding: 7, background: "var(--bg-primary)", borderLeft: `3px solid ${attestationScript.plan.completeExecutableCoverage ? "#3fb950" : "#d29922"}` }}>
+              <div style={{ color: "var(--text-primary)", fontSize: 10, fontWeight: 600 }}>{attestationScript.fileName}</div>
+              <div style={{ marginTop: 3, color: "var(--text-secondary)", fontSize: 10 }}>
+                {attestationScript.plan.coverageStrategy} · {attestationScript.plan.selectedExecutableBytes}/{attestationScript.plan.totalExecutableBytes} executable bytes · {attestationScript.plan.windows.length} windows
+              </div>
+              {!attestationScript.plan.completeExecutableCoverage && <div style={{ marginTop: 3, color: "#d29922", fontSize: 10 }}>当前计划为确定性抽样，匹配后仍只能标记 Related。提高 max windows 或调整 window bytes 后重新生成。</div>}
+              {attestationSavedPath && <div title={attestationSavedPath} style={{ marginTop: 3, color: "#58a6ff", fontSize: 10, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>已保存：{attestationSavedPath}</div>}
+            </div>}
+            {attestationInspection && <div style={{ marginTop: 8, display: "flex", flexDirection: "column", gap: 6 }}>
+              {attestationInspection.records.map(record => <div key={record.attestationId} style={{ padding: 7, background: "var(--bg-primary)", border: "1px solid var(--border-color)", borderRadius: 4 }}>
+                <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
+                  <span style={{ color: "var(--text-primary)", fontSize: 10, fontWeight: 600 }}>{record.moduleName}</span>
+                  <span style={{ marginLeft: "auto", color: statusColor(record.status), fontSize: 10 }}>{record.status}</span>
+                </div>
+                <div style={{ marginTop: 3, color: "var(--text-secondary)", fontSize: 10 }}>
+                  executable bytes {record.matchedExecutableBytes}/{record.totalExecutableBytes} · windows {record.matchedWindowCount} matched / {record.mismatchedWindowCount} mismatched / {record.unreadableWindowCount} unreadable / {record.missingWindowCount} missing
+                </div>
+                {record.counterEvidence.slice(0, 3).map((item, index) => <div key={index} style={{ marginTop: 3, color: "#e5484d", fontSize: 10 }}>{item}</div>)}
+                {record.blockers.slice(0, 3).map((item, index) => <div key={index} style={{ marginTop: 3, color: "#d29922", fontSize: 10 }}>{item}</div>)}
+              </div>)}
+            </div>}
+            {!!report?.runtimeAttestations.length && <div style={{ marginTop: 8 }}>
+              <div style={{ color: "var(--text-primary)", fontSize: 10, fontWeight: 600 }}>案件中的严格认证报告</div>
+              {report.runtimeAttestations.map(item => <div key={item.artifactId} style={{ marginTop: 5, padding: 7, background: "var(--bg-primary)", borderLeft: `3px solid ${statusColor(item.report.status)}` }}>
+                <span style={{ color: statusColor(item.report.status), fontSize: 10 }}>{item.report.status}</span>
+                <span style={{ marginLeft: 6, color: "var(--text-secondary)", fontSize: 10 }}>{item.report.records.reduce((sum, record) => sum + record.matchedExecutableBytes, 0)}/{item.report.records.reduce((sum, record) => sum + record.totalExecutableBytes, 0)} executable bytes</span>
+              </div>)}
+            </div>}
+            {!!report?.cryptoKats.length && <div style={{ marginTop: 8 }}>
+              <div style={{ color: "var(--text-primary)", fontSize: 10, fontWeight: 600 }}>Strict crypto KAT reports</div>
+              {report.cryptoKats.map(item => <div key={item.artifactId} style={{ marginTop: 5, padding: 7, background: "var(--bg-primary)", borderLeft: `3px solid ${statusColor(item.report.status)}` }}>
+                <span style={{ color: statusColor(item.report.status), fontSize: 10 }}>{item.report.status}</span>
+                <span style={{ marginLeft: 6, color: "var(--text-secondary)", fontSize: 10 }}>{item.report.algorithm} · {item.report.bytesChecked + item.report.tagBytesChecked} checked bytes</span>
+                <div title={item.report.claimScope} style={{ marginTop: 3, color: "var(--text-tertiary)", fontSize: 9, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{item.report.claimScope}</div>
+                {item.report.firstMismatch && <div style={{ marginTop: 3, color: "#e5484d", fontSize: 10 }}>first {item.report.firstMismatch.component} mismatch: [{item.report.firstMismatch.startOffset}, {item.report.firstMismatch.endOffsetExclusive})</div>}
+              </div>)}
+            </div>}
+          </section>
 
           <section style={cardStyle}>
             <div style={{ marginBottom: 7, color: "var(--text-primary)", fontSize: 12, fontWeight: 600 }}>案件时间线与完整性</div>
@@ -284,6 +530,27 @@ export default function AnalysisCasePanel({ sessionId }: Props) {
           </section>
 
           {report && <>
+            <section style={cardStyle}>
+              <div style={{ display: "flex", alignItems: "center", gap: 7 }}>
+                <div style={{ color: "var(--text-primary)", fontSize: 12, fontWeight: 600 }}>AI 信息增益补采样计划</div>
+                <span style={{ color: statusColor(report.capturePlan.status), fontSize: 10 }}>{report.capturePlan.status}</span>
+                <span style={{ color: "var(--text-tertiary)", fontSize: 10 }}>{report.capturePlan.targetCount} targets</span>
+              </div>
+              {report.capturePlan.targets.slice(0, 6).map(target => <div key={target.redundancyKey} style={{ marginTop: 7, padding: 8, background: "var(--bg-primary)", borderRadius: 4, borderLeft: `3px solid ${target.informationGainScore >= 95 ? "#e5484d" : target.informationGainScore >= 85 ? "#d29922" : "#58a6ff"}` }}>
+                <div style={{ display: "flex", alignItems: "center", gap: 7 }}>
+                  <span style={{ color: "#58a6ff", fontSize: 10, fontWeight: 700 }}>#{target.rank} · IG {target.informationGainScore}</span>
+                  <span style={{ color: "var(--text-primary)", fontSize: 10, fontWeight: 600 }}>{target.action}</span>
+                  <code style={{ color: "var(--text-tertiary)", fontSize: 9 }}>{target.targetKind}</code>
+                  {target.manualExecutionRequired && <span style={{ marginLeft: "auto", color: "#d29922", fontSize: 9 }}>用户手动执行</span>}
+                </div>
+                <div style={{ marginTop: 3, color: "var(--text-secondary)", fontSize: 10, lineHeight: 1.45 }}>{target.reason}</div>
+                {!!target.moduleRelativeOffsets.length && <div style={{ marginTop: 3, color: "#58a6ff", fontSize: 9 }}>offsets: {target.moduleRelativeOffsets.join(", ")}</div>}
+                {!!target.registers.length && <div style={{ marginTop: 3, color: "var(--text-tertiary)", fontSize: 9 }}>registers: {target.registers.join(" · ")}</div>}
+                {!!target.memoryRequirements.length && <div style={{ marginTop: 3, color: "var(--text-tertiary)", fontSize: 9 }}>memory: {target.memoryRequirements.join(" · ")}</div>}
+                <div style={{ marginTop: 3, color: "#3fb950", fontSize: 9 }}>成功条件：{target.successCriteria}</div>
+              </div>)}
+            </section>
+
             <section style={cardStyle}>
               <div style={{ marginBottom: 7, color: "var(--text-primary)", fontSize: 12, fontWeight: 600 }}>确定性下一步</div>
               <div style={{ display: "flex", flexDirection: "column", gap: 7 }}>

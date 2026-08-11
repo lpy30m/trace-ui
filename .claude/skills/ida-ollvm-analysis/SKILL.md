@@ -7,7 +7,8 @@ description: Analyze ARM64 dynamic traces for OLLVM control-flow-flattening and 
 
 Use `mcp__trace-ui__analyze_ollvm`, `mcp__trace-ui__compare_ollvm_traces`, `mcp__trace-ui__map_ollvm_versions`, `mcp__trace-ui__generate_ida_ollvm_script`,
 `mcp__trace-ui__inspect_ida_annotations`, `mcp__trace-ui__generate_angr_ollvm_script`,
-`mcp__trace-ui__inspect_angr_ollvm_results`, `mcp__trace-ui__inspect_frida_capture`, and
+`mcp__trace-ui__inspect_angr_ollvm_results`, `mcp__trace-ui__inspect_frida_capture`,
+`mcp__trace-ui__infer_frida_abi`, and
 `mcp__trace-ui__generate_angr_state_seed`, `mcp__trace-ui__generate_unicorn_ollvm_script`,
 `mcp__trace-ui__inspect_unicorn_ollvm_results`, and
 `mcp__trace-ui__generate_frida_unicorn_recapture_hook`, and
@@ -17,7 +18,9 @@ Use `mcp__trace-ui__analyze_ollvm`, `mcp__trace-ui__compare_ollvm_traces`, `mcp_
 `mcp__trace-ui__analyze_frida_ollvm_dispatcher_capture`. For strict multi-artifact provenance and claim
 gating, use `mcp__trace-ui__open_analysis_case`, `mcp__trace-ui__ingest_analysis_case_artifact`,
 `mcp__trace-ui__diagnose_analysis_case`, `mcp__trace-ui__audit_analysis_case_claims`, and
-`mcp__trace-ui__upsert_analysis_case_experiment`.
+`mcp__trace-ui__upsert_analysis_case_experiment`. Use `mcp__trace-ui__plan_analysis_case_capture` to
+rank the next non-redundant runtime evidence request and `mcp__trace-ui__run_accuracy_benchmark` to
+regression-check reviewed OLLVM/non-promotion fixtures.
 
 ## Workflow
 
@@ -76,6 +79,10 @@ gating, use `mcp__trace-ui__open_analysis_case`, `mcp__trace-ui__ingest_analysis
    `generate_angr_ollvm_script` with the same capture, exact ELF, and same `checkpoint_result_path`;
    normally set `probe_opaque_branches:false` while keeping bounded flow at depth 8 / 32 states. Inspect
    `checkpointProbes` as Candidate/Related paths only.
+   If repeated captures expose several X0-X7 buffers or context-like arguments but their roles are
+   unclear, call `infer_frida_abi` before expanding pointer capture. Use its exact event indices and
+   Candidate/Related pointer+length/context/field leads only; never reinterpret runtime pointers as
+   module-relative offsets.
 10. To observe several ranked dispatchers in one user-controlled run, call
     `generate_frida_ollvm_dispatcher_hook`, return/save the Frida 16.x script, and stop until the user
     supplies its capture. Then call `analyze_frida_ollvm_dispatcher_capture` on the same OLLVM scope.
@@ -90,12 +97,23 @@ gating, use `mcp__trace-ui__open_analysis_case`, `mcp__trace-ui__ingest_analysis
     in `compare_ollvm_traces`. Review normalized operation/CFG/state-role candidates and ambiguous top
     scores. Never carry source offsets, concrete state values, Frida captures, or angr seeds into the
     target build; regenerate an exact-offset Frida 16 Hook and angr seed per version.
-13. For any conclusion that combines two or more artifact types or replay rounds, create/open a strict
+13. If a severe OLLVM conclusion depends on whether the selected ELF was actually mapped, generate a
+    bounded `generate_frida_runtime_attestation` script for that exact ELF and module basename, let the
+    user run it manually, then inspect the capture with `inspect_runtime_attestation`. Full executable
+    byte coverage can verify only the scoped runtime-image identity. It does not upgrade dispatcher,
+    opaque predicate, branch reachability, angr, or Unicorn findings beyond Candidate/Related.
+14. For any conclusion that combines two or more artifact types or replay rounds, create/open a strict
     `.traceui-case`, ingest the trace, exact ELF, Frida captures, Unicorn/angr results, IDA annotations,
     and OLLVM reports with explicit parent provenance, then run Replay Doctor and the Claim Ledger audit.
     Record build/key/input/environment groups for controlled runs. Repair invalid/hash-mismatched
     artifacts and resolve counter-evidence before raising confidence; OLLVM, angr, or Unicorn structure
-    alone remains Candidate/Related even when every file passes integrity checks.
+    alone remains Candidate/Related even when every file passes integrity checks. Use
+    `generate_analysis_case_evidence_pack` for a bounded AI handoff; never send only the supporting
+    section or treat the pack's summary as proof. Then call `plan_analysis_case_capture` and prefer the
+    top target that can distinguish the active competing hypotheses without repeating an unchanged
+    redundancy key. Its score is a deterministic priority, not a probability. Before merging changes to
+    OLLVM gate/status/ranking logic, run `run_accuracy_benchmark` on reviewed positive/negative fixtures;
+    a passing suite prevents declared regression but does not prove the fixture labels are ground truth.
 
 ## Interpretation rules
 
@@ -129,6 +147,9 @@ gating, use `mcp__trace-ui__open_analysis_case`, `mcp__trace-ui__ingest_analysis
 - Require the exact ELF/shared object for every case and enable `require_matching_binary`. A matching
   supplied SHA-256 confirms the selected files are identical, not that the trace format cryptographically
   attests which image was mapped at runtime.
+- A `verified-full` runtime-attestation artifact may establish only that the user-captured mapped metadata
+  and all file-backed executable `PT_LOAD` bytes matched the bound exact ELF. Sampling is Related and any
+  mismatch is counter-evidence. This scoped identity gate never proves OLLVM structure or path reachability.
 - When `generate_angr_ollvm_script` receives `static_binary_path`, the generated Python bridge checks that
   selected file's SHA-256 before CFG/symbolic work. This is a file-identity guard, not runtime-image attestation.
 - Excluding child call ranges usually produces a cleaner function-local CFG. Include them only when the investigation explicitly needs interprocedural flow.
@@ -164,6 +185,8 @@ gating, use `mcp__trace-ui__open_analysis_case`, `mcp__trace-ui__ingest_analysis
 - Replay Doctor validates artifact bytes, schemas, parent provenance, supplied module/offset identities,
   and exact ELF hashes. It does not attest the runtime-loaded image, supply missing architectural state,
   prove real-entry reachability, or convert a dynamic transition atlas into a recovered CFG.
+- Information-gain capture-plan scores order bounded next actions only. They are not confidence values,
+  probabilities, or proof that the requested capture will resolve a hypothesis.
 
 ## IDA bridge boundary
 

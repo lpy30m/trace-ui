@@ -1355,6 +1355,179 @@ export interface FridaUnicornRecaptureHookScript {
   fridaApiVersion: string;
 }
 
+export interface FridaRuntimeAttestationRequest {
+  moduleName: string;
+  staticBinaryPath: string;
+  windowBytes: number;
+  maxWindows: number;
+}
+
+export type RuntimeAttestationWindowKind = "elf-header" | "gnu-build-id" | "executable";
+
+export interface RuntimeAttestationExpectedIdentity {
+  binarySha256: string;
+  fileSize: number;
+  architecture: string;
+  elfMachine: number;
+  buildId?: string;
+}
+
+export interface RuntimeAttestationWindowPlan {
+  index: number;
+  kind: RuntimeAttestationWindowKind;
+  segmentIndex?: number;
+  fileOffset: string;
+  moduleOffset: string;
+  length: number;
+  expectedSha256: string;
+}
+
+export interface RuntimeAttestationPlan {
+  schema: string;
+  attestationId: string;
+  moduleName: string;
+  expectedIdentity: RuntimeAttestationExpectedIdentity;
+  loadBaseVaddr: string;
+  expectedMappedSize: number;
+  windowBytes: number;
+  maxWindows: number;
+  coverageStrategy: string;
+  completeExecutableCoverage: boolean;
+  totalExecutableBytes: number;
+  selectedExecutableBytes: number;
+  planSha256: string;
+  windows: RuntimeAttestationWindowPlan[];
+}
+
+export interface FridaRuntimeAttestationScript {
+  fileName: string;
+  moduleName: string;
+  staticBinaryPath: string;
+  protocolVersion: string;
+  fridaApiVersion: string;
+  script: string;
+  plan: RuntimeAttestationPlan;
+  warnings: string[];
+}
+
+export interface RuntimeAttestationWindowVerification {
+  index: number;
+  kind: RuntimeAttestationWindowKind;
+  fileOffset: string;
+  moduleOffset: string;
+  length: number;
+  status: string;
+  expectedSha256?: string;
+  actualSha256?: string;
+  reason?: string;
+}
+
+export interface RuntimeAttestationVerificationReport {
+  schema: string;
+  attestationId: string;
+  moduleName: string;
+  runtimeModulePath?: string;
+  status: string;
+  verificationGateMet: boolean;
+  attestedScope: string;
+  exactBinarySha256: string;
+  expectedBinarySha256: string;
+  exactBuildId: string | null;
+  expectedBuildId: string | null;
+  planSha256: string;
+  regeneratedPlanSha256: string;
+  planMatched: boolean;
+  moduleSize: number;
+  expectedMappedSize: number;
+  moduleSizeSufficient: boolean;
+  completeExecutableCoverage: boolean;
+  totalExecutableBytes: number;
+  selectedExecutableBytes: number;
+  matchedExecutableBytes: number;
+  matchedWindowCount: number;
+  mismatchedWindowCount: number;
+  unreadableWindowCount: number;
+  missingWindowCount: number;
+  unexpectedWindowCount: number;
+  windows: RuntimeAttestationWindowVerification[];
+  evidence: string[];
+  counterEvidence: string[];
+  blockers: string[];
+  limitations: string[];
+}
+
+export interface RuntimeAttestationInspectionReport {
+  schema: string;
+  capturePath: string;
+  exactBinaryPath: string;
+  status: string;
+  verificationGateMet: boolean;
+  recordCount: number;
+  records: RuntimeAttestationVerificationReport[];
+  warnings: string[];
+  limitations: string[];
+}
+
+export type CryptoKatAlgorithm =
+  | "aes-ecb" | "aes-cbc" | "aes-ctr" | "aes-gcm"
+  | "md5" | "sha1" | "sha256" | "sha384" | "sha512"
+  | "hmac-md5" | "hmac-sha1" | "hmac-sha256" | "hmac-sha384" | "hmac-sha512"
+  | "pbkdf2-hmac-sha1" | "pbkdf2-hmac-sha256" | "pbkdf2-hmac-sha384" | "pbkdf2-hmac-sha512";
+
+export type CryptoKatDirection = "encrypt" | "decrypt";
+export type CryptoKatStatus = "verified-full" | "refuted" | "invalid";
+
+export interface CryptoSemanticKatRequest {
+  schema: "trace-ui/crypto-semantic-kat-v1";
+  algorithm: CryptoKatAlgorithm;
+  direction?: CryptoKatDirection;
+  keyHex?: string;
+  inputHex?: string;
+  observedOutputHex: string;
+  ivHex?: string;
+  aadHex?: string;
+  observedTagHex?: string;
+  passwordHex?: string;
+  saltHex?: string;
+  iterations?: number;
+  derivedKeyLength?: number;
+}
+
+export interface CryptoKatMismatch {
+  component: string;
+  startOffset: number;
+  endOffsetExclusive: number;
+  expectedLength: number;
+  observedLength: number;
+  expectedPreviewHex: string;
+  observedPreviewHex: string;
+  previewTruncated: boolean;
+}
+
+export interface CryptoSemanticKatReport {
+  schema: "trace-ui/crypto-semantic-kat-verification-v1";
+  request: CryptoSemanticKatRequest;
+  algorithm: CryptoKatAlgorithm;
+  direction?: CryptoKatDirection;
+  status: CryptoKatStatus;
+  verificationGateMet: boolean;
+  claimScope: string;
+  bytesChecked: number;
+  tagBytesChecked: number;
+  expectedOutputHex?: string;
+  observedOutputHex: string;
+  expectedTagHex?: string;
+  observedTagHex?: string;
+  outputMatched: boolean;
+  tagMatched?: boolean;
+  mismatchByteCount: number;
+  firstMismatch?: CryptoKatMismatch;
+  invalidReason?: string;
+  refutationReason?: string;
+  parameterSummary: string[];
+  limitations: string[];
+}
+
 export interface FridaUnicornCheckpointMemorySpec {
   index: number;
   label: string;
@@ -1911,12 +2084,14 @@ export interface AnalysisComparison {
 export type TraceCaseArtifactKind =
   | "trace"
   | "static-binary"
+  | "runtime-attestation"
   | "frida-capture"
   | "unicorn-result"
   | "angr-result"
   | "ida-annotations"
   | "ollvm-report"
   | "analysis-report"
+  | "crypto-kat"
   | "crypto-report"
   | "other";
 
@@ -1927,6 +2102,17 @@ export interface TraceCaseArtifactSummary {
   binarySha256?: string;
   expectedBinarySha256?: string;
   exactIdentityMatched?: boolean;
+  runtimeAttestationStatus?: string;
+  runtimeAttestationVerificationGateMet?: boolean;
+  cryptoKatAlgorithm?: string;
+  cryptoKatStatus?: string;
+  cryptoKatVerificationGateMet?: boolean;
+  cryptoKatClaimScope?: string;
+  cryptoKatBytesChecked?: number;
+  completeExecutableCoverage?: boolean;
+  totalExecutableBytes?: number;
+  selectedExecutableBytes?: number;
+  matchedExecutableBytes?: number;
   captureOffsets: string[];
   eventCount: number;
   runCount: number;
@@ -2034,6 +2220,36 @@ export interface ReplayDoctorNextAction {
   evidenceLevel: string;
 }
 
+export interface InformationGainCaptureTarget {
+  rank: number;
+  informationGainScore: number;
+  action: string;
+  targetKind: string;
+  toolName?: string;
+  artifactIds: string[];
+  moduleName?: string;
+  moduleRelativeOffsets: string[];
+  registers: string[];
+  memoryRequirements: string[];
+  controlledVariables: string[];
+  resolvesClaimIds: string[];
+  competingHypotheses: string[];
+  reason: string;
+  successCriteria: string;
+  manualExecutionRequired: boolean;
+  evidenceLevel: string;
+  redundancyKey: string;
+}
+
+export interface InformationGainCapturePlan {
+  schema: string;
+  status: string;
+  targetCount: number;
+  omittedTargetCount: number;
+  targets: InformationGainCaptureTarget[];
+  limitations: string[];
+}
+
 export interface TraceCaseClaimAuditEntry {
   claimId: string;
   source: string;
@@ -2131,6 +2347,17 @@ export interface TraceCaseExperimentMatrixReport {
   limitations: string[];
 }
 
+export interface TraceCaseRuntimeAttestationReport {
+  artifactId: string;
+  exactBinaryArtifactId: string;
+  report: RuntimeAttestationInspectionReport;
+}
+
+export interface TraceCaseCryptoKatReport {
+  artifactId: string;
+  report: CryptoSemanticKatReport;
+}
+
 export interface ReplayDoctorReport {
   schema: string;
   caseId: string;
@@ -2144,6 +2371,9 @@ export interface ReplayDoctorReport {
   claimLedgerAudit: TraceCaseClaimLedgerAudit;
   stateReadiness: ReplayStateReadinessReport;
   experimentMatrix: TraceCaseExperimentMatrixReport;
+  capturePlan: InformationGainCapturePlan;
+  runtimeAttestations: TraceCaseRuntimeAttestationReport[];
+  cryptoKats: TraceCaseCryptoKatReport[];
   unicornRoundComparison?: UnicornOllvmRoundComparisonReport;
   warnings: string[];
   limitations: string[];

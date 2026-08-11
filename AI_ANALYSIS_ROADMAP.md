@@ -1,6 +1,6 @@
 # Trace UI AI 分析能力路线图
 
-更新日期：2026-07-18
+更新日期：2026-08-11
 
 ## 1. 目标
 
@@ -45,6 +45,25 @@
 - [x] Frida Dispatcher Pointer Memory Seed：multi-dispatcher Frida 16 脚本可选 bounded X0-X7 pointer byteArray 捕获，错误以 readError 返回，默认关闭，并可复用于 angr state seed；不做无界内存读取或自动运行 Hook。
 - [x] angr Exact ELF Guard / Multi-seed Handoff：生成的手动 Python bridge 可嵌入 exact AArch64 ELF SHA-256 并在 angr 初始化前拒绝错误文件；同一捕获最多选择 32 个精确匹配 Frida 事件，独立生成 branch/dispatcher probes 并保留 provenance。
 - [x] OLLVM Condition Flag Profile：聚合条件值与 outcome，展示 NZCV N/Z/C/V set/clear 分布及缺失观察，帮助人工复核 opaque predicate 候选。
+- [x] Runtime Image Attestation：从 exact AArch64 ELF 生成 Frida 16.x 手动 hash 计划，严格回导核对 metadata/build-id 与 file-backed executable `PT_LOAD` bytes；完整覆盖仅能验证 `runtime-image:*` scope，抽样保持 Related，冲突保存为 counter-evidence。
+
+### 2.1 下一轮 AI 准确率强化顺序
+
+1. [x] 运行时镜像认证：完成 Core、`.traceui-case`、Claim Ledger、MCP、Tauri、GUI、文档和回归测试。
+2. [x] AI Evidence Pack：在 token/条目预算内输出 artifact ID、locator、trace seq/line、memory range、module offset 和 event index，严格分开 supporting evidence、counter-evidence、unknowns 与 invalid artifacts；JSON/Markdown 都携带 Claim Ledger 推荐最高等级和 omitted counts，摘要本身不能成为证明。
+3. [x] Crypto 语义 KAT：`trace-ui/crypto-semantic-kat-v1` / verification-v1 支持 AES ECB/CBC/CTR/GCM、MD5、SHA、HMAC、PBKDF2-HMAC；严格 hex/bounds、首个 mismatch range、exact claimScope 和导入时全字段复算替代自由文本 marker。
+4. [x] 信息增益捕获规划：`trace-ui/information-gain-capture-plan-v1` 从 claim blocker、反证、state readiness、checkpoint/stall 与实验矩阵排序 exact offset/register/memory/controlled run；返回 competing hypotheses、success criteria 和 redundancy key，分数明确不是概率。
+5. [x] ABI/结构推断：`trace-ui/frida-abi-inference-v1` 从重复手动捕获推断 X0-X7 role、pointer+length、context、enter/leave mutation、base+displacement field 与 return shape；保留 exact event index，所有分类为 Candidate/Related。
+6. [x] 精度基准与 CI 门禁：`trace-ui/accuracy-benchmark-suite-v1` / report-v1 检查 replay/capture-plan、claim gate/status、Verified FP/FN、unexpected Verified 与 fixture error；CI 和 MCP handler smoke test 阻止工具注册正常但调用失效或置信度漂移。
+
+### 2.2 下一阶段准确率候选
+
+1. [ ] Coverage-aware Claim Gate：静态 CFG/函数范围与动态执行覆盖对账，限制“算法不存在”“分支恒定”“CFG 完整恢复”等否定/完备性结论的最高等级。
+2. [ ] Minimal Evidence Slice + typed provenance graph：导出带 hash 的原始 trace/register/memory/offset 小包，并显式连接 artifact/build/process/event 关系，避免 AI 只读摘要或跨身份混用证据。
+3. [ ] Memory object/alias/lifetime reconstruction：按 allocation、stack frame、base+offset、free/reuse 重建对象边界与别名，提高 ABI、污点和模拟状态判断。
+4. [ ] Exact-call record/replay summaries：由同 offset 的 Frida enter/leave 捕获生成有界外部调用摘要，让 Unicorn 在严格授权下跨越常见 call boundary，未知副作用继续停止。
+5. [ ] Counterfactual paired replay：同一 checkpoint 仅改变一个明确变量来搜索 opaque/dispatcher 反例，结果始终标为 hypothetical/counterexample candidate。
+6. [ ] Bounded SIMD/FP/TLS state packs 与更大真实 benchmark/fuzz corpus；GUI 增加 KAT 创建、ABI 和 benchmark 详情，减少人工参数错误。
 
 ## 3. 当前限制
 
@@ -138,7 +157,7 @@ forward_taint_analysis {
 - [x] 自定义 Recipe 支持保存默认参数、列出、运行、删除和随 Trace 持久化。
 - [x] 任意 `analysis_id` 可导出 JSON 或 Markdown，支持内联返回或写入文件。
 - [ ] 可分享证据包：报告、Trace 片段和内存快照的压缩归档。
-- [ ] GUI 增加 Analysis History，用于查看和比较 MCP 创建的分析。
+- [x] GUI 增加 Analysis History，用于查看和比较 MCP 创建的分析。
 
 ## 7. 决策记录
 
