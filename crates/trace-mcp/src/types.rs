@@ -512,6 +512,107 @@ pub struct CompareAnalysesRequest {
 }
 
 #[derive(Debug, Deserialize, JsonSchema)]
+pub struct OpenAnalysisCaseRequest {
+    #[schemars(description = "Absolute path to a .traceui-case manifest")]
+    pub case_path: String,
+    #[schemars(description = "Create the case when it does not exist (default: false)")]
+    #[serde(default)]
+    pub create: bool,
+    #[schemars(description = "Case title used only when create=true")]
+    pub title: Option<String>,
+    #[schemars(
+        description = "Optional open trace session whose exact trace file is added as the primary artifact when creating"
+    )]
+    pub session_id: Option<String>,
+    #[schemars(
+        description = "Optional absolute primary trace path when creating without an open session"
+    )]
+    pub primary_trace_path: Option<String>,
+    #[schemars(description = "Optional exact AArch64 ELF/shared-object path added when creating")]
+    pub exact_binary_path: Option<String>,
+}
+
+#[derive(Debug, Deserialize, JsonSchema)]
+pub struct IngestAnalysisCaseArtifactRequest {
+    #[schemars(description = "Absolute path to an existing .traceui-case manifest")]
+    pub case_path: String,
+    #[schemars(description = "Absolute path to the artifact to hash, strictly parse, and add")]
+    pub artifact_path: String,
+    #[schemars(
+        description = "Optional kind hint: trace, static-binary, frida-capture, unicorn-result, angr-result, ida-annotations, ollvm-report, analysis-report, crypto-report, or other"
+    )]
+    pub kind_hint: Option<String>,
+    #[schemars(description = "Optional human-readable artifact label")]
+    pub label: Option<String>,
+    #[schemars(description = "Optional parent artifact IDs recording provenance")]
+    #[serde(default)]
+    pub parent_artifact_ids: Vec<String>,
+}
+
+#[derive(Debug, Deserialize, JsonSchema)]
+pub struct DiagnoseAnalysisCaseRequest {
+    #[schemars(description = "Absolute path to an existing .traceui-case manifest")]
+    pub case_path: String,
+    #[schemars(
+        description = "Persist Replay Doctor generated claims into the case claim ledger (default: false)"
+    )]
+    #[serde(default)]
+    pub persist_generated_claims: bool,
+}
+
+#[derive(Debug, Deserialize, JsonSchema)]
+pub struct AuditAnalysisCaseClaimsRequest {
+    #[schemars(description = "Absolute path to an existing .traceui-case manifest")]
+    pub case_path: String,
+}
+
+#[derive(Debug, Deserialize, JsonSchema)]
+pub struct UpsertAnalysisCaseExperimentRequest {
+    #[schemars(description = "Absolute path to an existing .traceui-case manifest")]
+    pub case_path: String,
+    #[schemars(description = "Existing experiment ID to update; omit to generate a stable ID")]
+    pub experiment_id: Option<String>,
+    #[schemars(description = "Human-readable controlled-run label")]
+    pub label: String,
+    #[schemars(
+        description = "Exact AArch64 ELF SHA-256. May be omitted when the referenced artifacts imply one unambiguous identity."
+    )]
+    pub binary_sha256: Option<String>,
+    #[schemars(description = "Caller-declared key identity group, for example key-baseline")]
+    pub key_group: Option<String>,
+    #[schemars(description = "Caller-declared input identity group, for example input-baseline")]
+    pub input_group: Option<String>,
+    #[schemars(
+        description = "Caller-declared environment identity group, including device/process/configuration controls"
+    )]
+    pub environment_group: Option<String>,
+    #[schemars(description = "Case artifact IDs produced by or used in this controlled run")]
+    #[serde(default)]
+    pub artifact_ids: Vec<String>,
+    #[schemars(description = "Variables intentionally held fixed")]
+    #[serde(default)]
+    pub controlled_variables: Vec<String>,
+    #[schemars(description = "Variables intentionally changed")]
+    #[serde(default)]
+    pub changed_variables: Vec<String>,
+    #[schemars(description = "Bounded operator notes; do not place raw secrets here")]
+    #[serde(default)]
+    pub notes: Vec<String>,
+}
+
+#[derive(Debug, Deserialize, JsonSchema)]
+pub struct DiagnoseCryptoDetectionRequest {
+    #[schemars(description = "Session ID (optional if only one session is open)")]
+    pub session_id: Option<String>,
+    #[schemars(description = "Target algorithm family, normally AES (default: AES)")]
+    pub target_algorithm: Option<String>,
+    #[schemars(
+        description = "Optional exact AArch64 ELF/shared object used for static/dynamic reconciliation"
+    )]
+    pub static_binary_path: Option<String>,
+}
+
+#[derive(Debug, Deserialize, JsonSchema)]
 pub struct CompareTracesRequest {
     #[schemars(description = "Left/base session ID (optional if only one session is open)")]
     pub session_id: Option<String>,

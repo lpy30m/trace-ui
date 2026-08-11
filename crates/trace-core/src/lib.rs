@@ -1,4 +1,5 @@
 pub mod analysis;
+pub mod analysis_case;
 pub mod analysis_task;
 pub mod api_types;
 pub mod browse;
@@ -23,6 +24,20 @@ pub use analysis::{
     AnalysisReportExport, AnalysisUniqueEvidence, TraceCountDelta, TraceDiffOptions,
     TraceDiffResult, TraceDiffSection, TraceFunctionClusterMatch, TraceFunctionClusterSection,
     TraceProfileSummary,
+};
+pub use analysis_case::{
+    add_trace_case_artifact, create_trace_analysis_case, diagnose_trace_analysis_case,
+    load_trace_analysis_case, resolve_trace_case_artifact_path, save_trace_analysis_case,
+    upsert_trace_case_claim, upsert_trace_case_experiment, ReplayDoctorNextAction,
+    ReplayDoctorReport, ReplayDoctorTimelineEntry, ReplayStateReadinessComponent,
+    ReplayStateReadinessReport, TraceAnalysisCase, TraceAnalysisCaseDocument, TraceCaseArtifact,
+    TraceCaseArtifactHealth, TraceCaseArtifactImportResult, TraceCaseArtifactKind,
+    TraceCaseArtifactSummary, TraceCaseClaim, TraceCaseClaimAuditEntry, TraceCaseClaimLedgerAudit,
+    TraceCaseClaimStatus, TraceCaseControlledExperimentPair, TraceCaseEvidenceRef,
+    TraceCaseExperiment, TraceCaseExperimentAxis, TraceCaseExperimentCell,
+    TraceCaseExperimentMatrixReport, TraceCaseExperimentRecommendation, CLAIM_LEDGER_AUDIT_SCHEMA,
+    EXPERIMENT_MATRIX_SCHEMA, REPLAY_DOCTOR_SCHEMA, REPLAY_STATE_READINESS_SCHEMA,
+    TRACE_ANALYSIS_CASE_SCHEMA,
 };
 pub use analysis_task::{AnalysisTaskInfo, AnalysisTaskStatus};
 pub use api_types::*;
@@ -55,6 +70,10 @@ pub use query::crypto_material::{
 pub use query::crypto_semantic_verify::{
     validate_pkcs7, verify_aes_cbc, verify_aes_ctr, verify_aes_ecb, verify_aes_gcm, AesDirection,
     AesGcmSemanticVerification, AesSemanticVerification, SemanticVerificationStatus,
+};
+pub use query::detection_doctor::{
+    build_crypto_detection_doctor_report, CryptoDetectionDoctorReport, CryptoDetectionStage,
+    CRYPTO_DETECTION_DOCTOR_SCHEMA,
 };
 pub use query::elf_identity::{inspect_elf_binary, ElfBinaryIdentity};
 pub use query::evidence_score::{

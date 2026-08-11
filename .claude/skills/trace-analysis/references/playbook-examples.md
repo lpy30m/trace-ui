@@ -158,3 +158,61 @@ Check three independent layers:
 Do not call it white-box merely because a large table matches. If a raw key and standard key schedule
 are observed, report `NotWhiteBox`. For a white-box hypothesis, repeat with different inputs and keys and
 compare which table contents remain stable or change.
+
+---
+
+## Example 7 — "Keep a severe OLLVM/AES investigation accurate across multiple rounds"
+
+Create a durable case from the open trace and exact ELF:
+
+```
+open_analysis_case{
+  case_path:"C:\\cases\\target.traceui-case",
+  create:true,
+  session_id:"<session>",
+  exact_binary_path:"C:\\samples\\libtarget.so"
+}
+```
+
+After each user-run Frida/Unicorn/angr/IDA step, import the produced file with explicit parents:
+
+```
+ingest_analysis_case_artifact{
+  case_path:"C:\\cases\\target.traceui-case",
+  artifact_path:"C:\\captures\\round-1-unicorn.json",
+  kind_hint:"unicorn-result",
+  parent_artifact_ids:["<frida-artifact-id>","<elf-artifact-id>"]
+}
+diagnose_analysis_case{case_path:"C:\\cases\\target.traceui-case"}
+```
+
+Read the result in this order:
+
+1. `artifactHealth`: stop if any artifact is missing, changed, malformed, wrong-module, or wrong-hash.
+2. `stateReadiness`: treat `not-executed`, `not-captured`, `unreadable`, `not-observed`, and
+   `hash-mismatch` as different causes. Do not convert any of them to "the state does not matter".
+3. `unicornRoundComparison`: continue concrete recapture only when coverage/dispatcher evidence moves;
+   repeated stalls should use the authorized closer checkpoint, then bounded angr if still necessary.
+4. `claimLedgerAudit`: run `audit_analysis_case_claims` before saying Verified. OLLVM/Unicorn/angr
+   structure is Candidate/Related unless deterministic semantic evidence independently passes.
+5. `experimentMatrix`: record build/key/input/environment for every controlled run. Prefer pairs that
+   differ on exactly one axis.
+
+Record two AES runs that vary only the key:
+
+```
+upsert_analysis_case_experiment{
+  case_path:"C:\\cases\\target.traceui-case",
+  label:"same build/input, key B",
+  binary_sha256:"<exact-elf-sha256>",
+  key_group:"key-b",
+  input_group:"input-a",
+  environment_group:"device-config-a",
+  artifact_ids:["<trace-or-capture-artifact-id>"],
+  controlled_variables:["binarySha256","inputGroup","environmentGroup"],
+  changed_variables:["keyGroup"]
+}
+```
+
+The user still runs the target, Frida, Unicorn, angr, and IDA manually. The case tools validate and
+organize evidence; they do not attach, spawn, execute, or claim automatic deobfuscation.

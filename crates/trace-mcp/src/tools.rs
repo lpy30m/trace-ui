@@ -2098,7 +2098,7 @@ impl TraceToolHandler {
             build_revision: option_env!("TRACE_UI_BUILD_REVISION")
                 .unwrap_or("development")
                 .to_string(),
-            schema_version: "2026-08-02".to_string(),
+            schema_version: "2026-08-11".to_string(),
             capabilities: vec![
                 "crypto_implementation_analysis".to_string(),
                 "semantic_aes_verification".to_string(),
@@ -2113,6 +2113,12 @@ impl TraceToolHandler {
                 "dynamic_cfg_ollvm_analysis".to_string(),
                 "idapython_bridge_generation".to_string(),
                 "unicorn_exact_seed_concrete_replay".to_string(),
+                "analysis_case_workspace".to_string(),
+                "replay_doctor".to_string(),
+                "claim_counter_evidence_gate".to_string(),
+                "replay_state_readiness".to_string(),
+                "controlled_experiment_matrix".to_string(),
+                "crypto_detection_diagnostics".to_string(),
             ],
         }))
     }
@@ -3350,6 +3356,227 @@ impl TraceToolHandler {
             "recipe_id": req.recipe_id,
             "deleted": deleted,
         })))
+    }
+
+    #[tool(
+        name = "open_analysis_case",
+        description = "Open a strict versioned .traceui-case workspace, or create it when create=true. A case records artifact SHA-256 values, exact ELF provenance, parent/child lineage, replay rounds, claims, and controlled experiments. Creating from an open session adds that trace as the primary artifact; optional exact_binary_path adds and validates the AArch64 ELF. This does not execute Frida, Unicorn, angr, IDA, or the target."
+    )]
+    async fn open_analysis_case(
+        &self,
+        Parameters(req): Parameters<OpenAnalysisCaseRequest>,
+    ) -> Result<String, String> {
+        let engine = self.engine.clone();
+        blocking(move || {
+            let path = req.case_path.trim();
+            if path.is_empty() {
+                return Err("case_path must not be empty".to_string());
+            }
+            let exists = std::path::Path::new(path).exists();
+            let document = if exists {
+                trace_core::load_trace_analysis_case(path).map_err(|error| error.to_string())?
+            } else if req.create {
+                let trace_path = if let Some(path) = req.primary_trace_path {
+                    Some(path)
+                } else {
+                    let session_id = match req.session_id {
+                        Some(session_id) => Some(session_id),
+                        None => {
+                            let sessions = engine.list_sessions();
+                            (sessions.len() == 1).then(|| sessions[0].session_id.clone())
+                        }
+                    };
+                    session_id
+                        .map(|session_id| engine.get_session_info(&session_id))
+                        .transpose()
+                        .map_err(|error| error.to_string())?
+                        .map(|session| session.file_path)
+                };
+                let title = req.title.unwrap_or_else(|| {
+                    std::path::Path::new(path)
+                        .file_stem()
+                        .and_then(|value| value.to_str())
+                        .unwrap_or("Trace UI analysis case")
+                        .to_string()
+                });
+                trace_core::create_trace_analysis_case(
+                    path,
+                    &title,
+                    trace_path.as_deref(),
+                    req.exact_binary_path.as_deref(),
+                )
+                .map_err(|error| error.to_string())?
+            } else {
+                return Err(format!(
+                    "analysis case does not exist: {path}; set create=true to create it"
+                ));
+            };
+            Ok(json(&document))
+        })
+        .await
+    }
+
+    #[tool(
+        name = "ingest_analysis_case_artifact",
+        description = "Hash and strictly parse one user-produced artifact into an existing .traceui-case workspace. Recognized artifacts include traces, exact ELF files, Frida captures, Unicorn results, angr results, IDA annotations, OLLVM reports, analysis reports, and crypto reports. Invalid schemas, changed files, duplicate parent IDs, and unsupported exact-result identities are rejected. The tool only imports files; runtime execution remains manual."
+    )]
+    async fn ingest_analysis_case_artifact(
+        &self,
+        Parameters(req): Parameters<IngestAnalysisCaseArtifactRequest>,
+    ) -> Result<String, String> {
+        blocking(move || {
+            let result = trace_core::add_trace_case_artifact(
+                &req.case_path,
+                &req.artifact_path,
+                req.kind_hint.as_deref(),
+                req.label.as_deref(),
+                req.parent_artifact_ids,
+            )
+            .map_err(|error| error.to_string())?;
+            Ok(json(&result))
+        })
+        .await
+    }
+
+    #[tool(
+        name = "diagnose_analysis_case",
+        description = "Run Replay Doctor over a .traceui-case workspace. It re-hashes every artifact, reruns strict parsers, checks module/exact ELF provenance, compares compatible Unicorn rounds by exact capture offset, recognizes authorized closer checkpoint captures, separates observed/related/refuted/unknown claims, and returns deterministic next actions such as recapture, post-call checkpoint, bounded angr, integrity repair, or stop. It never executes Frida, Unicorn, angr, IDA, or the target. All OLLVM/replay findings remain Candidate/Related."
+    )]
+    async fn diagnose_analysis_case(
+        &self,
+        Parameters(req): Parameters<DiagnoseAnalysisCaseRequest>,
+    ) -> Result<String, String> {
+        blocking(move || {
+            let report = trace_core::diagnose_trace_analysis_case(&req.case_path)
+                .map_err(|error| error.to_string())?;
+            let persisted_claim_count = if req.persist_generated_claims {
+                for claim in report.generated_claims.iter().cloned() {
+                    trace_core::upsert_trace_case_claim(&req.case_path, claim)
+                        .map_err(|error| error.to_string())?;
+                }
+                report.generated_claims.len()
+            } else {
+                0
+            };
+            Ok(json(&serde_json::json!({
+                "report": report,
+                "persistedClaimCount": persisted_claim_count,
+            })))
+        })
+        .await
+    }
+
+    #[tool(
+        name = "audit_analysis_case_claims",
+        description = "Run the .traceui-case claim-ledger contradiction and evidence gate. It revalidates artifact integrity, separates supporting from counter evidence, blocks Verified when only structural/SHA evidence exists, and returns a recommended maximum status without asserting that any statement is true. OLLVM, Unicorn, and angr evidence alone remains Candidate/Related. Nothing is executed or mutated."
+    )]
+    async fn audit_analysis_case_claims(
+        &self,
+        Parameters(req): Parameters<AuditAnalysisCaseClaimsRequest>,
+    ) -> Result<String, String> {
+        blocking(move || {
+            let report = trace_core::diagnose_trace_analysis_case(&req.case_path)
+                .map_err(|error| error.to_string())?;
+            Ok(json(&serde_json::json!({
+                "caseId": report.case_id,
+                "casePath": report.case_path,
+                "claimLedgerAudit": report.claim_ledger_audit,
+            })))
+        })
+        .await
+    }
+
+    #[tool(
+        name = "upsert_analysis_case_experiment",
+        description = "Create or update one controlled experiment row in a .traceui-case. Records exact build SHA-256, key/input/environment groups, declared controls, changed variables, and produced artifact IDs. Replay Doctor then finds missing matrix cells and pairs that differ on exactly one axis. This records provenance only; the user still runs the target, Frida, Unicorn, angr, and IDA manually."
+    )]
+    async fn upsert_analysis_case_experiment(
+        &self,
+        Parameters(req): Parameters<UpsertAnalysisCaseExperimentRequest>,
+    ) -> Result<String, String> {
+        blocking(move || {
+            let document = trace_core::upsert_trace_case_experiment(
+                &req.case_path,
+                trace_core::TraceCaseExperiment {
+                    experiment_id: req.experiment_id.unwrap_or_default(),
+                    label: req.label,
+                    binary_sha256: req.binary_sha256,
+                    key_group: req.key_group,
+                    input_group: req.input_group,
+                    environment_group: req.environment_group,
+                    artifact_ids: req.artifact_ids,
+                    controlled_variables: req.controlled_variables,
+                    changed_variables: req.changed_variables,
+                    notes: req.notes,
+                },
+            )
+            .map_err(|error| error.to_string())?;
+            let report = trace_core::diagnose_trace_analysis_case(&req.case_path)
+                .map_err(|error| error.to_string())?;
+            Ok(json(&serde_json::json!({
+                "case": document,
+                "experimentMatrix": report.experiment_matrix,
+            })))
+        })
+        .await
+    }
+
+    #[tool(
+        name = "diagnose_crypto_detection",
+        description = "Explain why a target crypto family, normally AES, was verified, only related, or not observed in the current trace. Runs raw constant scan, dedicated ARM64 crypto-instruction attribution, function-level aggregation, software/table/obfuscation analysis, deterministic semantic verification, and optional exact-ELF reconciliation. Returns per-stage counts and blockers so an empty result is not misreported as proof that the algorithm is absent. The diagnosis is saved with an analysis_id."
+    )]
+    async fn diagnose_crypto_detection(
+        &self,
+        Parameters(req): Parameters<DiagnoseCryptoDetectionRequest>,
+    ) -> Result<String, String> {
+        let sid = self.resolve_session(req.session_id.clone())?;
+        let engine = self.engine.clone();
+        blocking(move || {
+            let target = req
+                .target_algorithm
+                .as_deref()
+                .unwrap_or("AES")
+                .trim()
+                .to_string();
+            let report = engine
+                .diagnose_crypto_detection(&sid, &target, req.static_binary_path.clone())
+                .map_err(|error| error.to_string())?;
+            let mut evidence = AnalysisEvidence::default();
+            evidence.algorithms = report.algorithms_observed.clone();
+            if report.target_magic_hit_count > 0 {
+                evidence
+                    .operations
+                    .push(format!("{} magic hits", report.target_magic_hit_count));
+            }
+            evidence.operations.extend(
+                report
+                    .stages
+                    .iter()
+                    .map(|stage| format!("{}:{}", stage.code, stage.status)),
+            );
+            evidence.warnings.extend(report.failure_reasons.clone());
+            evidence.warnings.extend(report.limitations.clone());
+            let request_value = serde_json::json!({
+                "targetAlgorithm": target,
+                "staticBinaryPath": req.static_binary_path,
+            });
+            let result_value = serde_json::to_value(&report).map_err(|error| error.to_string())?;
+            let record = engine
+                .save_analysis(
+                    &sid,
+                    "crypto_detection_doctor",
+                    &format!("{} detection diagnosis", report.target_algorithm),
+                    request_value,
+                    result_value.clone(),
+                    evidence,
+                )
+                .map_err(|error| error.to_string())?;
+            Ok(json(&serde_json::json!({
+                "analysis_id": record.analysis_id,
+                "report": result_value,
+            })))
+        })
+        .await
     }
 
     #[tool(
@@ -5395,7 +5622,10 @@ impl ServerHandler for TraceToolHandler {
              12. Backward trace: taint_analysis to find origins and save an analysis_id\n\
              13. Report: export_analysis_report for Markdown/JSON evidence packages\n\
              14. Deep dive: use mem:ADDRESS:SIZE@LINE for complete multi-byte buffers\n\
-             15. Extract: get_memory to read key buffers, get_trace_lines(full=true) for register details\n\n\
+             15. Extract: get_memory to read key buffers, get_trace_lines(full=true) for register details\n\
+             16. Detection failure: diagnose_crypto_detection to distinguish not-observed from parser/scope/verification gaps\n\
+             17. Multi-round case: open_analysis_case, ingest_analysis_case_artifact, then diagnose_analysis_case\n\
+             18. Accuracy gate: audit_analysis_case_claims before saying Verified; use upsert_analysis_case_experiment to isolate build/key/input/environment changes\n\n\
              Tips:\n\
              - session_id is optional when only one trace is open\n\
              - Use data_only=true in forward_taint_analysis and taint_analysis to reduce noise\n\
@@ -5410,6 +5640,49 @@ impl ServerHandler for TraceToolHandler {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn accuracy_tools_are_registered_with_manual_evidence_boundaries() {
+        let router = TraceToolHandler::tool_router();
+        assert_eq!(
+            router.map.len(),
+            70,
+            "MCP tool count changed; update docs and this registry check"
+        );
+        for name in [
+            "open_analysis_case",
+            "ingest_analysis_case_artifact",
+            "diagnose_analysis_case",
+            "audit_analysis_case_claims",
+            "upsert_analysis_case_experiment",
+            "diagnose_crypto_detection",
+        ] {
+            assert!(router.has_route(name), "missing MCP accuracy tool {name}");
+        }
+        let audit_description = router.map["audit_analysis_case_claims"]
+            .attr
+            .description
+            .as_deref()
+            .unwrap_or_default();
+        assert!(audit_description.contains("Verified"));
+        assert!(audit_description.contains("Candidate/Related"));
+        let experiment_description = router.map["upsert_analysis_case_experiment"]
+            .attr
+            .description
+            .as_deref()
+            .unwrap_or_default();
+        assert!(experiment_description.contains("manually"));
+
+        let handler = TraceToolHandler::new(Arc::new(TraceEngine::new()));
+        let Json(health) = handler.health(Parameters(HealthRequest {})).unwrap();
+        for capability in [
+            "claim_counter_evidence_gate",
+            "replay_state_readiness",
+            "controlled_experiment_matrix",
+        ] {
+            assert!(health.capabilities.iter().any(|value| value == capability));
+        }
+    }
 
     fn build_session(engine: &TraceEngine, lines: &[&str]) -> (String, std::path::PathBuf) {
         let path = std::env::temp_dir().join(format!(

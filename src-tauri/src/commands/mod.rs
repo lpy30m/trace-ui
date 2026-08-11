@@ -1801,6 +1801,140 @@ pub fn render_analysis_report(
 //  Function Inspector
 // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
+// Analysis Case / Replay Doctor
+
+#[tauri::command]
+pub async fn create_analysis_case(
+    case_path: String,
+    title: String,
+    session_id: Option<String>,
+    primary_trace_path: Option<String>,
+    exact_binary_path: Option<String>,
+    engine: State<'_, Arc<TraceEngine>>,
+) -> Result<trace_core::TraceAnalysisCaseDocument, String> {
+    let engine = engine.inner().clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        let trace_path = if let Some(session_id) = session_id {
+            Some(
+                engine
+                    .get_session_info(&session_id)
+                    .map_err(|error| error.to_string())?
+                    .file_path,
+            )
+        } else {
+            primary_trace_path
+        };
+        trace_core::create_trace_analysis_case(
+            &case_path,
+            &title,
+            trace_path.as_deref(),
+            exact_binary_path.as_deref(),
+        )
+        .map_err(|error| error.to_string())
+    })
+    .await
+    .map_err(|error| format!("Task execution failed: {error}"))?
+}
+
+#[tauri::command]
+pub async fn load_analysis_case(
+    case_path: String,
+) -> Result<trace_core::TraceAnalysisCaseDocument, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        trace_core::load_trace_analysis_case(&case_path).map_err(|error| error.to_string())
+    })
+    .await
+    .map_err(|error| format!("Task execution failed: {error}"))?
+}
+
+#[tauri::command]
+pub async fn add_analysis_case_artifact(
+    case_path: String,
+    artifact_path: String,
+    kind_hint: Option<String>,
+    label: Option<String>,
+    parent_artifact_ids: Option<Vec<String>>,
+) -> Result<trace_core::TraceCaseArtifactImportResult, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        trace_core::add_trace_case_artifact(
+            &case_path,
+            &artifact_path,
+            kind_hint.as_deref(),
+            label.as_deref(),
+            parent_artifact_ids.unwrap_or_default(),
+        )
+        .map_err(|error| error.to_string())
+    })
+    .await
+    .map_err(|error| format!("Task execution failed: {error}"))?
+}
+
+#[tauri::command]
+pub async fn diagnose_analysis_case(
+    case_path: String,
+    persist_generated_claims: Option<bool>,
+) -> Result<trace_core::ReplayDoctorReport, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        let report = trace_core::diagnose_trace_analysis_case(&case_path)
+            .map_err(|error| error.to_string())?;
+        if persist_generated_claims.unwrap_or(false) {
+            for claim in report.generated_claims.iter().cloned() {
+                trace_core::upsert_trace_case_claim(&case_path, claim)
+                    .map_err(|error| error.to_string())?;
+            }
+        }
+        Ok(report)
+    })
+    .await
+    .map_err(|error| format!("Task execution failed: {error}"))?
+}
+
+#[tauri::command]
+pub async fn upsert_analysis_case_claim(
+    case_path: String,
+    claim: trace_core::TraceCaseClaim,
+) -> Result<trace_core::TraceAnalysisCaseDocument, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        trace_core::upsert_trace_case_claim(&case_path, claim).map_err(|error| error.to_string())
+    })
+    .await
+    .map_err(|error| format!("Task execution failed: {error}"))?
+}
+
+#[tauri::command]
+pub async fn upsert_analysis_case_experiment(
+    case_path: String,
+    experiment: trace_core::TraceCaseExperiment,
+) -> Result<trace_core::TraceAnalysisCaseDocument, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        trace_core::upsert_trace_case_experiment(&case_path, experiment)
+            .map_err(|error| error.to_string())
+    })
+    .await
+    .map_err(|error| format!("Task execution failed: {error}"))?
+}
+
+#[tauri::command]
+pub async fn diagnose_crypto_detection(
+    session_id: String,
+    target_algorithm: Option<String>,
+    static_binary_path: Option<String>,
+    engine: State<'_, Arc<TraceEngine>>,
+) -> Result<trace_core::CryptoDetectionDoctorReport, String> {
+    let engine = engine.inner().clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        engine
+            .diagnose_crypto_detection(
+                &session_id,
+                target_algorithm.as_deref().unwrap_or("AES"),
+                static_binary_path,
+            )
+            .map_err(|error| error.to_string())
+    })
+    .await
+    .map_err(|error| format!("Task execution failed: {error}"))?
+}
+
 #[tauri::command]
 pub fn inspect_function(
     session_id: String,

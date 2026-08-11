@@ -1,11 +1,25 @@
 # Trace UI 当前开发记录与后续交接
 
-最后更新：2026-08-02
+最后更新：2026-08-11
 当前分支：`feat/aes-unicorn-integration`
 Unicorn/OLLVM 基线提交：`f19d850 feat: preserve Unicorn seed memory across recaptures`
 AES 集成提交：`887968e fix: detect software AES from memory traces`
 
 这份文档是后续 Codex/开发者进入项目时的快速入口。它记录当前已经实现的 Frida 16、OLLVM、IDA、angr 和密码材料分析能力，以及每项能力对应的代码位置和边界。
+
+## 本轮 AI 分析准确率与案件工作区增强
+
+- 新增严格的 `trace-ui/case-v1` `.traceui-case` 工作区：保存 artifact 流式 SHA-256、大小、mtime、相对/绝对路径、父 artifact provenance 和严格 parser 摘要；支持 Trace、exact AArch64 ELF、Frida、Unicorn、angr、IDA、OLLVM、analysis 与 crypto 报告。非 AArch64 ELF 会在导入时拒绝。
+- GUI 在“分析历史”内新增“案件 / Replay Doctor”二级页签，可新建/打开案件、批量导入 artifact、保存生成结论、运行 AES 未识别诊断，并显示时间线、完整性、下一步、Claim 账本、模拟状态和实验矩阵。
+- 新增 `trace-ui/replay-doctor-v1`：重新计算每个 artifact 的 SHA-256、重跑严格 parser、核对 module/exact ELF、比较同 module/同 SHA-256 的 Unicorn 多轮覆盖，识别 supported missing-memory recapture、重复 stall → closer checkpoint/bounded angr，以及真实 `PC+4` post-call capture。
+- 新增 `trace-ui/claim-ledger-audit-v1` 反证门禁：验证 supporting/counter evidence 与 artifact 健康状态；Verified 必须包含明确的 deterministic semantic/known-answer/output-match evidence。仅有 SHA、OLLVM、Unicorn 或 angr 结构证据时，最高保持 Observed/Related。
+- 新增 `trace-ui/replay-state-readiness-v1`：分别报告 exact ELF、X0-X30/SP/PC、NZCV、SIMD/FP、stack、pointer/heap、TLS/system state 和 call boundary，明确区分 `not-executed`、`not-captured`、`unreadable`、`not-observed` 与 `hash-mismatch`。
+- 新增 `trace-ui/experiment-matrix-v1` 与案件实验编辑：按 build SHA-256、key、input、environment 四轴寻找单变量 controlled pair、缺失组合和混杂 pair，为 AES/白盒和 OLLVM 跨版本比较推荐下一实验。
+- MCP 新增 `open_analysis_case`、`ingest_analysis_case_artifact`、`diagnose_analysis_case`、`audit_analysis_case_claims`、`upsert_analysis_case_experiment`、`diagnose_crypto_detection`，当前总数 70；health capabilities 与 server instructions 已同步。
+- 仓库自带的 trace、OLLVM 和 Frida AI 技能工作流已接入 `.traceui-case`、Replay Doctor、Claim Ledger 与 AES Detection Doctor，要求多 artifact/多轮模拟结论先经过完整性、反证和最高可信等级门禁，减少“工具已有但 AI 没调用”的误判。
+- `diagnose_crypto_detection` 将“没有观察到”与“解析/范围/语义证据不足”分开；exact ELF 阶段进一步区分 `matched` 与 `completed-no-match`，避免把“文件扫描成功”误读成动态表已对齐。
+- 真实 `sh_security_environment_nativeInfo_trace_0_0xf92d8.log` 回归：扫描 460,975 行；在 0 个 AES magic hit、0 条 AESE/AESMC/AESD/AESIMC 的情况下，得到 15 个 AES 函数候选、1 个标准 S-box fingerprint、1 个 AES-128 key schedule、7-block semantic recomputation，最终 `status=verified`、`verificationGateMet=true`。选择 `libsh_security.so` 后记录 SHA-256 `fbc6f6522e795b4b542d02bd14a7b87f0342810fd4ab566e65a4f30505637cf2`；动态/静态 table match 为 0，因此准确显示 `completed-no-match`，不宣称运行时镜像证明。
+- 新增 11 个 analysis-case/Replay Doctor 单元测试、MCP 70-tool registry/边界测试、可选 ignored 真实 AES fixture 回归，以及 GUI/Vitest 案件页签、状态门禁、实验矩阵和 AES 阶段诊断覆盖。Frida、Unicorn、angr、IDA 和目标程序仍保持用户手动执行边界；OLLVM/模拟结论仍为 Candidate/Related。
 
 ## 本轮 Unicorn OLLVM 模拟增强
 

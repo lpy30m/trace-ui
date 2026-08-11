@@ -4,6 +4,7 @@ mod browse;
 mod build;
 mod crypto_functions;
 mod crypto_material;
+mod detection_doctor;
 mod forward_slice;
 mod function_inspect;
 mod hash_match;

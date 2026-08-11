@@ -1,5 +1,6 @@
 import React, { useState, useEffect, useCallback } from "react";
 import { invoke } from "@tauri-apps/api/core";
+import AnalysisCasePanel from "./AnalysisCasePanel";
 import type {
   AnalysisRecordSummary,
   AnalysisRecord,
@@ -154,7 +155,7 @@ function DetailView({ sessionId, id, onDeleted }: { sessionId: string; id: strin
   );
 }
 
-export default function AnalysisHistoryPanel({ sessionId }: Props) {
+function AnalysisHistoryList({ sessionId }: Props) {
   const [list, setList] = useState<AnalysisRecordSummary[]>([]);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -317,6 +318,31 @@ export default function AnalysisHistoryPanel({ sessionId }: Props) {
             </div>
           );
         })}
+      </div>
+    </div>
+  );
+}
+
+export default function AnalysisHistoryPanel({ sessionId }: Props) {
+  const [mode, setMode] = useState<"history" | "case">("history");
+  const tabStyle = (selected: boolean): React.CSSProperties => ({
+    height: 25,
+    padding: "0 12px",
+    border: "none",
+    borderBottom: selected ? "2px solid var(--btn-primary)" : "2px solid transparent",
+    background: "transparent",
+    color: selected ? "var(--text-primary)" : "var(--text-secondary)",
+    cursor: "pointer",
+    fontSize: 11,
+  });
+  return (
+    <div style={{ height: "100%", display: "flex", flexDirection: "column", overflow: "hidden" }}>
+      <div style={{ display: "flex", alignItems: "center", padding: "0 8px", borderBottom: "1px solid var(--border-color)", flexShrink: 0 }}>
+        <button style={tabStyle(mode === "history")} onClick={() => setMode("history")}>分析记录</button>
+        <button style={tabStyle(mode === "case")} onClick={() => setMode("case")}>案件 / Replay Doctor</button>
+      </div>
+      <div style={{ flex: 1, minHeight: 0, overflow: "hidden" }}>
+        {mode === "history" ? <AnalysisHistoryList sessionId={sessionId} /> : <AnalysisCasePanel sessionId={sessionId} />}
       </div>
     </div>
   );

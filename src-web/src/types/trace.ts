@@ -1908,6 +1908,275 @@ export interface AnalysisComparison {
   uniqueEvidence: AnalysisUniqueEvidence[];
 }
 
+export type TraceCaseArtifactKind =
+  | "trace"
+  | "static-binary"
+  | "frida-capture"
+  | "unicorn-result"
+  | "angr-result"
+  | "ida-annotations"
+  | "ollvm-report"
+  | "analysis-report"
+  | "crypto-report"
+  | "other";
+
+export interface TraceCaseArtifactSummary {
+  schema?: string;
+  moduleName?: string;
+  architecture?: string;
+  binarySha256?: string;
+  expectedBinarySha256?: string;
+  exactIdentityMatched?: boolean;
+  captureOffsets: string[];
+  eventCount: number;
+  runCount: number;
+  warningCount: number;
+  stopReasonCounts: Record<string, number>;
+  notes: string[];
+}
+
+export interface TraceCaseArtifact {
+  artifactId: string;
+  kind: TraceCaseArtifactKind;
+  label: string;
+  path: string;
+  sha256: string;
+  fileSize: number;
+  modifiedAtMs?: number;
+  importedAtMs: number;
+  parentArtifactIds: string[];
+  summary: TraceCaseArtifactSummary;
+}
+
+export type TraceCaseClaimStatus = "observed" | "verified" | "related" | "refuted" | "unknown";
+
+export interface TraceCaseEvidenceRef {
+  artifactId: string;
+  locator: string;
+  description: string;
+}
+
+export interface TraceCaseClaim {
+  claimId: string;
+  statement: string;
+  scope: string;
+  status: TraceCaseClaimStatus;
+  supportingEvidence: TraceCaseEvidenceRef[];
+  counterEvidence: TraceCaseEvidenceRef[];
+  missingEvidence: string[];
+  limitations: string[];
+  createdBy: string;
+  createdAtMs: number;
+  updatedAtMs: number;
+}
+
+export interface TraceCaseExperiment {
+  experimentId: string;
+  label: string;
+  binarySha256?: string;
+  keyGroup?: string;
+  inputGroup?: string;
+  environmentGroup?: string;
+  artifactIds: string[];
+  controlledVariables: string[];
+  changedVariables: string[];
+  notes: string[];
+}
+
+export interface TraceAnalysisCase {
+  schema: string;
+  caseId: string;
+  title: string;
+  createdAtMs: number;
+  updatedAtMs: number;
+  primaryTraceArtifactId?: string;
+  exactBinaryArtifactId?: string;
+  artifacts: TraceCaseArtifact[];
+  claims: TraceCaseClaim[];
+  experiments: TraceCaseExperiment[];
+  notes: string[];
+}
+
+export interface TraceAnalysisCaseDocument {
+  casePath: string;
+  case: TraceAnalysisCase;
+}
+
+export interface TraceCaseArtifactHealth {
+  artifactId: string;
+  kind: TraceCaseArtifactKind;
+  label: string;
+  resolvedPath: string;
+  status: string;
+  sizeMatches: boolean;
+  sha256Matches: boolean;
+  parserValid: boolean;
+  error?: string;
+}
+
+export interface ReplayDoctorTimelineEntry {
+  artifactId: string;
+  importedAtMs: number;
+  stage: string;
+  status: string;
+  summary: string;
+}
+
+export interface ReplayDoctorNextAction {
+  priority: number;
+  action: string;
+  toolName?: string;
+  artifactIds: string[];
+  seedCaptureOffsets: string[];
+  reason: string;
+  instructions: string;
+  manualExecutionRequired: boolean;
+  evidenceLevel: string;
+}
+
+export interface TraceCaseClaimAuditEntry {
+  claimId: string;
+  source: string;
+  currentStatus: TraceCaseClaimStatus;
+  recommendedStatus: TraceCaseClaimStatus;
+  gateStatus: string;
+  verificationGatePassed: boolean;
+  validSupportingEvidenceCount: number;
+  validCounterEvidenceCount: number;
+  invalidEvidenceCount: number;
+  evidenceArtifactKinds: TraceCaseArtifactKind[];
+  blockers: string[];
+  notes: string[];
+}
+
+export interface TraceCaseClaimLedgerAudit {
+  schema: string;
+  totalClaimCount: number;
+  passedClaimCount: number;
+  blockedClaimCount: number;
+  refutedClaimCount: number;
+  verifiedGatePassedCount: number;
+  claims: TraceCaseClaimAuditEntry[];
+  contradictions: string[];
+  limitations: string[];
+}
+
+export interface ReplayStateReadinessComponent {
+  component: string;
+  status: string;
+  observedCount: number;
+  expectedCount?: number;
+  sourceArtifactIds: string[];
+  details: string;
+  nextAction?: string;
+}
+
+export interface ReplayStateReadinessReport {
+  schema: string;
+  status: string;
+  selectedFridaArtifactId?: string;
+  selectedFridaEventIndex?: number;
+  selectedUnicornArtifactId?: string;
+  exactBinaryMatch?: boolean;
+  components: ReplayStateReadinessComponent[];
+  blockers: string[];
+  limitations: string[];
+}
+
+export interface TraceCaseExperimentAxis {
+  axis: string;
+  values: string[];
+  unspecifiedExperimentCount: number;
+}
+
+export interface TraceCaseExperimentCell {
+  binarySha256: string;
+  keyGroup: string;
+  inputGroup: string;
+  environmentGroup: string;
+  experimentIds: string[];
+  artifactIds: string[];
+}
+
+export interface TraceCaseControlledExperimentPair {
+  leftExperimentId: string;
+  rightExperimentId: string;
+  changedAxis: string;
+  fixedAxes: string[];
+}
+
+export interface TraceCaseExperimentRecommendation {
+  priority: number;
+  action: string;
+  reason: string;
+  suggestedBinarySha256?: string;
+  suggestedKeyGroup?: string;
+  suggestedInputGroup?: string;
+  suggestedEnvironmentGroup?: string;
+}
+
+export interface TraceCaseExperimentMatrixReport {
+  schema: string;
+  status: string;
+  experimentCount: number;
+  completeExperimentCount: number;
+  axes: TraceCaseExperimentAxis[];
+  observedCells: TraceCaseExperimentCell[];
+  missingCells: TraceCaseExperimentCell[];
+  missingCellsTruncated: boolean;
+  controlledPairs: TraceCaseControlledExperimentPair[];
+  confoundedPairCount: number;
+  recommendations: TraceCaseExperimentRecommendation[];
+  warnings: string[];
+  limitations: string[];
+}
+
+export interface ReplayDoctorReport {
+  schema: string;
+  caseId: string;
+  casePath: string;
+  generatedAtMs: number;
+  status: string;
+  artifactHealth: TraceCaseArtifactHealth[];
+  timeline: ReplayDoctorTimelineEntry[];
+  generatedClaims: TraceCaseClaim[];
+  nextActions: ReplayDoctorNextAction[];
+  claimLedgerAudit: TraceCaseClaimLedgerAudit;
+  stateReadiness: ReplayStateReadinessReport;
+  experimentMatrix: TraceCaseExperimentMatrixReport;
+  unicornRoundComparison?: UnicornOllvmRoundComparisonReport;
+  warnings: string[];
+  limitations: string[];
+}
+
+export interface CryptoDetectionStage {
+  code: string;
+  label: string;
+  status: string;
+  observedCount: number;
+  details: string;
+  evidence: string[];
+  blockers: string[];
+}
+
+export interface CryptoDetectionDoctorReport {
+  schema: string;
+  sessionId: string;
+  targetAlgorithm: string;
+  status: string;
+  verificationGateMet: boolean;
+  totalLinesScanned: number;
+  algorithmsObserved: string[];
+  targetMagicHitCount: number;
+  targetCryptoInstructionCount: number;
+  targetFunctionCandidateCount: number;
+  structuralSignalCount: number;
+  stages: CryptoDetectionStage[];
+  failureReasons: string[];
+  nextActions: string[];
+  limitations: string[];
+}
+
 export interface RegValue {
   reg: string;
   value: string;

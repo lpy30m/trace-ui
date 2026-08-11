@@ -14,7 +14,10 @@ Use `mcp__trace-ui__analyze_ollvm`, `mcp__trace-ui__compare_ollvm_traces`, `mcp_
 `mcp__trace-ui__generate_frida_unicorn_checkpoint_hook`, and
 `mcp__trace-ui__compare_unicorn_ollvm_rounds`. For multi-dispatcher manual capture, also use
 `mcp__trace-ui__generate_frida_ollvm_dispatcher_hook` and
-`mcp__trace-ui__analyze_frida_ollvm_dispatcher_capture`.
+`mcp__trace-ui__analyze_frida_ollvm_dispatcher_capture`. For strict multi-artifact provenance and claim
+gating, use `mcp__trace-ui__open_analysis_case`, `mcp__trace-ui__ingest_analysis_case_artifact`,
+`mcp__trace-ui__diagnose_analysis_case`, `mcp__trace-ui__audit_analysis_case_claims`, and
+`mcp__trace-ui__upsert_analysis_case_experiment`.
 
 ## Workflow
 
@@ -87,6 +90,12 @@ Use `mcp__trace-ui__analyze_ollvm`, `mcp__trace-ui__compare_ollvm_traces`, `mcp_
     in `compare_ollvm_traces`. Review normalized operation/CFG/state-role candidates and ambiguous top
     scores. Never carry source offsets, concrete state values, Frida captures, or angr seeds into the
     target build; regenerate an exact-offset Frida 16 Hook and angr seed per version.
+13. For any conclusion that combines two or more artifact types or replay rounds, create/open a strict
+    `.traceui-case`, ingest the trace, exact ELF, Frida captures, Unicorn/angr results, IDA annotations,
+    and OLLVM reports with explicit parent provenance, then run Replay Doctor and the Claim Ledger audit.
+    Record build/key/input/environment groups for controlled runs. Repair invalid/hash-mismatched
+    artifacts and resolve counter-evidence before raising confidence; OLLVM, angr, or Unicorn structure
+    alone remains Candidate/Related even when every file passes integrity checks.
 
 ## Interpretation rules
 
@@ -152,6 +161,9 @@ Use `mcp__trace-ui__analyze_ollvm`, `mcp__trace-ui__compare_ollvm_traces`, `mcp_
   ELF SHA-256. It aligns seeds by exact capture offset rather than cross-file event index. New coverage or
   a new dispatcher remains Candidate/Related; repeated missing memory, lost coverage, configuration drift,
   or truncated recordings must remain explicit and must not be described as proof of reachability.
+- Replay Doctor validates artifact bytes, schemas, parent provenance, supplied module/offset identities,
+  and exact ELF hashes. It does not attest the runtime-loaded image, supply missing architectural state,
+  prove real-entry reachability, or convert a dynamic transition atlas into a recovered CFG.
 
 ## IDA bridge boundary
 
@@ -182,4 +194,7 @@ launches Unicorn or angr during generation or comparison.
 
 ## Reporting
 
-Report the selected scope, module, sequence range, block/edge counts, top candidates with exact module offsets, and the saved `analysis_id`. Clearly separate observed dynamic facts from OLLVM hypotheses and note coverage limitations.
+Report the selected scope, module, sequence range, block/edge counts, top candidates with exact module
+offsets, and the saved `analysis_id`. When a `.traceui-case` is used, also report its path, relevant
+artifact IDs, integrity/counter-evidence status, and Claim Ledger maximum status. Clearly separate
+observed dynamic facts from OLLVM hypotheses and note coverage limitations.

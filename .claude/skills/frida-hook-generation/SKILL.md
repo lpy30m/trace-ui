@@ -14,6 +14,10 @@ Use `mcp__trace-ui__list_frida_hook_recipes`, `mcp__trace-ui__generate_frida_hoo
 `mcp__trace-ui__generate_frida_unicorn_recapture_hook`, and
 `mcp__trace-ui__generate_frida_unicorn_checkpoint_hook`. Generated hooks target Frida 16.x JavaScript APIs and emit
 `trace-ui/frida-hook-v1` messages with `send()` plus `TRACE_UI_JSON` strict-JSON log lines.
+For investigations spanning several captures or simulator rounds, use
+`mcp__trace-ui__open_analysis_case`, `mcp__trace-ui__ingest_analysis_case_artifact`,
+`mcp__trace-ui__diagnose_analysis_case`, and `mcp__trace-ui__audit_analysis_case_claims` to preserve
+strict artifact provenance and counter-evidence.
 
 ## Workflow
 
@@ -70,6 +74,11 @@ Use `mcp__trace-ui__list_frida_hook_recipes`, `mcp__trace-ui__generate_frida_hoo
     replay still lacks state, pass the same capture, exact ELF, and same prior result to
     `generate_angr_ollvm_script.checkpoint_result_path`; inspect the resulting `checkpointProbes` as
     bounded Candidate/Related paths.
+13. When the capture becomes a load-bearing seed or is followed by another Frida/Unicorn/angr round,
+    ingest the exact ELF, capture, and each generated result into the same `.traceui-case` with explicit
+    parent artifact IDs. Run Replay Doctor and the Claim Ledger audit before reporting a conclusion.
+    Artifact integrity and exact-offset matching prevent obvious mix-ups; they do not attest the module
+    loaded at runtime or make a simulator path Verified.
 
 ## Request fields
 

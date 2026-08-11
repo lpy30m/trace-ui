@@ -2,9 +2,11 @@ import { render, screen, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { MaterialRow } from "../src/components/CryptoMaterialsPanel";
+import AnalysisCasePanel from "../src/components/AnalysisCasePanel";
+import AnalysisHistoryPanel from "../src/components/AnalysisHistoryPanel";
 import OllvmUnicornPanel from "../src/components/OllvmUnicornPanel";
 import { filterFridaCaptureEvents } from "../src/utils/fridaCaptureFilter";
-import type { AngrOllvmScript, CryptoMaterial, FridaCaptureBundle, FridaCaptureEvent, OllvmReport, UnicornOllvmResultBundle } from "../src/types/trace";
+import type { AngrOllvmScript, CryptoDetectionDoctorReport, CryptoMaterial, FridaCaptureBundle, FridaCaptureEvent, OllvmReport, ReplayDoctorReport, TraceAnalysisCaseDocument, UnicornOllvmResultBundle } from "../src/types/trace";
 
 const mocks = vi.hoisted(() => ({
   invoke: vi.fn(),
@@ -455,5 +457,160 @@ describe("OLLVM Unicorn concrete replay", () => {
         fridaEventIndices: [9],
       }),
     );
+  });
+});
+
+describe("案件工作区准确率门禁", () => {
+  const caseDocument: TraceAnalysisCaseDocument = {
+    casePath: "C:\\cases\\sample.traceui-case",
+    case: {
+      schema: "trace-ui/case-v1",
+      caseId: "case-1",
+      title: "AES / OLLVM case",
+      createdAtMs: 1,
+      updatedAtMs: 1,
+      artifacts: [],
+      claims: [],
+      experiments: [],
+      notes: [],
+    },
+  };
+
+  const replayReport: ReplayDoctorReport = {
+    schema: "trace-ui/replay-doctor-v1",
+    caseId: "case-1",
+    casePath: caseDocument.casePath,
+    generatedAtMs: 2,
+    status: "seed-ready",
+    artifactHealth: [],
+    timeline: [],
+    generatedClaims: [],
+    nextActions: [],
+    claimLedgerAudit: {
+      schema: "trace-ui/claim-ledger-audit-v1",
+      totalClaimCount: 1,
+      passedClaimCount: 0,
+      blockedClaimCount: 1,
+      refutedClaimCount: 0,
+      verifiedGatePassedCount: 0,
+      claims: [{
+        claimId: "claim-1",
+        source: "persisted",
+        currentStatus: "verified",
+        recommendedStatus: "observed",
+        gateStatus: "blocked",
+        verificationGatePassed: false,
+        validSupportingEvidenceCount: 1,
+        validCounterEvidenceCount: 0,
+        invalidEvidenceCount: 0,
+        evidenceArtifactKinds: ["trace"],
+        blockers: ["Verified requires semantic evidence."],
+        notes: [],
+      }],
+      contradictions: [],
+      limitations: [],
+    },
+    stateReadiness: {
+      schema: "trace-ui/replay-state-readiness-v1",
+      status: "partial",
+      components: [{
+        component: "simd-fp",
+        status: "not-captured",
+        observedCount: 0,
+        expectedCount: 32,
+        sourceArtifactIds: [],
+        details: "A bounded run read uncaptured SIMD state.",
+        nextAction: "Capture a closer exact checkpoint.",
+      }],
+      blockers: ["simd-fp missing"],
+      limitations: [],
+    },
+    experimentMatrix: {
+      schema: "trace-ui/experiment-matrix-v1",
+      status: "no-experiments",
+      experimentCount: 0,
+      completeExperimentCount: 0,
+      axes: [{ axis: "keyGroup", values: [], unspecifiedExperimentCount: 0 }],
+      observedCells: [],
+      missingCells: [],
+      missingCellsTruncated: false,
+      controlledPairs: [],
+      confoundedPairCount: 0,
+      recommendations: [{
+        priority: 100,
+        action: "record-baseline-experiment",
+        reason: "No controlled baseline exists.",
+      }],
+      warnings: [],
+      limitations: [],
+    },
+    warnings: [],
+    limitations: [],
+  };
+
+  const cryptoReport: CryptoDetectionDoctorReport = {
+    schema: "trace-ui/crypto-detection-doctor-v1",
+    sessionId: "session-case",
+    targetAlgorithm: "AES",
+    status: "related",
+    verificationGateMet: false,
+    totalLinesScanned: 10,
+    algorithmsObserved: ["AES"],
+    targetMagicHitCount: 1,
+    targetCryptoInstructionCount: 0,
+    targetFunctionCandidateCount: 1,
+    structuralSignalCount: 1,
+    stages: [{
+      code: "semantic-verification",
+      label: "Semantic verification",
+      status: "blocked",
+      observedCount: 0,
+      details: "A same-call key/input/output tuple is missing.",
+      evidence: [],
+      blockers: ["Missing exact output bytes."],
+    }],
+    failureReasons: ["Semantic verification missing."],
+    nextActions: ["Capture the exact call tuple."],
+    limitations: [],
+  };
+
+  beforeEach(() => {
+    mocks.invoke.mockReset();
+    mocks.open.mockReset();
+    mocks.save.mockReset();
+    localStorage.clear();
+  });
+
+  it("从分析历史二级页签进入案件工作区", async () => {
+    const user = userEvent.setup();
+    mocks.invoke.mockResolvedValue([]);
+    render(<AnalysisHistoryPanel sessionId="session-case" />);
+    await user.click(screen.getByRole("button", { name: "案件 / Replay Doctor" }));
+    expect(screen.getByRole("button", { name: "新建案件" })).toBeInTheDocument();
+    expect(screen.getByText("AES 未识别原因诊断")).toBeInTheDocument();
+  });
+
+  it("显示状态完整度、反证门禁、实验矩阵和 AES 阶段诊断", async () => {
+    const user = userEvent.setup();
+    localStorage.setItem("trace-ui-analysis-case:session-case", caseDocument.casePath);
+    mocks.invoke.mockImplementation(async (command: string) => {
+      if (command === "load_analysis_case") return caseDocument;
+      if (command === "diagnose_analysis_case") return replayReport;
+      if (command === "diagnose_crypto_detection") return cryptoReport;
+      throw new Error(`unexpected command ${command}`);
+    });
+    const view = render(<AnalysisCasePanel sessionId="session-case" />);
+    const panel = within(view.container);
+    expect(await panel.findByText("AES / OLLVM case")).toBeInTheDocument();
+
+    await user.click(panel.getByRole("button", { name: "Replay Doctor" }));
+    expect(await panel.findByText("模拟状态完整度")).toBeInTheDocument();
+    expect(panel.getByText("Claim 反证门禁")).toBeInTheDocument();
+    expect(panel.getByText("受控实验矩阵")).toBeInTheDocument();
+    expect(panel.getByText("Verified requires semantic evidence.")).toBeInTheDocument();
+
+    await user.click(panel.getByRole("button", { name: "运行诊断" }));
+    expect(await panel.findByText("Semantic verification")).toBeInTheDocument();
+    expect(panel.getByText("Missing exact output bytes.")).toBeInTheDocument();
   });
 });

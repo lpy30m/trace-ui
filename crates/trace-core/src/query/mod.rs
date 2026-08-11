@@ -7,6 +7,7 @@ pub mod crypto_functions;
 pub mod crypto_material;
 pub mod crypto_semantic_verify;
 pub mod dep_tree;
+pub mod detection_doctor;
 pub mod elf_identity;
 pub mod evidence_score;
 pub mod forward_slice;

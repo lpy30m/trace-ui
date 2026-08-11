@@ -19,6 +19,7 @@
 - **数据依赖 DAG 图** — 从指定寄存器/内存地址构建依赖关系有向无环图，支持 C 风格表达式重建，直观展现数据流传播路径
 - **密码算法识别** — 自动扫描 trace 中的密码算法常量模式，覆盖 AES、DES、SM3、MD5、SHA、CRC32、TEA、RC4 等 28 种魔数模式
 - **动态软件 AES 验证** — 在没有 API 注释或硬件 AES 指令时，识别标准 forward/inverse S-box 的地址/值关系和 AES-128 展开密钥，并从内存访问重建 input/output；只有逐 block 精确复算一致才进入 Verified
+- **案件工作区 / Replay Doctor** — 使用严格版本化的 `.traceui-case` 保存 Trace、exact AArch64 ELF、Frida、Unicorn、angr、IDA、OLLVM 和 crypto artifact 的 SHA-256、父子来源、结论与受控实验；Doctor 会重验文件/协议，区分未执行、未捕获、不可读和 hash mismatch，并输出 Claim 反证门禁、模拟状态完整度、跨轮停滞判断和下一步建议
 - **Crypto Materials 索引** — 统一索引 key、password、salt、IV、nonce、counter、明文/密文、digest/MAC、AAD 和 tag，并对可观察的 AES、MD5/SHA、HMAC、PBKDF2 做确定性复算
 - **Frida 16 Hook 与捕获回导** — 可套用常见 OpenSSL/CommonCrypto 配方，或按导出符号/module-relative offset 生成 ARM64 Interceptor/Stalker 脚本；寄存器快照覆盖 X0-X28、FP/LR/SP/PC 与可用的 NZCV，用户手动执行后可导回 JSON/NDJSON，索引密码材料并生成 angr state seed；应用不会 attach、spawn、load 或执行 Hook
 - **Frida OLLVM Dispatcher Atlas** — 从 OLLVM 报告一次生成最多 64 个 ranked dispatcher `startOffset` 的 Frida 16.x 手动脚本；用户自行运行后导入 `ollvm-dispatcher-hit`，按 capture session、线程、flow 和连续 hit sequence 汇总 dispatcher 节点、状态寄存器分布、相邻 transition 与候选执行路径。legacy 捕获使用 idle-gap 启发式分 flow，所有结果保持 Candidate/Related。
@@ -92,6 +93,7 @@ claude mcp add trace-ui --transport http http://127.0.0.1:19821/mcp
 | 浏览与搜索 | `get_trace_lines`、`get_memory`、`get_strings`、`search_instructions`、`search_value` |
 | 污点分析 | `taint_analysis`、`forward_taint_analysis`、`get_tainted_lines` |
 | 结构与对比 | `get_call_tree`、`analyze_function`、`compare_traces` |
+| 案件与准确率门禁 | `open_analysis_case`、`ingest_analysis_case_artifact`、`diagnose_analysis_case`、`audit_analysis_case_claims`、`upsert_analysis_case_experiment`、`diagnose_crypto_detection` |
 | 密码分析 | `analyze_crypto_functions`、`analyze_crypto_implementations`、`analyze_crypto_materials`、`analyze_known_digest` |
 | 多 trace 参数隔离 | `compare_crypto_material_traces`、`compare_crypto_table_traces` |
 | Frida 16 脚本与回导 | `list_frida_hook_recipes`、`generate_frida_hook`、`generate_frida_ollvm_dispatcher_hook`、`generate_frida_unicorn_recapture_hook`、`generate_frida_unicorn_checkpoint_hook`、`inspect_frida_capture`、`search_frida_capture_events`、`get_frida_capture_event`、`analyze_frida_crypto_materials`、`analyze_frida_ollvm_dispatcher_capture`、`generate_angr_state_seed`（用户手动执行 Hook） |
@@ -99,6 +101,18 @@ claude mcp add trace-ui --transport http http://127.0.0.1:19821/mcp
 | 证据与编排 | `list_analyses`、`get_analysis`、`compare_analyses`、`auto_investigate` |
 
 > 详细的工具参数和分析套路请参考仓库内的 [trace-analysis MCP 工具表](.claude/skills/trace-analysis/references/mcp-tools.md) 与 [实战案例](.claude/skills/trace-analysis/references/playbook-examples.md)。
+
+### `.traceui-case` 与 AI 准确率门禁
+
+在“分析历史 > 案件 / Replay Doctor”中新建或打开 `.traceui-case`，再按时间导入 trace、exact ELF、用户捕获的 Frida JSON/NDJSON、手动执行产生的 Unicorn/angr 结果和 IDA/OLLVM/crypto 报告。每个 artifact 保存流式 SHA-256、严格 parser 摘要和 parent artifact provenance；文件被替换、截断或协议失效后，后续结论会被完整性门禁阻断。
+
+Replay Doctor 同时返回三类面向 AI 的结构化信息：
+
+- `claimLedgerAudit`：检查 supporting/counter evidence、失效 artifact、矛盾结论和 Verified 语义证据门禁。仅有 ELF SHA、OLLVM 结构、Unicorn 或 angr 候选路径时不能升级为 Verified。
+- `stateReadiness`：分别报告 exact ELF、GPR、NZCV、SIMD/FP、栈、pointer/heap、TLS/system state 和 call-boundary checkpoint；`not-executed`、`not-captured`、`unreadable`、`not-observed` 与 `hash-mismatch` 保持不同语义。
+- `experimentMatrix`：按 build SHA-256、key、input、environment 四个轴寻找真正只改变一个变量的 pair、缺失组合和混杂比较。AES/白盒与 OLLVM 跨版本结论应优先使用 controlled pair。
+
+Frida、Unicorn、angr、IDA 和目标程序仍由用户手动执行。Replay Doctor 只组织证据、验证身份和生成下一步，不会自动 attach/spawn，也不会把 OLLVM/模拟结果描述成自动去混淆。
 
 ## 功能详解
 
@@ -351,7 +365,7 @@ GUI 快速路径：从 Crypto Functions 的 AES 候选点击生成 Hook，进入
 |-------|------|
 | `trace-parser` | Trace 日志格式解析（unidbg / GumTrace），自动格式检测 |
 | `trace-core` | 核心分析引擎，包含索引构建、污点切片、调用树、内存追踪、寄存器检查点、字符串提取、密码算法扫描等全部分析能力 |
-| `trace-mcp` | MCP 协议层，将 trace-core 的能力通过 62 个 MCP 工具暴露，支持 HTTP/SSE 和 Stdio 两种传输 |
+| `trace-mcp` | MCP 协议层，将 trace-core 的能力通过 70 个 MCP 工具暴露，支持 HTTP/SSE 和 Stdio 两种传输 |
 | `trace-cli` | 独立 MCP Server 入口，供 AI 客户端直接调用 |
 
 **后端**：通过 mmap 零拷贝映射 trace 文件，一遍扫描生成依赖图、调用树、内存访问索引和寄存器检查点，全部通过 bincode 持久化缓存。污点切片采用 BFS 反向传播算法，在预构建的依赖图上完成。

@@ -38,7 +38,12 @@ Trace UI app (embedded MCP on `127.0.0.1:19821`) or register `trace-cli`, then r
 5. **Save & hand off** — analyses return an `analysis_id` (persisted with the trace). Use it with
    `get_analysis`, `compare_analyses`, `export_analysis_report`. The human can review these in the
    app's **Analyses** tab, so save anything load-bearing.
-6. **Close** — `close_trace` when done to free memory (optional; cancels background tasks).
+6. **Gate multi-artifact conclusions** — for investigations that combine a trace, exact ELF, Frida,
+   Unicorn, angr, IDA, OLLVM, or crypto reports, create/open a strict `.traceui-case` with
+   `open_analysis_case`, ingest every user-produced artifact with `ingest_analysis_case_artifact`, and
+   run `diagnose_analysis_case` plus `audit_analysis_case_claims` before promoting a load-bearing claim.
+   Record controlled build/key/input/environment runs with `upsert_analysis_case_experiment`.
+7. **Close** — `close_trace` when done to free memory (optional; cancels background tasks).
 
 ## Playbooks (question → tool sequence)
 
@@ -48,6 +53,23 @@ classify mode/direction/state layout, distinguish raw-key software from white-bo
 lookup tables plus encoding-boundary evidence. If the matching ELF exists, pass `static_binary_path` and
 inspect `staticBinary.tableMatches`; an exact file/dynamic match proves table provenance, not the cipher
 or key by itself. Only a report with `verificationGateMet:true` is verified.
+
+**"AES should be present, but the normal scan found nothing."**
+→ call `diagnose_crypto_detection{target_algorithm:"AES",static_binary_path?}` before changing parser
+settings or declaring absence. Read every stage separately: trace/index, magic constants, ARM64 crypto
+instructions, enclosing functions, software/S-box/key-schedule structure, semantic recomputation, and
+optional exact-ELF reconciliation. `not-observed` means the current trace did not expose that signal;
+`completed-no-match` means the exact ELF scan completed but found no dynamic/static table match. Neither
+status disproves AES. Only deterministic semantic recomputation can open the Verified gate.
+
+**"Several tools or replay rounds disagree; what should the AI trust?"**
+→ use a `.traceui-case`. Create/open it with `open_analysis_case`, import each trace/exact ELF/capture/
+result with `ingest_analysis_case_artifact` and explicit parent artifact IDs, then run
+`diagnose_analysis_case`. Use `audit_analysis_case_claims` for supporting and counter-evidence, invalid
+artifacts, and the recommended maximum claim status. Record controlled runs with
+`upsert_analysis_case_experiment`; prefer single-variable build/key/input/environment pairs and treat
+confounded comparisons as insufficient. Replay Doctor organizes evidence and next actions only; it does
+not execute the target, Frida, Unicorn, angr, or IDA, and it does not turn OLLVM structure into proof.
 
 **"Which function does the encryption / hashing, and what are its inputs/outputs?"**
 → `analyze_crypto_functions`. It aggregates magic-constant hits **and** dedicated ARM64 crypto
@@ -230,6 +252,9 @@ recomputes to a known digest.
   fetch the result via `get_analysis{analysis_id}`. Don't block on a long synchronous call.
 - **Verify before concluding.** End an investigation by quoting exact `get_trace_lines` / `get_memory`
   evidence for the claim, and save the `analysis_id` so the human can audit it in the GUI.
+- For a multi-artifact conclusion, also quote the `.traceui-case` path, relevant artifact IDs, integrity
+  status, counter-evidence, and Claim Ledger maximum status. A matching SHA-256 is file identity, not
+  runtime-image attestation, and structural replay evidence alone cannot become Verified.
 
 ## Tool map
 
@@ -244,6 +269,7 @@ recomputes to a known digest.
 | Frida | `list_frida_hook_recipes`, `generate_frida_hook`, `generate_frida_ollvm_dispatcher_hook`, `generate_frida_unicorn_recapture_hook`, `generate_frida_unicorn_checkpoint_hook`, `inspect_frida_capture`, `search_frida_capture_events`, `get_frida_capture_event`, `analyze_frida_crypto_materials`, `analyze_frida_ollvm_dispatcher_capture`, `generate_angr_state_seed` (user executes hooks manually) |
 | IDA / angr / Unicorn / OLLVM | `analyze_ollvm`, `compare_ollvm_traces`, `map_ollvm_versions`, `generate_ida_ollvm_script`, `inspect_ida_annotations`, `generate_angr_ollvm_script`, `inspect_angr_ollvm_results`, `generate_unicorn_ollvm_script`, `inspect_unicorn_ollvm_results`, `compare_unicorn_ollvm_rounds`, `generate_frida_unicorn_checkpoint_hook` |
 | Orchestration | `auto_investigate`, `start_auto_investigation`, `start_crypto_investigation` |
+| Case / evidence gates | `open_analysis_case`, `ingest_analysis_case_artifact`, `diagnose_analysis_case`, `audit_analysis_case_claims`, `upsert_analysis_case_experiment`, `diagnose_crypto_detection` |
 | Evidence store | `list_analyses`, `get_analysis`, `compare_analyses`, `export_analysis_report`, `delete_analysis` |
 | Recipes | `list_analysis_recipes`, `run_analysis_recipe`, `save_analysis_recipe`, `delete_analysis_recipe` |
 | Background tasks | `get_analysis_task`, `list_analysis_tasks`, `cancel_analysis_task` |

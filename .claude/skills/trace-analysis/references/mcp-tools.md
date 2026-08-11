@@ -237,6 +237,17 @@ Line numbers in taint `@LINE` specs are **1-based**; `start_seq`/`end_seq`/`seq`
   The first round is baseline coverage rather than iterative progress. Trace UI only compares imported
   files; every progress/stall/regression classification remains Candidate/Related.
 
+## Analysis case / accuracy gates
+
+- **open_analysis_case** `{case_path,create?=false,title?,session_id?,primary_trace_path?,exact_binary_path?}` opens or creates a strict `trace-ui/case-v1` `.traceui-case`. Creating from a session records its trace artifact; `exact_binary_path` must be an AArch64 ELF. It stores SHA-256/provenance only and executes nothing.
+- **ingest_analysis_case_artifact** `{case_path,artifact_path,kind_hint?,label?,parent_artifact_ids?}` hashes and strictly parses one Trace/ELF/Frida/Unicorn/angr/IDA/OLLVM/analysis/crypto artifact. Duplicate content is deduplicated; invalid parent IDs, schemas, identities, and non-AArch64 static binaries are rejected.
+- **diagnose_analysis_case** `{case_path,persist_generated_claims?=false}` runs `trace-ui/replay-doctor-v1`. It re-hashes artifacts, compares compatible Unicorn rounds by exact module/build/seed offset, detects authorized closer captures, and returns `claimLedgerAudit`, `stateReadiness`, `experimentMatrix`, deterministic next actions, and Candidate/Related generated claims. It never runs Frida, Unicorn, angr, IDA, or the target.
+- **audit_analysis_case_claims** `{case_path}` returns only the contradiction/counter-evidence gate. A `Verified` claim needs a valid explicit semantic/known-answer/exact-output marker; SHA identity and OLLVM/Unicorn/angr structure alone cannot pass it.
+- **upsert_analysis_case_experiment** `{case_path,experiment_id?,label,binary_sha256?,key_group?,input_group?,environment_group?,artifact_ids?,controlled_variables?,changed_variables?,notes?}` records a controlled run. Replay Doctor finds pairs that differ on exactly one build/key/input/environment axis, missing Cartesian cells, and confounded comparisons. Runtime execution remains manual.
+- **diagnose_crypto_detection** `{session_id?,target_algorithm?="AES",static_binary_path?}` explains each detection stage: trace/index, magic constants, ARM64 crypto instructions, function attribution, software/S-box/schedule structure, semantic verification, and optional exact ELF reconciliation. `not-observed` is not absence. The static stage distinguishes `matched` from `completed-no-match`; only deterministic semantic recomputation can produce `verified`.
+
+State readiness values are intentionally non-equivalent: `not-executed` means no bounded run exists, `not-captured` means required state was absent, `unreadable` means a requested capture failed, `not-observed` means the imported bounded path did not demonstrate the dependency, and `hash-mismatch` blocks exact-build continuation.
+
 ## Taint (data-flow slicing)
 
 Prefer explicit source syntax: \`reg:NAME@line:N\` for a 1-based display line, or
